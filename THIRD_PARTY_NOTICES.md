@@ -1,6 +1,15 @@
 # 第三者の著作物とライセンス
 
-このリポジトリのコードは、下に挙げるファイルを除いて MIT ライセンス([LICENSE](LICENSE))で配布する。
+> This repository contains code derived from DTXMania (DTXManiaNX) and libbjxa.
+> Their copyright notices and licenses are reproduced below.
+> The repository is licensed under the MIT License ([LICENSE](LICENSE)), except that
+> `js/core/xa.js` and `tools/make_fixtures.py` are licensed under LGPL-2.1-or-later
+> ([LICENSES/LGPL-2.1.txt](LICENSES/LGPL-2.1.txt)), not under the MIT License.
+
+このリポジトリのコードは MIT ライセンス([LICENSE](LICENSE))で配布する。ただし `js/core/xa.js` と
+`tools/make_fixtures.py` は LGPL-2.1-or-later で、MIT ではない(下の「libbjxa」の節)。
+<!-- LICENSE には MIT の本文だけを置く。GitHub はファイル全体が MIT の雛形と一致しないとライセンスを
+     「NOASSERTION」と表示するので、例外の注記はこのファイルに書く。 -->
 DTXMania Web は非公式のファンメイドのアプリで、DTXMania の各プロジェクトや株式会社コナミデジタルエンタテインメントとは
 関係がない(名前の DTXMania は、遊べる譜面の形式と移植元を表すもの)。
 
