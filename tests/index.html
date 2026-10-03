@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>DTXMania Web tests</title>
+<style>
+  body { font-family: Consolas, monospace; background: #111; color: #ddd; padding: 16px; }
+  li.pass { color: #7f7; }
+  li.fail { color: #f77; white-space: pre-wrap; }
+  #summary { font-weight: bold; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div id="summary">running...</div>
+<ul id="results"></ul>
+<script type="module">
+  // テストモジュールはキャッシュを避けるため毎回別 URL で読む
+  const v = 'v=' + Date.now();
+  // runner は各テストが './runner.js' として読む同じインスタンスを使う(クエリを付けると別モジュールになる)
+  const { run } = await import('./runner.js');
+  await import('./core.test.js?' + v);
+  await import('./game.test.js?' + v);
+  await import('./clock.test.js?' + v);
+  await import('./menu.test.js?' + v);
+  await import('./renderer.test.js?' + v);
+  await import('./framepace.test.js?' + v);
+  await import('./keybind.test.js?' + v);
+  await import('./midi.test.js?' + v);
+  await import('./integration.test.js?' + v);
+  run();
+</script>
+</body>
+</html>

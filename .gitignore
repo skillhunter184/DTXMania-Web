@@ -1,0 +1,14 @@
+# スキン画像・ドラム音・描き直す前の内蔵の絵などの手元の素材は再配布しない(THIRD_PARTY_NOTICES.md)
+assets/
+# ビルド生成物(build.bat / python tools/build.py で作る)。
+# 並行セッションが必ず触って毎回衝突し、しかもテキスト統合すると
+# どちらの正しい出力でもないファイルが黙ってできるため追跡しない。
+dist/dojo.bundle.js
+
+# local tooling
+.claude/worktrees/
+.claude/settings.local.json
+*.bak
+
+# local-only test data (real song packs)
+tests/fixtures/local/

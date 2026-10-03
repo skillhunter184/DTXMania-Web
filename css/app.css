@@ -1,0 +1,177 @@
+:root {
+  --bg: #0b0d14;
+  --panel: #151a26;
+  --panel2: #1d2434;
+  --text: #e8ecf4;
+  --muted: #9aa4b8;
+  --accent: #66d9ff;
+  --accent2: #ffd966;
+  --danger: #ff6b6b;
+  --line: #3d4a6b;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: "Segoe UI", "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif; }
+body { -webkit-text-size-adjust: 100%; overscroll-behavior: none; }
+button, input, select { font: inherit; }
+a { color: var(--accent); }
+.note { color: var(--muted); font-size: 0.9em; }
+[hidden] { display: none !important; }
+
+/* ---- home ---- */
+#screen-home { max-width: 960px; margin: 0 auto; padding: 16px 16px 48px; }
+.home-header h1 { margin: 8px 0 4px; font-size: 1.8em; letter-spacing: 0.04em; }
+.home-header p { margin: 0 0 16px; color: var(--muted); }
+#dropzone { border: 2px dashed #3a4562; border-radius: 12px; padding: 20px; text-align: center; background: var(--panel); transition: background 0.15s, border-color 0.15s; }
+#dropzone.drag { background: #1f2a44; border-color: var(--accent); }
+#dropzone p { margin: 6px 0 12px; }
+.btn-row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.btn { display: inline-block; background: var(--accent); color: #05131a; border: none; border-radius: 8px; padding: 12px 20px; font-weight: 700; cursor: pointer; }
+.btn.secondary { background: #2b3550; color: var(--text); }
+.btn.small { padding: 6px 12px; font-size: 0.9em; }
+.btn input[type=file] { display: none; }
+.status { margin: 14px 0 4px; padding: 10px 14px; border-radius: 8px; background: var(--panel2); }
+.status.error { background: #4a1f1f; color: #ffd0d0; }
+
+#song-list { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.song { display: flex; gap: 12px; background: var(--panel); border-radius: 10px; padding: 10px; align-items: center; }
+.song .jacket { width: 72px; height: 72px; border-radius: 6px; background: #222a3c; object-fit: cover; flex: none; }
+.song .meta { flex: 1; min-width: 0; }
+.song .title { font-weight: 700; font-size: 1.05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.song .artist { color: var(--muted); font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.song .charts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.song .charts button { background: #2b3550; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+.song .charts button:hover { background: #38466b; }
+.song .charts .lv { color: var(--accent2); font-weight: 700; margin-left: 6px; }
+
+details { margin-top: 18px; background: var(--panel); border-radius: 10px; padding: 10px 14px; }
+summary { cursor: pointer; font-weight: 700; }
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 10px; }
+.settings-grid section.wide { grid-column: 1 / -1; }
+.settings-grid section h3 { margin: 6px 0; font-size: 1em; color: var(--accent); }
+.settings-grid label { display: block; margin: 6px 0; }
+.settings-grid input[type=range] { width: 160px; vertical-align: middle; }
+.settings-grid input[type=number] { width: 90px; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.settings-grid select { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.settings-grid input.skin-path { width: min(18em, 100%); background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.settings-grid .skin-files { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
+/* ---- キー割り当て(1 レーン = 1 行のチップ列) ---- */
+#key-list { margin: 6px 0; }
+.key-row { display: flex; align-items: flex-start; gap: 8px; padding: 2px 4px; border-radius: 6px; }
+.key-row .key-lane { flex: none; width: 3em; font-weight: 700; line-height: 2; }
+.key-row .chips { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 5px; }
+.key-row button { color: var(--text); cursor: pointer; font-size: 0.95em; }
+.chip { display: inline-flex; align-items: stretch; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.chip button { background: transparent; border: 0; padding: 4px 9px; }
+.chip .chip-key { min-width: 2.4em; }
+.chip .chip-key:hover { background: #38466b; }
+.chip .chip-del { border-left: 1px solid var(--line); color: var(--muted); padding: 4px 7px; }
+.chip .chip-del:hover { background: #4a1f1f; color: var(--danger); }
+.chip-empty { color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; padding: 4px 9px; font-size: 0.95em; }
+.chip-add, .chip-lane-cmd, .chip-cancel { background: transparent; border: 1px dashed var(--line); border-radius: 6px; padding: 4px 9px; }
+.chip-add:hover, .chip-lane-cmd:hover, .chip-cancel:hover { border-color: var(--accent); border-style: solid; }
+.chip-lane-cmd { color: var(--muted); }
+.chip-add + .chip-lane-cmd { margin-left: 10px; } /* レーン単位の操作はチップ列から少し離す */
+.chip-add.is-full { opacity: 0.5; }
+.chip-cancel { border-style: solid; border-color: var(--accent2); }
+.key-row .listening { background: #5a4a10; border: 1px solid var(--accent2); color: var(--text); }
+.key-row button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* チップ内のボタンは .chip の overflow:hidden で外側のリングが切られるので内側に描く */
+.chip button:focus-visible { outline-offset: -2px; }
+.key-row.row-changed { animation: key-row-flash 1s ease-out; }
+@keyframes key-row-flash { from { background: #5a4a10; } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .key-row.row-changed { animation: none; } }
+#key-status { min-height: 1.7em; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+body.desktop .key-note-touch, body.touch .key-note-kbd { display: none; }
+/* ---- 電子ドラム(MIDI)。行とチップはキー割り当てと同じ見た目を使う ---- */
+.midi-connect { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
+#midi-devices { list-style: none; margin: 4px 0; padding: 0; font-size: 0.9em; font-variant-numeric: tabular-nums; }
+#midi-devices li { padding: 1px 0; white-space: pre-wrap; }
+#midi-devices li.closed { color: var(--danger); }
+#midi-monitor { margin: 4px 0 8px; white-space: pre-wrap; font-variant-numeric: tabular-nums; min-height: 1.4em; }
+.midi-preset { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
+.settings-grid .midi-preset label { display: inline-block; margin: 0; }
+#midi-list { margin: 6px 0; }
+.settings-grid .midi-row label.midi-vmin { flex: none; display: inline-flex; align-items: center; gap: 4px; margin: 0; line-height: 2; color: var(--muted); font-size: 0.9em; }
+.settings-grid .midi-row .midi-vmin input[type=number] { width: 4.2em; padding: 2px 4px; }
+.chip .chip-key.open { background: #38466b; }
+.midi-detail { flex-basis: 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px; margin-top: 2px; background: var(--panel2); border-radius: 6px; }
+.midi-detail .midi-step { min-width: 2.2em; background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
+.midi-detail .midi-step:hover { border-color: var(--accent); }
+.midi-detail .midi-th { min-width: 7em; text-align: center; font-variant-numeric: tabular-nums; }
+.key-row.row-hit { animation: midi-row-hit 0.35s ease-out; }
+.chip.chip-hit { animation: midi-chip-hit 0.35s ease-out; }
+@keyframes midi-row-hit { from { background: rgba(102, 217, 255, 0.28); } to { background: transparent; } }
+@keyframes midi-chip-hit { from { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); } to { box-shadow: none; } }
+@media (prefers-reduced-motion: reduce) { .key-row.row-hit, .chip.chip-hit { animation: none; } }
+body.touch .midi-detail .midi-step { min-height: 44px; min-width: 44px; }
+body.touch .chip button, body.touch .chip-add, body.touch .chip-lane-cmd, body.touch .chip-cancel, body.touch .chip-empty { min-height: 44px; padding: 10px 13px; }
+.help p { margin: 6px 0; }
+footer.note { margin-top: 24px; }
+
+/* ---- play ---- */
+#screen-play { position: fixed; inset: 0; background: #000; overflow: hidden; }
+#stage { position: absolute; inset: 0; }
+#canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+#overlay { position: absolute; inset: 0; pointer-events: none; }
+#overlay > * { pointer-events: auto; }
+#playbar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 6px; padding: 6px 8px; padding-top: max(6px, env(safe-area-inset-top)); z-index: 5; pointer-events: none; }
+#playbar > * { pointer-events: auto; }
+#playbar .pb { background: rgba(20, 26, 40, 0.75); color: var(--text); border: 1px solid var(--line); border-radius: 8px; min-width: 44px; height: 40px; font-size: 1.1em; cursor: pointer; }
+#playbar .pb:active { background: #38466b; }
+#play-title { flex: 1; min-width: 0; color: var(--muted); font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 4px #000; }
+body.desktop #playbar .pb { opacity: 0.35; }
+body.desktop #playbar:hover .pb { opacity: 1; }
+
+/* ---- 停止中のシークバー(譜面の確認) ---- */
+/* ハイウェイは画面下端まで伸びているので、判定ラインとパッド列を覆わないよう
+   プレイバーのすぐ下(= ハイウェイの上端側)に置く。top は onResize が実測して入れる。 */
+#seekbar {
+  position: absolute; left: 0; right: 0; top: 0; z-index: 6;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px;
+  background: rgba(10, 13, 23, 0.86); border-bottom: 1px solid var(--line);
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+#seekbar .sk { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; min-width: 44px; height: 36px; font-size: 1em; cursor: pointer; flex: none; }
+#seekbar .sk:hover { background: #38466b; }
+#seekbar .sk:active { background: var(--accent); color: #05131a; }
+#seek-track { position: relative; flex: 1; min-width: 60px; height: 36px; cursor: pointer; }
+#seek-track::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 8px; margin-top: -4px; background: rgba(255,255,255,0.14); border: 1px solid var(--line); border-radius: 4px; }
+#seek-loop { position: absolute; top: 50%; height: 8px; margin-top: -4px; background: rgba(102,217,255,0.45); border-radius: 2px; }
+#seek-fill { position: absolute; left: 0; top: 50%; height: 8px; margin-top: -4px; background: var(--accent2); border-radius: 4px 0 0 4px; }
+#seek-thumb { position: absolute; top: 4px; width: 4px; height: 28px; margin-left: -2px; background: #fff; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0,0,0,0.6); }
+#seekbar.dragging #seek-thumb { width: 6px; margin-left: -3px; }
+#seek-pos { flex: none; color: var(--text); font-size: 0.9em; white-space: nowrap; font-variant-numeric: tabular-nums; }
+body.portrait #seekbar { flex-wrap: wrap; }
+body.portrait #seek-pos { order: -1; width: 100%; text-align: center; }
+body.touch #seekbar .sk { height: 44px; }
+body.touch #seek-track { height: 44px; }
+body.touch #seek-thumb { top: 6px; height: 32px; width: 6px; margin-left: -3px; }
+
+#loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.75); z-index: 10; }
+#loading .box { background: var(--panel); border-radius: 12px; padding: 20px 26px; min-width: 280px; text-align: center; }
+#loading progress { width: 100%; margin-top: 10px; }
+
+/* ---- training menu ---- */
+.tmenu { position: absolute; background: rgba(10, 13, 23, 0.86); color: #ebebeb; border-radius: 6px; padding: 0.4em 0.6em; display: flex; flex-direction: column; font-size: 25px; user-select: none; -webkit-user-select: none; touch-action: pan-y; overflow-y: auto; box-sizing: border-box; }
+.tmenu-header { color: #99e6ff; font-size: 1.2em; font-weight: 700; height: 1.45em; line-height: 1.45em; }
+.tmenu-state { color: #ffd966; font-size: 0.96em; height: 1.3em; line-height: 1.3em; }
+.tmenu-rows { list-style: none; margin: 0.3em 0 0; padding: 0; }
+.tmenu-row { display: flex; align-items: center; height: 1.44em; line-height: 1.28em; cursor: pointer; white-space: nowrap; }
+.tmenu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tmenu-value { min-width: 5.6em; text-align: right; }
+.tmenu-btn { background: transparent; color: inherit; border: none; width: 1.3em; height: 1.3em; padding: 0; margin: 0 0.1em; border-radius: 4px; cursor: pointer; font-size: 0.8em; opacity: 0.55; touch-action: none; }
+.tmenu-btn:hover, .tmenu-btn:active { background: rgba(255,255,255,0.15); opacity: 1; }
+.tmenu-row.selected { color: #fff266; }
+.tmenu-row.action { color: #99e6ff; }
+.tmenu-row.selected.action { color: #fff266; }
+.tmenu-row.disabled { color: #8c8c8c; }
+.tmenu-footer { color: #b3b3b3; font-size: 0.76em; margin-top: 0.4em; line-height: 1.35em; white-space: pre-line; }
+body.touch .tmenu-btn { opacity: 0.9; width: 1.6em; height: 1.6em; }
+
+/* 縦画面/狭い画面ではメニューを下からのシートにする */
+body.portrait .tmenu { position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: auto !important; height: auto !important; max-height: 72vh; overflow-y: auto; border-radius: 14px 14px 0 0; font-size: 18px; padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); transform: translateY(110%); transition: transform 0.2s; }
+body.portrait .tmenu.open { transform: none; }
+body.portrait .tmenu-row { height: 2.2em; }
+body.portrait .tmenu-footer { display: none; }

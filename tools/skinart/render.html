@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>既定のスキンの画像</title>
+<style>
+  body { font-family: "Segoe UI", "Noto Sans JP", sans-serif; background: #111; color: #ddd; padding: 16px; }
+  canvas { display: block; margin: 6px 0 18px; background: #000; max-width: 100%; }
+  h2 { font-size: 1em; color: #8cf; margin: 0; }
+</style>
+</head>
+<body>
+<p>tools/skinart/ の絵から既定のスキン(skins/default/)の画像を作るページ。tools/make_skin.py がヘッドレスのブラウザで開き、
+  末尾の JSON(画像の data URL)を書き出す。直接開けば出来上がりを確かめられる(<code>?scale=2</code> で倍率を変える)。</p>
+<div id="view"></div>
+<pre id="out" hidden></pre>
+<script type="module">
+  import { PAD_SRC, PAD_ROW_GRAY, PAD_ROW_LIT, JUDGE_SRC, COLUMN_ORDER } from '../../js/ui/skin.js';
+  import { drawChipArt, drawJudgeArt } from './chips.js';
+  import { drawPadArt } from './pads.js';
+  import { drawScorePanelArt, drawSongPanelArt } from './panels.js';
+
+  // 画像の大きさと並びは skins/README.md(js/ui/skin.js の SKIN_PARTS の標準の配置)
+  const S = Number(new URLSearchParams(location.search).get('scale')) || 2;
+  const LANES = ['LC', 'HH', 'LP', 'SD', 'HT', 'BD', 'LT', 'FT', 'CY', 'RD'];
+
+  function sheet(w, h) {
+    const c = document.createElement('canvas');
+    c.width = Math.round(w * S);
+    c.height = Math.round(h * S);
+    return c;
+  }
+
+  // chips.png(128×240): レーン番号順に 24px 間隔、各行の [4, 4, 120, 16]。チップの絵は表示の画素数で描く
+  const chips = sheet(128, 240);
+  {
+    const g = chips.getContext('2d');
+    LANES.forEach((name, i) => {
+      g.save();
+      g.translate(4 * S, (4 + 24 * i) * S);
+      drawChipArt(g, name, 120 * S, 16 * S);
+      g.restore();
+    });
+  }
+
+  // pads.png(780×189): 灰色のパッド・点灯したパッド・判定ライン
+  const pads = sheet(780, 189);
+  {
+    const g = pads.getContext('2d');
+    g.scale(S, S);
+    for (const [[y0, y1], lit] of [[PAD_ROW_GRAY, false], [PAD_ROW_LIT, true]]) {
+      for (const name of COLUMN_ORDER) {
+        const [x, w] = PAD_SRC[name];
+        g.save();
+        g.translate(x, y0);
+        drawPadArt(g, name, lit, w, y1 - y0);
+        g.restore();
+      }
+    }
+    const [jx, jy, jw, jh] = JUDGE_SRC;
+    g.save();
+    g.translate(jx, jy);
+    drawJudgeArt(g, jw, jh);
+    g.restore();
+  }
+
+  const score = sheet(248, 264);
+  {
+    const g = score.getContext('2d');
+    g.scale(S, S);
+    drawScorePanelArt(g);
+  }
+  const song = sheet(444, 139);
+  {
+    const g = song.getContext('2d');
+    g.scale(S, S);
+    drawSongPanelArt(g);
+  }
+
+  const files = { 'chips.png': chips, 'pads.png': pads, 'score_panel.png': score, 'song_panel.png': song };
+  const view = document.getElementById('view');
+  for (const [name, c] of Object.entries(files)) {
+    const h = document.createElement('h2');
+    h.textContent = `${name}(${c.width}×${c.height})`;
+    view.append(h, c);
+  }
+  document.getElementById('out').textContent = JSON.stringify(
+    Object.fromEntries(Object.entries(files).map(([name, c]) => [name, c.toDataURL('image/png')])),
+  );
+  document.title = 'done';
+</script>
+</body>
+</html>

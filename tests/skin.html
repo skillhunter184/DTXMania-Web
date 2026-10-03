@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>DTXMania Web skin</title>
+<style>
+  body { font-family: "Segoe UI", "Noto Sans JP", sans-serif; background: #111; color: #ddd; padding: 16px; }
+  h2 { font-size: 1em; margin: 18px 0 4px; color: #8cf; }
+  .row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  figure { margin: 0; }
+  figcaption { font-size: 0.85em; color: #999; margin-bottom: 2px; }
+  canvas { display: block; background: #000; }
+</style>
+</head>
+<body>
+<p>既定のスキン(skins/default)と、比べるスキンのフォルダ(<code>?skin=</code>、既定は手元の assets/skin/DrumGame/。
+  リポジトリからの相対パス)を、演奏画面と同じ描き方で並べる。紫の印は Renderer が数字やジャケットを重ねる位置。
+  比べるフォルダに無い画像は既定のスキンで描く。
+  <label>倍率 <select id="scale"><option>1</option><option>1.5</option><option selected>2</option><option>3</option></select></label></p>
+<div id="out"></div>
+<script type="module">
+  import {
+    Skin, DEFAULT_SKIN_BASE, LEGACY_SKIN_BASE, LANE_X0, LANE_W, LANE_Y0, JUDGE_Y, PADS_Y, CANVAS_H, COLUMN_ORDER, PANELS,
+    columnRange, normalizeSkinPath,
+  } from '../js/ui/skin.js';
+
+  const otherPath = normalizeSkinPath(new URLSearchParams(location.search).get('skin') || LEGACY_SKIN_BASE);
+  const defaultSkin = await Skin.load(null, { defaultBase: '../' + DEFAULT_SKIN_BASE });
+  const otherSkin = await Skin.load({ base: '../' + otherPath }, { defaultBase: '../' + DEFAULT_SKIN_BASE });
+  const out = document.getElementById('out');
+  const sel = document.getElementById('scale');
+
+  /** 論理座標の範囲 [x, y, w, h] を倍率 ds で切り出したキャンバスに draw で描く。 */
+  function view([x, y, w, h], ds, draw) {
+    const c = document.createElement('canvas');
+    c.width = Math.round(w * ds);
+    c.height = Math.round(h * ds);
+    const g = c.getContext('2d');
+    g.fillStyle = '#000';
+    g.fillRect(0, 0, c.width, c.height);
+    g.setTransform(ds, 0, 0, ds, -x * ds, -y * ds);
+    draw(g);
+    return c;
+  }
+
+  /** ハイウェイの下端: レーン帯・判定ライン・判定ライン上のチップ・パッド列(lit なら全列を点灯)。 */
+  function highway(skin, ds, lit) {
+    return view([LANE_X0 - 8, JUDGE_Y - 60, LANE_W + 16, CANVAS_H - (JUDGE_Y - 60)], ds, (g) => {
+      g.drawImage(skin.laneStrip(), LANE_X0, LANE_Y0);
+      skin.drawJudge(g);
+      for (let col = 0; col < COLUMN_ORDER.length; col++) {
+        const [x0, x1] = columnRange(col);
+        skin.drawBar(g, COLUMN_ORDER[col], (x0 + x1) / 2, JUDGE_Y - 34, x1 - x0 - 4, 15, ds);
+      }
+      skin.drawPads(g, ds);
+      if (lit) {
+        for (let col = 0; col < COLUMN_ORDER.length; col++) {
+          const [x0, x1] = columnRange(col);
+          skin.drawPadLit(g, x0, x1, PADS_Y, ds);
+        }
+      }
+    });
+  }
+
+  /** パネル(数字の位置の目安に、Renderer が数字を重ねる線の位置へ印を付ける)。 */
+  function panel(skin, ds, key) {
+    const r = PANELS[key];
+    return view([r.x - 6, r.y - 6, r.w + 12, r.h + 12], ds, (g) => {
+      if (key === 'scoreDetailed') skin.drawScorePanel(g);
+      else skin.drawSongPanel(g);
+      const layout = key === 'scoreDetailed' ? skin.scorePanel : skin.songPanel;
+      const src = layout.src;
+      const k = r.w / src[2];
+      const px = (x) => r.x + (x - src[0]) * k;
+      const py = (y) => r.y + (y - src[1]) * k;
+      g.fillStyle = 'rgba(255,0,255,0.8)';
+      if (key === 'scoreDetailed') {
+        for (const y of layout.rows) g.fillRect(px(layout.countRight) - 1, py(y) - 4, 1, 8);
+        g.fillRect(px(layout.fastX) - 1, py(layout.fastSlowY) - 4, 1, 8);
+        g.fillRect(px(layout.slowX) - 1, py(layout.fastSlowY) - 4, 1, 8);
+      } else {
+        const [jx, jy, jw, jh] = layout.jacket;
+        g.strokeStyle = 'rgba(255,0,255,0.8)';
+        g.lineWidth = 1 / ds;
+        g.strokeRect(px(jx), py(jy), jw * k, jh * k);
+      }
+    });
+  }
+
+  function figure(caption, canvas) {
+    const f = document.createElement('figure');
+    const c = document.createElement('figcaption');
+    c.textContent = caption;
+    f.append(c, canvas);
+    return f;
+  }
+
+  function render() {
+    const ds = Number(sel.value);
+    out.textContent = '';
+    const otherLabel = otherSkin.missing.length ? `${otherPath}(${otherSkin.missing.join(' / ')} は既定のスキン)` : otherPath;
+    for (const [title, make] of [
+      ['ハイウェイの下端(灰色のパッド)', (s) => highway(s, ds, false)],
+      ['ハイウェイの下端(点灯したパッド)', (s) => highway(s, ds, true)],
+      ['SCORE DETAILED(紫の印は数字の位置)', (s) => panel(s, ds, 'scoreDetailed')],
+      ['SONG INFO(紫の枠はジャケットの位置)', (s) => panel(s, ds, 'songInfo')],
+    ]) {
+      const h = document.createElement('h2');
+      h.textContent = title;
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.append(figure('既定のスキン', make(defaultSkin)), figure(otherLabel, make(otherSkin)));
+      out.append(h, row);
+    }
+    window.__skinPageDone = true;
+  }
+
+  sel.onchange = render;
+  render();
+</script>
+</body>
+</html>

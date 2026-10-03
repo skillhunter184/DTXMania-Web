@@ -1,0 +1,237 @@
+# DTXMania Web
+
+DTXMania の譜面(`.dtx`)をブラウザで練習する Web アプリ。曲フォルダを ZIP にしたファイルを選ぶだけで
+GITADORA と同じレーンの並びのハイウェイに譜面が流れ、キーボードでもスマホのタッチでも、MIDI でつないだ電子ドラムでも叩ける。
+練習用の機能は DTXManiaAI のトレーニングモードのメニューをそのまま移植した。
+
+非公式のファンメイドのアプリで、DTXMania の各プロジェクトや株式会社コナミデジタルエンタテインメントとは関係がない
+(名前の DTXMania は、遊べる譜面の形式と移植元を表すもの。DTXMania の公式の Web 版ではない)。
+GITADORA は同社の商標。ライセンスは末尾の「ライセンス」を参照。
+
+- プレイ画面のレイアウト: vid2dtx の譜面プレビュー(9 レーン、RD は CY 列)。絵はスキンの画像で描き、既定のスキンを同梱。
+  設定で自作のスキン(画像 4 枚)に差し替えられる(作り方は [skins/README.md](skins/README.md))
+- 練習機能: DTXManiaAI のトレーニングモード(自動演奏 / レーン別 AUTO / ノーツ表示調整 / 判定タイミング調整 /
+  ハイスピード / 演奏速度 / 開始待ち時間 / ループ演奏(小節・秒) / 演奏開始・停止 / リスタート / 一時停止)
+- 判定・スコア・ゲージは DTXManiaNX 互換(Perfect 34 / Great 67 / Good 84 / Ok 117 ms、打ち分けグループ、
+  XG スコア、達成率)。成績はどこにも保存しない(トレーニング扱い)
+- ビルド不要。静的ファイルだけで動く(Node 不要)
+
+## 使い方
+
+### 起動
+
+**`index.html` をダブルクリックするだけで動く。** `file://` で開いたときは、`js/` を 1 本に束ねた
+`dist/dojo.bundle.js` を読む(ブラウザは `file://` から ES Modules を読み込めないため)。
+`js/` のソースを変更したら束ね直す:
+
+```bash
+python tools/build.py
+```
+
+HTTP で配信した場合(`python -m http.server 8765` → `http://localhost:8765/`、GitHub Pages など)は
+`js/main.js` を ES Modules としてそのまま読むので、ビルドし直す必要はない(`?bundle=1` で束ね版を強制できる)。
+
+### iPad / スマホから遊ぶ(LAN 配信)
+
+PC で **`serve.bat` をダブルクリック**すると、このフォルダを LAN に配信して、iPad で開く URL
+(`http://(この PC のアドレス):8770/`)と、フォルダ内の ZIP を直接開く `?zip=` 付きの URL を表示する。
+ポートを変えるときは `serve.bat 8780` のように渡す。止めるのは Ctrl+C。
+
+- テスト用の 8765 とはポートを分けてある。iPad 側の設定と前回の ZIP はポートごとに別々に保存されるので、
+  ポートが使用中でも別のポートへは逃げずに止まる
+- 初回は Windows のファイアウォールの許可が要る。ネットワークが「パブリック」だと既定で止められるので、
+  自宅なら「プライベート」にしてから許可する。iPad がつながると窓に「(iPad のアドレス) からつながりました」と出る
+- 手元の `assets/`(git 管理外)のスキンを使うなら、worktree ではなくメインのチェックアウトの `serve.bat` を使う
+- iPad では「フォルダを選ぶ」が使えない。ファイル App の ZIP を選ぶか、PC のこのフォルダに置いた ZIP を `?zip=` で開く
+- 電子ドラム(Web MIDI)は iPad の Safari / Chrome では使えない(iPad の Chrome なども中身は Safari と同じエンジン)。
+  Web MIDI を差し込むブラウザアプリで開けば使える。**iPad の実機で、Web MIDI Browser から開いて電子ドラムの打鍵が
+  届くことを確かめた**(2026-10)。Web MIDI Browser の互換実装(mizuhiki/WebMIDIAPIShimForiOS。入力一覧の `values()` が
+  for...of で回せない)に合わせて入力の列挙を直してある。ほかのアプリ(MIDI Web Browser など)は未確認。
+  電子ドラムは USB(古い iPad は Lightning - USB カメラアダプタ)で iPad につなぐ
+- Web MIDI は HTTPS か localhost に限られるので、LAN のアドレスで開いた http のページでは PC の Chrome でも使えない
+  (Web MIDI Browser は自前で差し込むので http でも出てくる)
+- 画面のスリープ防止(Wake Lock)も HTTPS に限られるので効かない。止まっている間に暗くなるなら iPad の自動ロックを切る
+
+### 譜面の読み込み
+
+1. DTXMania の曲フォルダ(`set.def` と `.dtx`、音源 wav/ogg/mp3/xa)を ZIP に圧縮する
+2. 「ZIP を選ぶ」またはドラッグ&ドロップ(PC なら「フォルダを選ぶ」でも可)
+3. 曲と難易度を選ぶと演奏画面へ。前回の ZIP はブラウザ内(IndexedDB)に保存され「前回の ZIP を開く」で再読込できる
+4. `index.html?zip=path/to/pack.zip` で同一サイト上の ZIP を直接開ける(デモ配置用)
+
+`set.def` があれば難易度ごとに、無ければ `.dtx` ごとに一覧する。ファイル名は Shift-JIS / UTF-8 どちらでも、
+`.dtx` は Shift-JIS / UTF-8 / UTF-16(DTXCreator 031 以降)を自動判別する。動画(avi/mp4)は再生しない。
+
+### 操作
+
+| 操作 | キーボード | タッチ |
+|---|---|---|
+| ドラム | LC=A HH=S LP=W SD=D HT=F BD=Space LT=J FT=K CY=L RD=;(設定で変更可。1 レーンに 12 キーまで割り当てられる) | レーンの列をタップ(CY 列は RD も拾う) |
+| メニュー項目 | ↑↓ | 行をタップ |
+| 値の変更 | ←→(Ctrl で 10 段、押しっぱなしでリピート) | ◀ ▶(長押しでリピート) |
+| 決定 | Enter(Space は BD なので使わない) | 動作の行をタップ |
+| 戻る / 終了 | Esc | ← ボタン |
+| AUTO 切替 | F1 | メニューの「自動演奏」 |
+| 譜面を送る(停止中) | 画面上部のシークバーをドラッグ / ◀ ▶ ◀◀ ▶▶ / バー上でホイール | シークバーをドラッグ / ◀ ▶ ◀◀ ▶▶ |
+| 音量 | メニューの「ドラム音量」「BGM 音量」を ←→(Ctrl で 10 段) | メニューの ◀ ▶ |
+
+画面上部のボタンで 演奏開始/停止・リスタート・一時停止・全画面・メニュー表示 ができる(スマホ向け)。
+
+ドラム音量と BGM 音量は設定パネルのほか、**演奏中でもトレーニングメニューから**変えられる(←→ で 5 %、
+Ctrl で 50 %)。AudioEngine 側で種類ごとの音量バスに分けているので、鳴っている最中の BGM にも即座に効く。
+元実装の ChipVolume / AutoChipVolume(手動・全体 AUTO と、レーン別 AUTO の相対音量)はそのまま残してあり、
+ユーザーが動かす「ドラム音量」はその上に掛かる。
+
+演奏を止めている間(待機中・一時停止中)は、画面上部のシークバーで譜面を前後に送って確認できる。バーを
+離すといちばん近い小節頭に吸着し、◀ ▶ は 1 つ、◀◀ ▶▶ は 10 ぶん送る(刻みはメニューの「ループ位置単位」に従う)。
+メニューの「現在位置」行でも ←→(Ctrl で 10 段)で送れる。送った位置から「演奏開始」で始まり、「リスタート」は
+従来どおり曲頭(ループ中はループ開始位置)から。最終ノートより後ろの小節も確認できる。
+一時停止中に巻き戻してから再開した場合は、同じチップを二重に数えないようループ折り返しと同じ区切りを入れる。
+
+キー割り当ては設定パネルで変える。1 レーン = 1 行のチップ列で、**キー名を押すと差し替え / × で 1 個だけ外す /
+＋ 追加でもう 1 個足す**(1 レーン 12 キーまで)。行末の「既定」でそのレーンだけ既定に戻し、「解除」で空にする
+(空のレーンは意図的な未割り当てとして扱い、既定キーで勝手に復活しない)。同じキーが 2 レーンに載ることはなく、
+他レーンが持っているキーを割り当てると、追加なら取り上げ・差し替えなら 1:1 で入れ替える(DTXManiaAI / NX と同じ)。
+`↑↓←→ / Enter / Esc / Tab / F1` はメニュー操作に使うため割り当てできない。
+
+電子ドラム(USB / MIDI インターフェース経由)は設定パネルの「電子ドラム(MIDI)」で「電子ドラムを使う」を押して開く
+(PC の Chrome / Edge / Firefox。Safari は Web MIDI 非対応。iPhone / iPad は Safari も Chrome も非対応で、Web MIDI 付きのブラウザアプリで開く)。DTXManiaAI の CONFIG > MIDI Setup(GITADORA コナステの
+MIDI 設定画面の移植)と同じ考え方で:
+
+- 見つかった MIDI 入力を全部開き、機器ごとの打鍵数・最後のノートと、直近 6 打の行き先レーン(`--` は未割り当て、
+  `(弱)` はしきい値で捨てた打鍵)を出す。叩いたパッドの行き先の行が光る。抜き差しは自動で拾う
+- 初期値は GM ドラムマップ(LC 49 / HH 42,46 / LP 44 / SD 38,40,37 / HT 48,50 / BD 36,35 / LT 45,47 / FT 43,41 /
+  CY 57,55 / RD 51,59,53)。合わないパッドは「＋ 叩いて追加」を押してからパッドを叩くと、いちばん強く届いたノートが入る
+  (他レーンにあったノートは移る。1 レーン 12 ノートまで)
+- GITADORA と同じ 7 種のプリセット(AUTO は機器名で選ぶ)。適用すると MIDI だけ入れ替わり、RD は空になる
+  (RD のチップは打ち分けの CY グループを「共通」にすると CY のパッドで叩ける)
+- 「下限」以下の強さの打鍵は捨てる(既定は HH だけ 20。クロストーク対策)。ノートを押すとそのノートだけのしきい値を変えられる
+- 同じレーンへの打鍵が 16 ms 以内に重なったら 1 打にまとめる(元実装の 1 フレーム。ヘッドとリムの同時発音や二度鳴り対策)。
+  ベロシティは音量には使わない(NX と同じ)
+
+キーボードの割り当てとは別に保存するので、どちらでも叩ける。
+
+縦画面ではハイウェイだけを拡大表示し、メニューは下からのシートになる。
+
+### トレーニングメニュー(DTXManiaAI と同じ並び)
+
+| 項目 | 内容 |
+|---|---|
+| 自動演奏 | 全レーン AUTO |
+| 自動演奏詳細 | レーン別 AUTO(LC〜RD、すべて、戻る) |
+| ノーツ表示調整 | ±ms。判定は動かさず描画だけずらす(+ で遅く流れる) |
+| 判定タイミング調整 | ±99 ms。判定そのものをずらす(+ で入力を遅く扱う) |
+| ハイスピード | x0.1 刻み(Ctrl で 1.0)。x1.0 の速さは DTXmaniaNX に合わせてある |
+| 演奏速度 | x0.25〜x2.00(0.05 刻み)。音のピッチも変わる |
+| 開始待ち時間 | 0〜5.0 秒。演奏開始時とループ折り返し時に待つ |
+| ループ演奏 / 単位 / 終了位置 / 開始位置 | 小節または 0.5 秒単位。開始と終了は重ならないようクランプ。待機中は開始位置のノーツが見える |
+| 演奏開始 / 演奏停止 / リスタート / 一時停止 / トレーニング終了 | 待機中に叩くと音だけ鳴る(ウォーミングアップ) |
+
+設定はブラウザの localStorage に保存する(ループ位置は譜面ごとなので保存しない)。
+
+ハイスピード x1.0 の速さは **DTXmaniaNX 基準**(BPM150 の 1 小節が 1080p で 429 px。NX の
+`CChip.ComputeDistanceFromBar` の `(raw+1)*0.5*37.5*286/60000` = 720p で 0.17875 px/ms を 1.5 倍したもの)。
+移植元の DTXManiaAI は同じ x1.0 を 0.675 px/ms = 1 小節 1080 px としていて約 2.5 倍速かった。
+刻みも元実装の 0.5 では粗いので 0.1 にしてある。0.5 刻みで保存されていた設定は読み込み時に引き継ぐ。
+
+## ファイル構成
+
+```
+index.html            画面(ホーム / 演奏)
+css/app.css
+js/main.js            画面遷移・設定 UI・入力とメニューの接続・描画ループ
+js/core/              譜面と音源の読み込み(Unity/Python に依存しない純粋ロジック)
+  encoding.js         Shift-JIS / UTF-8 / UTF-16 の判別
+  zip.js              依存無しの ZIP 読み込み(Blob を必要な分だけ slice、DecompressionStream + 純 JS inflate)
+  xa.js               bjXA(KWD1)デコーダ(vid2dtx/xa.py と同じ整数演算。このファイルだけ LGPL-2.1-or-later)
+  wav.js / synth.js   WAV フォールバック / レーン別合成ドラム音(DrumSynth 移植)
+  dtx.js              DTX パーサ(DTXManiaAI DtxChart.cs = NX CDTX 移植: リードイン・BPM/小節長・小節線/拍線・C1/C2・不可視/ボーナス・SE)
+  setdef.js / song.js set.def / box.def と曲一覧、音源パスの解決
+  audio.js            Web Audio エンジン(復号フォールバック・発音数制限・#VOLUME/#PAN・演奏速度)
+  storage.js          localStorage / IndexedDB
+js/game/
+  hitranges.js        判定窓と打ち分けグループ(HitRanges / DrumGroups)
+  judge.js            スコア・コンボ・ゲージ・達成率(PerformanceResult)
+  training.js         トレーニング設定とループ位置の計算(TrainingSettings)
+  player.js           演奏コントローラ(PerformanceStage のトレーニング状態機械・判定・自動演奏・ループ)
+js/ui/
+  skin.js             レイアウト定数(vid2dtx preview.py)と、スキンの画像の読み込み・事前合成(SKIN_PARTS が画像の決まり)
+  renderer.js         Canvas 描画(ハイウェイ・チップ・判定・コンボ・パネル、縦/横レイアウト)
+  framepace.js        停止中の描画の間引き(画面の Hz の推定と、何回に 1 回描くか)
+  menu.js             トレーニングメニュー(TrainingMenu)
+  input.js            キーボード / タッチ入力
+  keybind.js          キー割り当ての純ロジック(複数キー・重複解決・上限・設定の修復)
+  midi.js             Web MIDI 入力(電子ドラム。全デバイスを開く・しきい値・同レーンの重なりをまとめる・叩いて登録)
+  midibind.js         MIDI 割り当ての純ロジック(GM 既定・GITADORA プリセット・取り上げ・しきい値・設定の修復)
+  midipanel.js        設定パネルの「電子ドラム(MIDI)」(デバイス一覧・打鍵モニタ・プリセット・レーンごとのノート)
+serve.bat             iPad などから遊ぶための LAN 配信(tools/serve.py。URL と ?zip= の一覧を表示)
+dist/dojo.bundle.js   file:// 用に js/ を 1 本に束ねたもの。生成物なので git 管理外(build.bat で作る)
+tests/                ブラウザで開くテスト(tests/index.html)。fixtures/local/ は git 管理外の実曲パック
+tools/make_fixtures.py tests/fixtures の音・ZIP・期待値を合成して作る
+tools/make_skin.py    既定のスキン skins/default/ の画像を tools/skinart/ の描画から作る(Chrome / Edge が必要)
+skins/default/        既定のスキン(chips.png / pads.png / score_panel.png / song_panel.png)。書式は skins/README.md
+docs/spec/            元実装から抽出した挙動仕様(移植の根拠)
+assets/               手元の素材(自作スキンなど)。git には含めない
+```
+
+絵(チップ・パッド・判定ライン・SCORE DETAILED / SONG INFO パネル)はすべてスキンの画像で描く(元実装に無い追加。
+移植元は画像が無いと単色で描く)。スキンは決まった名前の画像 4 枚の組で、既定のスキン `skins/default/` を同梱している。
+設定の「表示 → スキン」で、フォルダ(`index.html` からの相対パス)か、読み込んだ画像(ZIP 可。IndexedDB に保存)に替えられる。
+足りない画像は既定のスキンで補い、設定パネルにどのファイルが無いかを出す。画像の大きさは等倍の整数倍でなくてよく、
+幅から倍率を求めて読む。書式は [skins/README.md](skins/README.md)、決まりのコードは `js/ui/skin.js` の `SKIN_PARTS`。
+`tests/skin.html` に既定のスキンと手元のスキン(`?skin=フォルダ`)を演奏画面と同じ描き方で並べてある。
+
+既定のスキンの絵は `tools/skinart/` の Canvas の描画(このリポジトリで描いた独自のデザイン)で、`python tools/make_skin.py`
+で画像にする。アプリはこのコードを読まない。ゲーム画面由来の画像をなぞって描かないこと。
+初期の手元のスキン(`drum_chips_hd.webp` / `drum_pads.png` / `score_detailed_hd.png` / `song_info_hd.webp`)の名前と配置も
+読める(`drum_pads.png` は透明地の元絵 `drum_pads_src.webp` から `python tools/make_pads.py` で作れる。Pillow と numpy が必要)。
+レーン帯(区切り線)はスキンに依らずアプリ側で描き、レーンガイドは描かない。譜面に音が無いレーンは合成音(`synth.js`)で鳴らす。
+
+## ビルド
+
+`js/` は素の ES Modules なので、HTTP 配信(`python -m http.server`)ならビルドは要らない。
+`index.html` を **file:// で直接開く**ときだけ、束ねた `dist/dojo.bundle.js` が必要になる。
+
+```
+build.bat            (または python tools/build.py)
+```
+
+`js/` を変更したら実行し直す。生成物なので git では追跡していない
+(並行作業で毎回衝突し、テキスト統合すると壊れたファイルが黙ってできるため)。
+
+## テスト
+
+`tests/index.html` をサーバー経由で開く(`http://localhost:8765/tests/index.html`)。
+文字コード判別・ZIP(Shift-JIS 名、データディスクリプタ、純 JS inflate)・XA(4 / 6 / 8 bit・ステレオ。Python 版の復号と一致)・
+DTX パーサ(DTXManiaAI ParityTests の T1〜T4 移植ほか)・set.def・スコア式・ループ位置の計算・
+演奏コントローラ(判定・ミス・曲末・ループ折り返し・演奏速度)・キー割り当て(追加/差し替え/削除/取り上げ/上限/設定の修復)・
+MIDI(ノートオンの判定・しきい値・重なりのまとめ・叩いて登録・プリセットと機器名の照合)を
+ブラウザ内で検証する。
+`tests/fixtures/local/*.zip` があれば実曲パックの結合テストも走る。
+
+`tests/fixtures/` の音と ZIP はすべて `python tools/make_fixtures.py` で合成したもの(実曲パックの音源は再配布できないので
+使わない)。作り直すと期待値(`xa_refs.json` / `pack_sjis.json`)も一緒に書き換わる。
+
+## 既知の制約
+
+- iOS Safari は Ogg Vorbis をネイティブ復号できないため、初回に jsDelivr から wasm デコーダを読み込む(要ネットワーク)
+- 演奏速度を変えると音のピッチも変わる(タイムストレッチ未実装。DTXManiaAI と同じ)
+- 動画・BGA・ギター/ベース・NX スキンの判定/コンボ画像・フィルイン演出は対象外
+- 電子ドラム(Web MIDI)は、ブラウザが初回に MIDI 機器の使用許可を尋ねる。電子ドラムの実機では、iPad + Web MIDI Browser で
+  打鍵が届くところまで確かめた(PC の Chrome / Edge ではまだ)。テストは MIDI メッセージを直接流し込む形で行っている。他のアプリ(DTXMania 本体など)が機器を使っていると開けない
+- 音のズレは AudioContext の出力遅延を自動で見込むが、端末により差があるので設定の「遅延補正」と
+  メニューの「判定タイミング調整」で合わせる。Chrome / Edge は今聞こえている音の時刻(`getOutputTimestamp`)から
+  時計を作るので、チップが毎フレーム滑らかに動く(以前は約 10 ms 刻み)。この変更で同じ打鍵のずれ表示は平均約
+  2 ms 遅い側(+)に出るようになった。それ以外のブラウザは以前の推定のまま
+
+## 今後(予定)
+
+- vid2dtx の譜面編集機能(スナップ付きノーツ追加/削除、Undo、ドラムチャンネル行だけを書き戻す保存)の移植。
+  パーサは各ノートに小節番号・小節内 tick・チップ ID・元チャンネルを持ち、元テキストの行も保持しているので、
+  `emit.render_channel_line` 相当の書き出しを足せば同じ方式で保存できる
+
+## ライセンス
+
+MIT([LICENSE](LICENSE))。ただし `js/core/xa.js` と `tools/make_fixtures.py` は LGPL-2.1-or-later
+([LICENSES/LGPL-2.1.txt](LICENSES/LGPL-2.1.txt))。譜面の読み込みや判定まわりは DTXMania(DTXManiaNX)の
+コードを移植したもので、その著作権表示と許諾文、libbjxa の表示は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にある。
