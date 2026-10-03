@@ -60,6 +60,9 @@ build.bat
 
 - コメントとコミットメッセージは日本語。周囲の密度に合わせる。
 - `Space` は BD の既定キーなので、UI の決定キーに使わない(決定は `Enter`)。
+- 画面に出す文言は `js/i18n.js` の `STRINGS` に `[日本語, 英語]` で足し、`t('キー')` で引く(index.html は日本語を書いたまま
+  `data-i18n` などでキーを付ける)。index.html の日本語を変えたら `STRINGS` も揃え、隣の英語も直す(`tests/i18n.test.js` が
+  突き合わせる)。console にだけ出す文言は訳さない。既定の言語は日本語。
 - 演奏中にアプリが消費するキー(矢印 / Enter / NumpadEnter / Esc / F1)はレーンに割り当てられない
   (`js/ui/keybind.js` の `RESERVED_CODES`)。増やすときは両方を合わせる。
 - 時計は「譜面時刻を不変にして時計の進み方を変える」モデル。詳細は `docs/architecture.md`。

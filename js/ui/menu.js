@@ -10,6 +10,7 @@ import {
   stepLoopBegin, stepLoopEnd, stepLoopTime, formatLoopTime, formatSignedMs, buildMeasureTimes,
 } from '../game/training.js';
 import { LANE_COUNT, LANE_NAMES } from '../core/dtx.js';
+import { t } from '../i18n.js';
 
 export const MENU_COMMAND = { NONE: 'none', START_STOP: 'startStop', RESTART: 'restart', PAUSE_RESUME: 'pauseResume', QUIT: 'quit' };
 
@@ -22,10 +23,11 @@ const ITEM = {
   START_STOP: 14, RESTART: 15, PAUSE: 16, QUIT: 17,
 };
 const MAIN_COUNT = 18;
+// 項目名の文言のキー(js/i18n.js)。演奏開始 / 一時停止は状態で変わるので itemName で選ぶ
 const MAIN_NAMES = [
-  '自動演奏', '自動演奏詳細', 'ノーツ表示調整', '判定タイミング調整', 'ハイスピード',
-  '演奏速度', '開始待ち時間', 'ドラム音量', 'BGM 音量', 'ループ演奏', 'ループ位置単位',
-  'ループ終了位置', 'ループ開始位置', '現在位置', '演奏開始', 'リスタート', '一時停止', 'トレーニング終了',
+  'menu.autoPlay', 'menu.autoDetail', 'menu.noteOffset', 'menu.judgeOffset', 'menu.hiSpeed',
+  'menu.playSpeed', 'menu.startWait', 'menu.drumVolume', 'menu.bgmVolume', 'menu.loop', 'menu.loopUnit',
+  'menu.loopEnd', 'menu.loopBegin', 'menu.position', 'menu.start', 'menu.restart', 'menu.pause', 'menu.quit',
 ];
 
 /** 音量の刻み(%)。←→ で 5、Ctrl 併用で 50。 */
@@ -133,7 +135,7 @@ export class TrainingMenu {
       <div class="tmenu-header">TRAINING</div>
       <div class="tmenu-state"></div>
       <ul class="tmenu-rows"></ul>
-      <div class="tmenu-footer">↑↓ 選択   ←→ 変更(Ctrl:x10)<br>Enter 決定   Esc 終了</div>`;
+      <div class="tmenu-footer">${t('menu.footer')}</div>`;
     container.appendChild(root);
     this.root = root;
     this.header = root.querySelector('.tmenu-header');
@@ -143,7 +145,7 @@ export class TrainingMenu {
     for (let i = 0; i < MAIN_COUNT; i++) {
       const li = document.createElement('li');
       li.className = 'tmenu-row';
-      li.innerHTML = '<span class="tmenu-name"></span><button class="tmenu-btn tmenu-left" aria-label="減らす">◀</button><span class="tmenu-value"></span><button class="tmenu-btn tmenu-right" aria-label="増やす">▶</button>';
+      li.innerHTML = `<span class="tmenu-name"></span><button class="tmenu-btn tmenu-left" aria-label="${t('menu.decrease')}">◀</button><span class="tmenu-value"></span><button class="tmenu-btn tmenu-right" aria-label="${t('menu.increase')}">▶</button>`;
       const row = { li, name: li.querySelector('.tmenu-name'), value: li.querySelector('.tmenu-value'), left: li.querySelector('.tmenu-left'), right: li.querySelector('.tmenu-right') };
       // タップ確定(click)で反応する: 指を置いただけ・スクロール中には動作しない
       li.addEventListener('click', (e) => {
@@ -418,20 +420,20 @@ export class TrainingMenu {
 
   itemName(i) {
     if (this.page === 'auto') {
-      if (i === AUTO_DETAIL_BACK) return '戻る';
-      if (i === AUTO_DETAIL_ALL) return 'すべて';
+      if (i === AUTO_DETAIL_BACK) return t('menu.back');
+      if (i === AUTO_DETAIL_ALL) return t('menu.all');
       return LANE_NAMES[i];
     }
-    if (i === ITEM.START_STOP) return this.playing ? '演奏停止' : '演奏開始';
-    if (i === ITEM.PAUSE) return this.paused ? '再開' : '一時停止';
-    return MAIN_NAMES[i];
+    if (i === ITEM.START_STOP) return t(this.playing ? 'menu.stop' : 'menu.start');
+    if (i === ITEM.PAUSE) return t(this.paused ? 'menu.resume' : 'menu.pause');
+    return t(MAIN_NAMES[i]);
   }
 
   itemValue(i) {
     const s = this.s;
     if (this.page === 'auto') {
       if (i === AUTO_DETAIL_BACK || i === AUTO_DETAIL_ALL) return '';
-      return s.autoLanes[i] ? 'AUTO' : '手動';
+      return s.autoLanes[i] ? 'AUTO' : t('menu.manual');
     }
     switch (i) {
       case ITEM.AUTO: return s.autoPlay ? 'ON' : 'OFF';
@@ -443,8 +445,8 @@ export class TrainingMenu {
       case ITEM.START_WAIT: return (s.startWaitMs / 1000).toFixed(1) + ' s';
       case ITEM.DRUM_VOLUME: return (this.getVolume ? this.getVolume('chip') : 0) + ' %';
       case ITEM.BGM_VOLUME: return (this.getVolume ? this.getVolume('bgm') : 0) + ' %';
-      case ITEM.LOOP: return !s.loop ? 'OFF' : s.loopRangeValid ? 'ON' : 'ON (無効)';
-      case ITEM.LOOP_UNIT: return s.loopUnit === LOOP_UNIT.MEASURE ? '小節' : '秒';
+      case ITEM.LOOP: return !s.loop ? 'OFF' : s.loopRangeValid ? 'ON' : t('menu.loopInvalid');
+      case ITEM.LOOP_UNIT: return t(s.loopUnit === LOOP_UNIT.MEASURE ? 'menu.unitMeasure' : 'menu.unitSecond');
       case ITEM.LOOP_END: return formatLoopTime(s.loopEndMs, s.loopUnit, this.measureTimes);
       case ITEM.LOOP_BEGIN: return formatLoopTime(s.loopBeginMs, s.loopUnit, this.measureTimes);
       case ITEM.POSITION: return formatLoopTime(this.positionMs, s.loopUnit, this.measureTimes);
@@ -455,14 +457,14 @@ export class TrainingMenu {
   autoLaneSummary() {
     let n = 0;
     for (let i = 0; i < LANE_COUNT; i++) if (this.s.autoLanes[i]) n++;
-    if (n === 0) return 'なし';
-    if (n === LANE_COUNT) return 'すべて';
-    return n + ' レーン';
+    if (n === 0) return t('menu.none');
+    if (n === LANE_COUNT) return t('menu.all');
+    return t('menu.lanes', { n });
   }
 
   refresh() {
     if (!this.root) return;
-    setText(this.header, this.page === 'main' ? 'TRAINING' : 'TRAINING - 自動演奏詳細');
+    setText(this.header, this.page === 'main' ? 'TRAINING' : t('menu.autoHeader'));
     setText(this.state, this.stateText);
     const count = this.itemCount;
     for (let i = 0; i < this.rows.length; i++) {

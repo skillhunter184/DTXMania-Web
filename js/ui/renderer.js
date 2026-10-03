@@ -9,6 +9,7 @@ import { LANE_NAMES } from '../core/dtx.js';
 import { JUDGE } from '../game/hitranges.js';
 import { GAUGE_DANGER } from '../game/judge.js';
 import { PLAYER_STATE } from '../game/player.js';
+import { t } from '../i18n.js';
 
 const JUDGE_TEXT = ['PERFECT', 'GREAT', 'GOOD', 'OK', 'MISS'];
 const JUDGE_COLOR = ['rgb(255,242,77)', 'rgb(102,255,128)', 'rgb(102,204,255)', 'rgb(204,128,255)', 'rgb(255,102,102)'];
@@ -247,7 +248,7 @@ export class Renderer {
         g.font = `24px ${FONT}`;
         g.fillStyle = 'rgba(255,255,255,0.85)';
         g.lineWidth = 3;
-        const hint = this.mode === 'portrait' ? 'メニューから「演奏開始」' : 'メニューの「演奏開始」(Enter)で開始';
+        const hint = t(this.mode === 'portrait' ? 'play.hintPortrait' : 'play.hintLandscape');
         g.strokeText(hint, cx, 570);
         g.fillText(hint, cx, 570);
       }
@@ -490,7 +491,7 @@ export class Renderer {
     g.fillText('SCORE ' + String(st.score).padStart(7, '0'), sd.x, sd.y - 52);
     g.font = `22px ${FONT}`;
     g.fillStyle = 'rgb(200,220,255)';
-    g.fillText('達成率 ' + this._achievement().toFixed(2) + '%', sd.x, sd.y - 20);
+    g.fillText(t('play.achievement') + ' ' + this._achievement().toFixed(2) + '%', sd.x, sd.y - 20);
 
     // ハイスピード・演奏速度(score_detailed の下)
     g.font = `bold 26px ${FONT}`;
@@ -547,7 +548,7 @@ export class Renderer {
     g.font = `20px ${FONT}`;
     line(`P ${st.counts[0]}  G ${st.counts[1]}  Gd ${st.counts[2]}  Ok ${st.counts[3]}  Miss ${st.counts[4]}  Max ${st.maxCombo}`, 'rgb(230,230,230)');
     const speed = 'SPEED ' + this._hiSpeedText() + (p.ratio !== 1 ? '  PLAY ' + this._playSpeedText() : '');
-    line('達成率 ' + this._achievement().toFixed(2) + '%   BPM ' + this._bpmText() + '   ' + speed, 'rgb(200,220,255)');
+    line(t('play.achievement') + ' ' + this._achievement().toFixed(2) + '%   BPM ' + this._bpmText() + '   ' + speed, 'rgb(200,220,255)');
     fitText(g, this.songInfo.title, x, y, LANE_W - 20);
     // 縦画面はハイウェイ内右端にゲージ、その右の余白に進捗バー
     // (小節番号を LANE_X0 + LANE_W + 6 から左詰めで描くので、3 桁ぶん空けた先に置く)

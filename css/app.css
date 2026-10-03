@@ -17,11 +17,22 @@ button, input, select { font: inherit; }
 a { color: var(--accent); }
 .note { color: var(--muted); font-size: 0.9em; }
 [hidden] { display: none !important; }
+/* 英語を選んでいるときは文言を差し替えるまで隠す(index.html の <head> のスクリプト) */
+html.i18n-wait #app { visibility: hidden; }
 
 /* ---- home ---- */
 #screen-home { max-width: 960px; margin: 0 auto; padding: 16px 16px 48px; }
+.home-title { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
 .home-header h1 { margin: 8px 0 4px; font-size: 1.8em; letter-spacing: 0.04em; }
 .home-header p { margin: 0 0 16px; color: var(--muted); }
+/* 表示言語(日本語 / English)の切り替え */
+.lang-switch { display: inline-flex; flex: none; margin: 4px 0 8px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.lang-switch button { background: transparent; color: var(--muted); border: 0; padding: 6px 12px; font-size: 0.9em; cursor: pointer; }
+.lang-switch button + button { border-left: 1px solid var(--line); }
+.lang-switch button:hover { color: var(--text); background: #222a3c; }
+.lang-switch button[aria-pressed="true"] { background: #2b3550; color: var(--text); font-weight: 700; }
+.lang-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+body.touch .lang-switch button { min-height: 44px; padding: 10px 14px; }
 #dropzone { border: 2px dashed #3a4562; border-radius: 12px; padding: 20px; text-align: center; background: var(--panel); transition: background 0.15s, border-color 0.15s; }
 #dropzone.drag { background: #1f2a44; border-color: var(--accent); }
 #dropzone p { margin: 6px 0 12px; }

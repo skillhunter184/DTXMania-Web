@@ -14,6 +14,7 @@ import { HitRanges, JUDGE, searchLanes, tieHitsAll, applyChartDowngrade, LEFT_BA
 import { PlayStats } from './judge.js';
 import { buildMeasureTimes, PLAY_SPEED_MIN, PLAY_SPEED_MAX } from './training.js';
 import { isMutingSeChannel } from '../core/dtx.js';
+import { t } from '../i18n.js';
 
 /**
  * ハイスピード x1.0 の速さ(1080p の 1ms あたりピクセル数)。
@@ -405,7 +406,7 @@ export class Player {
     if (at !== want) {
       const s = this.settings;
       const outOfLoop = s.loop && s.loopRangeValid && (want < s.loopBeginMs || want > s.loopEndMs - 1);
-      this.showStatus(outOfLoop ? 'ループ区間へ' : '曲末より前から始めます');
+      this.showStatus(t(outOfLoop ? 'play.toLoop' : 'play.beforeEnd'));
     }
     this.enterStandby(true, at);
     this.beginStartWait();
@@ -453,7 +454,7 @@ export class Player {
       if (this._seekDirty) {
         this.stats.resetForLoop();
         this._seekDirty = false;
-        this.showStatus('成績をここから数え直します');
+        this.showStatus(t('play.recount'));
       }
       this._anchorReal = this._ctxNowMs(); // beginPlaying と同じ
       this._anchorSong = this._pinnedSong;

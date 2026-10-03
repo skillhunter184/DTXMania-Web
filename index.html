@@ -9,34 +9,55 @@
 <meta name="theme-color" content="#0b0d14">
 <title>DTXMania Web</title>
 <link rel="stylesheet" href="css/app.css">
+<script>
+  // 表示言語(js/i18n.js の initialLang と同じ順: ?lang= → 保存した dojo.lang → 日本語)。
+  // 英語なら JS が文言を差し替えるまで画面を隠す(日本語が一瞬見えないように)。差し替えたとき・起動に失敗したとき・
+  // 3 秒たったときに外す。
+  (function () {
+    var m = /[?&]lang=(ja|en)(?:&|$)/.exec(location.search);
+    var lang = m ? m[1] : null;
+    if (!lang) { try { lang = JSON.parse(localStorage.getItem('dojo.lang')); } catch (e) { lang = null; } }
+    if (lang !== 'en') return;
+    var root = document.documentElement;
+    root.lang = 'en';
+    root.classList.add('i18n-wait');
+    setTimeout(function () { root.classList.remove('i18n-wait'); }, 3000);
+  })();
+</script>
 </head>
 <body>
 <div id="app">
   <section id="screen-home" class="screen">
     <header class="home-header">
-      <h1>DTXMania Web</h1>
-      <p>DTX 譜面をブラウザで練習する。ZIP を選ぶだけ。キーボードでもタッチでも叩ける。</p>
+      <div class="home-title">
+        <h1>DTXMania Web</h1>
+        <div id="lang-switch" class="lang-switch" role="group" aria-label="言語 / Language">
+          <button type="button" data-lang="ja" lang="ja" aria-pressed="true">日本語</button>
+          <button type="button" data-lang="en" lang="en" aria-pressed="false">English</button>
+        </div>
+      </div>
+      <p data-i18n="home.tagline">DTX 譜面をブラウザで練習する。ZIP を選ぶだけ。キーボードでもタッチでも叩ける。</p>
     </header>
 
     <div id="dropzone">
-      <p>曲フォルダを ZIP にしたファイルをここにドロップ、または</p>
+      <p data-i18n="home.drop">曲フォルダを ZIP にしたファイルをここにドロップ、または</p>
       <div class="btn-row">
-        <label class="btn">ZIP を選ぶ<input type="file" id="file-zip" accept=".zip,application/zip,application/x-zip-compressed"></label>
-        <label class="btn secondary">フォルダを選ぶ<input type="file" id="file-dir" webkitdirectory multiple></label>
+        <label class="btn"><span data-i18n="home.pickZip">ZIP を選ぶ</span><input type="file" id="file-zip" accept=".zip,application/zip,application/x-zip-compressed"></label>
+        <label class="btn secondary"><span data-i18n="home.pickFolder">フォルダを選ぶ</span><input type="file" id="file-dir" webkitdirectory multiple></label>
         <button id="btn-last" class="btn secondary" hidden>前回の ZIP を開く</button>
       </div>
-      <p class="note">set.def があれば難易度ごとに、無ければ .dtx ごとに一覧します。音源は wav / ogg / mp3 / xa に対応。動画は再生しません。</p>
+      <p class="note" data-i18n="home.dropNote">set.def があれば難易度ごとに、無ければ .dtx ごとに一覧します。音源は wav / ogg / mp3 / xa に対応。動画は再生しません。</p>
     </div>
 
     <div id="pkg-status" class="status" hidden></div>
     <ul id="song-list"></ul>
 
     <details id="settings-panel">
-      <summary>設定(キー割り当て・電子ドラム・音量・遅延補正・打ち分け)</summary>
+      <summary data-i18n="settings.summary">設定(キー割り当て・電子ドラム・音量・遅延補正・打ち分け)</summary>
       <div class="settings-grid">
         <section class="wide">
-          <h3>キー割り当て</h3>
-          <p class="note" id="key-note">
+          <h3 data-i18n="settings.keys">キー割り当て</h3>
+          <p class="note" id="key-note" data-i18n-html="settings.keyNote">
             1 レーンに複数のキーを割り当てられます(12 個まで)。
             <b>キー名</b>を押すと差し替え / <b>×</b> で 1 個だけ外す / <b>＋ 追加</b> でもう 1 個足す。
             <span class="key-note-kbd">キーボードだけなら Tab で行に入り、←→ でキー間・↑↓ でレーン間を移動、Enter で実行、Delete で削除。</span>
@@ -44,12 +65,12 @@
             ↑↓←→ / Enter / Esc / Tab / F1 はメニュー操作に使うため割り当てできません。
           </p>
           <div id="key-list"></div>
-          <p id="key-status" class="note" role="status" aria-live="polite"><span id="key-status-text"></span><button id="key-undo" class="btn small secondary" hidden>元に戻す</button></p>
-          <button id="btn-keys-default" class="btn small secondary">全レーンを既定に戻す</button>
+          <p id="key-status" class="note" role="status" aria-live="polite"><span id="key-status-text"></span><button id="key-undo" class="btn small secondary" hidden data-i18n="common.undo">元に戻す</button></p>
+          <button id="btn-keys-default" class="btn small secondary" data-i18n="settings.resetAll">全レーンを既定に戻す</button>
         </section>
         <section class="wide" id="midi-section">
-          <h3>電子ドラム(MIDI)</h3>
-          <p class="note">
+          <h3 data-i18n="settings.midi">電子ドラム(MIDI)</h3>
+          <p class="note" data-i18n-html="settings.midiNote">
             USB や MIDI インターフェースでつないだ電子ドラムで叩けます(PC の Chrome / Edge / Firefox。iPhone / iPad は Web MIDI 付きのブラウザアプリで)。
             初期値は GM ドラムマップ。合わないパッドは <b>＋ 叩いて追加</b> を押してからパッドを叩くと、そのノートがレーンに入ります
             (ほかのレーンにあったノートは移ります)。機種に合わせたプリセット(GITADORA と同じ表)もあります。
@@ -63,77 +84,77 @@
           <ul id="midi-devices"></ul>
           <p id="midi-monitor" class="note" aria-live="off"></p>
           <div class="midi-preset">
-            <label>プリセット <select id="midi-preset"></select></label>
-            <button id="btn-midi-apply" class="btn small secondary">適用</button>
-            <span class="note">AUTO はつないだ機器の名前から選びます。MIDI だけを入れ替え、RD は空になります。</span>
+            <label><span data-i18n="settings.preset">プリセット</span> <select id="midi-preset"></select></label>
+            <button id="btn-midi-apply" class="btn small secondary" data-i18n="settings.apply">適用</button>
+            <span class="note" data-i18n="settings.presetNote">AUTO はつないだ機器の名前から選びます。MIDI だけを入れ替え、RD は空になります。</span>
           </div>
           <div id="midi-list"></div>
-          <p id="midi-status" class="note" role="status" aria-live="polite"><span id="midi-status-text"></span><button id="midi-undo" class="btn small secondary" hidden>元に戻す</button></p>
-          <button id="btn-midi-default" class="btn small secondary">全レーンを既定に戻す</button>
+          <p id="midi-status" class="note" role="status" aria-live="polite"><span id="midi-status-text"></span><button id="midi-undo" class="btn small secondary" hidden data-i18n="common.undo">元に戻す</button></p>
+          <button id="btn-midi-default" class="btn small secondary" data-i18n="settings.resetAll">全レーンを既定に戻す</button>
         </section>
         <section>
-          <h3>音</h3>
-          <label>マスター音量 <input type="range" id="cfg-volume" min="0" max="100" step="5"> <span id="cfg-volume-v"></span></label>
-          <label>ドラム音量 <input type="range" id="cfg-chip" min="0" max="100" step="5"> <span id="cfg-chip-v"></span></label>
-          <label>BGM 音量 <input type="range" id="cfg-bgm" min="0" max="100" step="5"> <span id="cfg-bgm-v"></span></label>
-          <p class="note">ドラム音量と BGM 音量は演奏中でもトレーニングメニューから変えられます。</p>
-          <label>遅延補正(ms) <input type="number" id="cfg-latency" min="-300" max="300" step="5"> <span class="note">音が遅れて聞こえるなら + 方向</span></label>
+          <h3 data-i18n="settings.sound">音</h3>
+          <label><span data-i18n="settings.masterVolume">マスター音量</span> <input type="range" id="cfg-volume" min="0" max="100" step="5"> <span id="cfg-volume-v"></span></label>
+          <label><span data-i18n="settings.drumVolume">ドラム音量</span> <input type="range" id="cfg-chip" min="0" max="100" step="5"> <span id="cfg-chip-v"></span></label>
+          <label><span data-i18n="settings.bgmVolume">BGM 音量</span> <input type="range" id="cfg-bgm" min="0" max="100" step="5"> <span id="cfg-bgm-v"></span></label>
+          <p class="note" data-i18n="settings.volumeNote">ドラム音量と BGM 音量は演奏中でもトレーニングメニューから変えられます。</p>
+          <label><span data-i18n="settings.latency">遅延補正(ms)</span> <input type="number" id="cfg-latency" min="-300" max="300" step="5"> <span class="note" data-i18n="settings.latencyNote">音が遅れて聞こえるなら + 方向</span></label>
         </section>
         <section>
-          <h3>表示</h3>
-          <label><input type="checkbox" id="cfg-lag"> 判定のズレ(ms)を表示</label>
-          <label>画面の向き
+          <h3 data-i18n="settings.display">表示</h3>
+          <label><input type="checkbox" id="cfg-lag"> <span data-i18n="settings.showLag">判定のズレ(ms)を表示</span></label>
+          <label><span data-i18n="settings.layout">画面の向き</span>
             <select id="cfg-layout">
-              <option value="auto">自動</option>
-              <option value="landscape">横(フル画面)</option>
-              <option value="portrait">縦(ハイウェイのみ)</option>
+              <option value="auto" data-i18n="settings.layoutAuto">自動</option>
+              <option value="landscape" data-i18n="settings.layoutLandscape">横(フル画面)</option>
+              <option value="portrait" data-i18n="settings.layoutPortrait">縦(ハイウェイのみ)</option>
             </select>
           </label>
-          <label>スキン
+          <label><span data-i18n="settings.skin">スキン</span>
             <select id="cfg-skin">
-              <option value="default">既定</option>
-              <option value="folder">フォルダを指定</option>
-              <option value="files">画像を読み込む</option>
+              <option value="default" data-i18n="settings.skinDefault">既定</option>
+              <option value="folder" data-i18n="settings.skinFolder">フォルダを指定</option>
+              <option value="files" data-i18n="settings.skinFiles">画像を読み込む</option>
             </select>
           </label>
-          <label id="cfg-skin-path-row" hidden>フォルダ <input type="text" id="cfg-skin-path" class="skin-path" spellcheck="false" autocomplete="off" placeholder="assets/skin/MySkin/"></label>
+          <label id="cfg-skin-path-row" hidden><span data-i18n="settings.skinPath">フォルダ</span> <input type="text" id="cfg-skin-path" class="skin-path" spellcheck="false" autocomplete="off" placeholder="assets/skin/MySkin/"></label>
           <div id="cfg-skin-files-row" class="skin-files" hidden>
-            <button id="cfg-skin-pick" type="button" class="btn small secondary">画像 / ZIP を選ぶ</button>
+            <button id="cfg-skin-pick" type="button" class="btn small secondary" data-i18n="settings.skinPick">画像 / ZIP を選ぶ</button>
             <span id="cfg-skin-files-info" class="note"></span>
             <input type="file" id="cfg-skin-file" multiple accept=".png,.webp,.jpg,.jpeg,.zip" hidden>
           </div>
-          <p class="note">スキンは chips.png / pads.png / score_panel.png / song_panel.png の 4 枚の画像です(作り方は skins/README.md)。
+          <p class="note" data-i18n="settings.skinNote">スキンは chips.png / pads.png / score_panel.png / song_panel.png の 4 枚の画像です(作り方は skins/README.md)。
             フォルダは index.html からの相対パスで指定します。足りない画像は既定のスキンで補います。</p>
           <p id="cfg-skin-missing" class="note" role="status" hidden></p>
         </section>
         <section>
-          <h3>打ち分け(NX と同じ)</h3>
-          <label>HH グループ
-            <select id="cfg-hh"><option value="0">0: 全部打ち分け</option><option value="1">1: HH のみ共通</option><option value="2">2: LC のみ</option><option value="3">3: 全部共通</option></select>
+          <h3 data-i18n="settings.groups">打ち分け(NX と同じ)</h3>
+          <label><span data-i18n="settings.hhGroup">HH グループ</span>
+            <select id="cfg-hh"><option value="0" data-i18n="settings.hh0">0: 全部打ち分け</option><option value="1" data-i18n="settings.hh1">1: HH のみ共通</option><option value="2" data-i18n="settings.hh2">2: LC のみ</option><option value="3" data-i18n="settings.hh3">3: 全部共通</option></select>
           </label>
-          <label>FT グループ <select id="cfg-ft"><option value="0">0: 打ち分け</option><option value="1">1: 共通</option></select></label>
-          <label>CY グループ <select id="cfg-cy"><option value="0">0: 打ち分け</option><option value="1">1: 共通</option></select></label>
-          <label>BD グループ
-            <select id="cfg-bd"><option value="0">0: 打ち分け</option><option value="1">1: BD と LBD</option><option value="2">2: 左右ペダルのみ</option><option value="3">3: どっちも BD</option></select>
+          <label><span data-i18n="settings.ftGroup">FT グループ</span> <select id="cfg-ft"><option value="0" data-i18n="settings.group0">0: 打ち分け</option><option value="1" data-i18n="settings.group1">1: 共通</option></select></label>
+          <label><span data-i18n="settings.cyGroup">CY グループ</span> <select id="cfg-cy"><option value="0" data-i18n="settings.group0">0: 打ち分け</option><option value="1" data-i18n="settings.group1">1: 共通</option></select></label>
+          <label><span data-i18n="settings.bdGroup">BD グループ</span>
+            <select id="cfg-bd"><option value="0" data-i18n="settings.group0">0: 打ち分け</option><option value="1" data-i18n="settings.bd1">1: BD と LBD</option><option value="2" data-i18n="settings.bd2">2: 左右ペダルのみ</option><option value="3" data-i18n="settings.bd3">3: どっちも BD</option></select>
           </label>
-          <p class="note">譜面に LC が無ければ HH は共通、RD が無ければ CY は共通に自動で下がります。タッチの CY 列は常に RD も拾います。</p>
+          <p class="note" data-i18n="settings.groupNote">譜面に LC が無ければ HH は共通、RD が無ければ CY は共通に自動で下がります。タッチの CY 列は常に RD も拾います。</p>
         </section>
       </div>
     </details>
 
     <details id="help-panel">
-      <summary>操作方法</summary>
+      <summary data-i18n="help.summary">操作方法</summary>
       <div class="help">
-        <p><b>ドラム</b>: <span id="help-keys"></span> <span class="note">(設定のキー割り当てで変更。1 レーンに複数キーを割り当てられます)</span></p>
-        <p><b>電子ドラム</b>: 設定の「電子ドラム(MIDI)」で「電子ドラムを使う」を押して開く。パッドの割り当ては叩いて登録するか、機種のプリセットを適用。叩いたパッドの行き先は同じ欄のモニタで確かめられます。</p>
-        <p><b>トレーニングメニュー</b>: ↑↓ 項目 / ←→ 変更(Ctrl で 10 段) / Enter 決定 / Esc 戻る・終了 / F1 AUTO 切替</p>
-        <p><b>譜面の確認</b>: 停止中・一時停止中は画面上部のシークバーで前後に送れます。バーをドラッグ(離すと小節頭に吸着)、◀ ▶ で 1 つ送り、◀◀ ▶▶ で 10 送り、バーの上でホイール。メニューの「現在位置」でも ←→ で送れます(Ctrl で 10 段)。送った位置から「演奏開始」で始まります(「リスタート」は曲頭・ループ開始位置から)。</p>
-        <p><b>タッチ</b>: レーンの列をタップで打鍵。メニューは「☰ メニュー」から。値の行は ◀ ▶ で変更、動作の行はタップで実行。</p>
-        <p><b>メニュー項目</b>: 自動演奏 / 自動演奏詳細(レーン別 AUTO) / ノーツ表示調整 / 判定タイミング調整 / ハイスピード / 演奏速度 / 開始待ち時間 / ドラム音量 / BGM 音量 / ループ演奏 / ループ位置単位 / ループ終了位置 / ループ開始位置 / 現在位置 / 演奏開始・停止 / リスタート / 一時停止 / トレーニング終了</p>
-        <p>待機中に叩くと音だけ鳴ります(ウォーミングアップ)。ループ区間の折り返しごとに開始待ち時間を置きます。成績はどこにも保存しません。</p>
+        <p><b data-i18n="help.drums">ドラム</b>: <span id="help-keys"></span> <span class="note" data-i18n="help.drumsNote">(設定のキー割り当てで変更。1 レーンに複数キーを割り当てられます)</span></p>
+        <p data-i18n-html="help.midi"><b>電子ドラム</b>: 設定の「電子ドラム(MIDI)」で「電子ドラムを使う」を押して開く。パッドの割り当ては叩いて登録するか、機種のプリセットを適用。叩いたパッドの行き先は同じ欄のモニタで確かめられます。</p>
+        <p data-i18n-html="help.menu"><b>トレーニングメニュー</b>: ↑↓ 項目 / ←→ 変更(Ctrl で 10 段) / Enter 決定 / Esc 戻る・終了 / F1 AUTO 切替</p>
+        <p data-i18n-html="help.seek"><b>譜面の確認</b>: 停止中・一時停止中は画面上部のシークバーで前後に送れます。バーをドラッグ(離すと小節頭に吸着)、◀ ▶ で 1 つ送り、◀◀ ▶▶ で 10 送り、バーの上でホイール。メニューの「現在位置」でも ←→ で送れます(Ctrl で 10 段)。送った位置から「演奏開始」で始まります(「リスタート」は曲頭・ループ開始位置から)。</p>
+        <p data-i18n-html="help.touch"><b>タッチ</b>: レーンの列をタップで打鍵。メニューは「☰ メニュー」から。値の行は ◀ ▶ で変更、動作の行はタップで実行。</p>
+        <p data-i18n-html="help.items"><b>メニュー項目</b>: 自動演奏 / 自動演奏詳細(レーン別 AUTO) / ノーツ表示調整 / 判定タイミング調整 / ハイスピード / 演奏速度 / 開始待ち時間 / ドラム音量 / BGM 音量 / ループ演奏 / ループ位置単位 / ループ終了位置 / ループ開始位置 / 現在位置 / 演奏開始・停止 / リスタート / 一時停止 / トレーニング終了</p>
+        <p data-i18n="help.misc">待機中に叩くと音だけ鳴ります(ウォーミングアップ)。ループ区間の折り返しごとに開始待ち時間を置きます。成績はどこにも保存しません。</p>
       </div>
     </details>
-    <footer class="note">レイアウトは vid2dtx の譜面プレビュー、練習機能は DTXManiaAI のトレーニングモードを基にしています。
+    <footer class="note" data-i18n="home.footer">レイアウトは vid2dtx の譜面プレビュー、練習機能は DTXManiaAI のトレーニングモードを基にしています。
       DTXMania の譜面を遊べる非公式のファンメイドのアプリで、DTXMania の各プロジェクトや KONAMI とは関係ありません
       (GITADORA は KONAMI の商標)。
       ライセンスは MIT(一部 LGPL-2.1)。</footer>
@@ -145,24 +166,24 @@
       <div id="overlay"></div>
     </div>
     <div id="playbar">
-      <button id="btn-back" class="pb" title="曲選択へ戻る">←</button>
+      <button id="btn-back" class="pb" title="曲選択へ戻る" data-i18n-title="play.back">←</button>
       <span id="play-title"></span>
-      <button id="btn-start" class="pb" title="演奏開始 / 停止">▶</button>
-      <button id="btn-restart" class="pb" title="リスタート">⟲</button>
-      <button id="btn-pause" class="pb" title="一時停止 / 再開">⏸</button>
-      <button id="btn-fullscreen" class="pb" title="全画面">⛶</button>
-      <button id="btn-menu" class="pb" title="トレーニングメニュー">☰</button>
+      <button id="btn-start" class="pb" title="演奏開始 / 停止" data-i18n-title="play.startStop">▶</button>
+      <button id="btn-restart" class="pb" title="リスタート" data-i18n-title="play.restart">⟲</button>
+      <button id="btn-pause" class="pb" title="一時停止 / 再開" data-i18n-title="play.pause">⏸</button>
+      <button id="btn-fullscreen" class="pb" title="全画面" data-i18n-title="play.fullscreen">⛶</button>
+      <button id="btn-menu" class="pb" title="トレーニングメニュー" data-i18n-title="play.menu">☰</button>
     </div>
     <div id="seekbar" hidden>
-      <button id="seek-prev10" class="sk" title="10 戻る" aria-label="10 戻る">◀◀</button>
-      <button id="seek-prev" class="sk" title="1 戻る" aria-label="1 戻る">◀</button>
-      <div id="seek-track" role="slider" aria-label="演奏位置" tabindex="-1">
+      <button id="seek-prev10" class="sk" title="10 戻る" aria-label="10 戻る" data-i18n-title="seek.prev10" data-i18n-aria-label="seek.prev10">◀◀</button>
+      <button id="seek-prev" class="sk" title="1 戻る" aria-label="1 戻る" data-i18n-title="seek.prev" data-i18n-aria-label="seek.prev">◀</button>
+      <div id="seek-track" role="slider" aria-label="演奏位置" data-i18n-aria-label="seek.track" tabindex="-1">
         <div id="seek-loop"></div>
         <div id="seek-fill"></div>
         <div id="seek-thumb"></div>
       </div>
-      <button id="seek-next" class="sk" title="1 進む" aria-label="1 進む">▶</button>
-      <button id="seek-next10" class="sk" title="10 進む" aria-label="10 進む">▶▶</button>
+      <button id="seek-next" class="sk" title="1 進む" aria-label="1 進む" data-i18n-title="seek.next" data-i18n-aria-label="seek.next">▶</button>
+      <button id="seek-next10" class="sk" title="10 進む" aria-label="10 進む" data-i18n-title="seek.next10" data-i18n-aria-label="seek.next10">▶▶</button>
       <span id="seek-pos"></span>
     </div>
 
@@ -180,21 +201,33 @@
   // HTTP 配信時はソースの js/main.js をそのまま読む(?bundle=1 で束ね版を強制)。
   (function () {
     var useBundle = location.protocol === 'file:' || /[?&]bundle=1/.test(location.search);
+    // 起動に失敗したときの文言は js/i18n.js を読めないので、ここに日本語と英語を置く(言語は <head> のスクリプトが決めた lang)
+    var en = document.documentElement.lang === 'en';
     var s = document.createElement('script');
     if (useBundle) { s.src = 'dist/dojo.bundle.js'; s.defer = true; }
     else { s.type = 'module'; s.src = 'js/main.js'; }
-    s.onerror = function () { showLoadError(useBundle ? 'dist/dojo.bundle.js がありません。build.bat(または python tools/build.py)を実行して作ってください。' : 'js/main.js が読み込めません。'); };
+    s.onerror = function () {
+      showLoadError(useBundle
+        ? (en ? 'dist/dojo.bundle.js is missing. Run build.bat (or python tools/build.py) to create it.'
+          : 'dist/dojo.bundle.js がありません。build.bat(または python tools/build.py)を実行して作ってください。')
+        : (en ? 'Could not load js/main.js.' : 'js/main.js が読み込めません。'));
+    };
     document.head.appendChild(s);
     function showLoadError(msg) {
+      document.documentElement.classList.remove('i18n-wait');
       var el = document.getElementById('pkg-status');
       if (!el) return;
       el.hidden = false;
       el.className = 'status error';
-      el.textContent = 'アプリの起動に失敗しました: ' + msg;
+      el.textContent = (en ? 'The app failed to start: ' : 'アプリの起動に失敗しました: ') + msg;
     }
     window.addEventListener('load', function () {
       setTimeout(function () {
-        if (!window.dojo) showLoadError('スクリプトが動いていません。ブラウザのコンソールを確認するか、python -m http.server 8765 で配信して http://localhost:8765/ を開いてください。');
+        if (!window.dojo) {
+          showLoadError(en
+            ? 'The script is not running. Check the browser console, or serve this folder with python -m http.server 8765 and open http://localhost:8765/.'
+            : 'スクリプトが動いていません。ブラウザのコンソールを確認するか、python -m http.server 8765 で配信して http://localhost:8765/ を開いてください。');
+        }
       }, 2000);
     });
   })();

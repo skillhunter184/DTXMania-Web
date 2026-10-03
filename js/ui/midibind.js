@@ -10,6 +10,7 @@
 // キーボードの割り当てに触らないのは、元実装の Apply Preset(MIDI だけ入れ替える)と同じ結果になる。
 
 import { LANE_COUNT } from './keybind.js';
+import { t } from '../i18n.js';
 
 /** 1 レーンあたりの MIDI ノートの上限(元実装の MaxPerLane と同じ 12。GITADORA は 1 パッド 10 枠)。 */
 export const MAX_NOTES_PER_LANE = 12;
@@ -245,7 +246,7 @@ export function passesThreshold(velocity, threshold) {
 
 /** レーンのノートを 1 行で表す("42 / 46"、空なら "なし")。 */
 export function laneNotesText(list) {
-  return list && list.length ? list.map((b) => String(typeof b === 'number' ? b : b.note)).join(' / ') : 'なし';
+  return list && list.length ? list.map((b) => String(typeof b === 'number' ? b : b.note)).join(' / ') : t('common.none');
 }
 
 // ---- GITADORA のプリセット(DTXManiaAI Input/MidiDrumPresets.cs、docs/spec/nx-docs.md §7) ----

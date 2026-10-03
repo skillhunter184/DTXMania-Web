@@ -7,6 +7,7 @@
 // - ZIP64(エントリ数 65535 超・4GB 超)の EOCD にも対応
 
 import { decodeText } from './encoding.js';
+import { t } from '../i18n.js';
 
 const SIG_EOCD64_LOC = 0x07064b50;
 const SIG_EOCD64 = 0x06064b50;
@@ -260,7 +261,7 @@ export class ZipArchive {
         break;
       }
     }
-    if (eocd < 0) throw new Error('ZIP ファイルではありません(EOCD が見つかりません)');
+    if (eocd < 0) throw new Error(t('zip.notZip'));
     const tv = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
     let count = tv.getUint16(eocd + 10, true);
     let cdSize = tv.getUint32(eocd + 12, true);
@@ -287,7 +288,7 @@ export class ZipArchive {
     let p = 0;
     for (let i = 0; i < count; i++) {
       if (p + 46 > cd.length || v.getUint32(p, true) !== SIG_CEN) {
-        throw new Error('ZIP のセントラルディレクトリが壊れています');
+        throw new Error(t('zip.badCentralDir'));
       }
       const flags = v.getUint16(p + 8, true);
       const method = v.getUint16(p + 10, true);
@@ -331,13 +332,13 @@ export class ZipArchive {
     const head = await this._slice(entry.localOffset, entry.localOffset + 30);
     const v = new DataView(head.buffer, head.byteOffset, head.byteLength);
     if (head.length < 30 || v.getUint32(0, true) !== SIG_LOC) {
-      throw new Error('ZIP のローカルヘッダが壊れています: ' + entry.name);
+      throw new Error(t('zip.badLocalHeader', { name: entry.name }));
     }
     const nameLen = v.getUint16(26, true);
     const extraLen = v.getUint16(28, true);
     const start = entry.localOffset + 30 + nameLen + extraLen;
     const end = start + entry.compressedSize;
-    if (end > this.size) throw new Error('ZIP のデータが途中で切れています: ' + entry.name);
+    if (end > this.size) throw new Error(t('zip.truncated', { name: entry.name }));
     return { start, end };
   }
 
@@ -348,8 +349,8 @@ export class ZipArchive {
    * @returns {Promise<Uint8Array>}
    */
   async read(entry, opts = {}) {
-    if (entry.flags & 0x1) throw new Error('暗号化された ZIP は未対応です: ' + entry.name);
-    if (entry.method === 99) throw new Error('AES 暗号化された ZIP は未対応です: ' + entry.name);
+    if (entry.flags & 0x1) throw new Error(t('zip.encrypted', { name: entry.name }));
+    if (entry.method === 99) throw new Error(t('zip.aes', { name: entry.name }));
     const { start, end } = await this._dataRange(entry);
     let data;
     if (entry.method === 0) {
@@ -367,7 +368,7 @@ export class ZipArchive {
       }
       if (!data) data = inflateRawSync(await this._slice(start, end), entry.size);
     } else {
-      throw new Error('未対応の圧縮方式(' + entry.method + '): ' + entry.name);
+      throw new Error(t('zip.method', { method: entry.method, name: entry.name }));
     }
     if (opts.verifyCrc && data.length > 0 && crc32(data) !== entry.crc) {
       console.warn('ZIP: CRC が一致しません: ' + entry.name);

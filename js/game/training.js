@@ -3,6 +3,7 @@
 // ループ位置(開始/終了)は譜面ごとの値なので保存しない。
 
 import { buildMeasureTimes, measureIndexAt, LANE_COUNT } from '../core/dtx.js';
+import { t } from '../i18n.js';
 
 export const LOOP_UNIT = { MEASURE: 0, SECOND: 1 };
 
@@ -164,7 +165,7 @@ export function stepLoopBegin(currentBeginMs, endMs, delta, unit, measureTimes, 
 /** ループ位置の表示文字列("012 小節" / "24.5 s")。 */
 export function formatLoopTime(timeMs, unit, measureTimes) {
   if (unit === LOOP_UNIT.MEASURE && measureTimes && measureTimes.length > 0) {
-    return String(measureIndexAt(measureTimes, timeMs)).padStart(3, '0') + ' 小節';
+    return t('menu.measure', { n: String(measureIndexAt(measureTimes, timeMs)).padStart(3, '0') });
   }
   return (timeMs / 1000).toFixed(1) + ' s';
 }

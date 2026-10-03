@@ -9,6 +9,7 @@ import { ZipArchive, FileSetArchive } from './zip.js';
 import { decodeText } from './encoding.js';
 import { parseSetDef, parseBoxDef } from './setdef.js';
 import { parseDTX, parseDTXHeader } from './dtx.js';
+import { t } from '../i18n.js';
 
 function dirOf(path) {
   const i = path.lastIndexOf('/');
@@ -105,7 +106,7 @@ export class SongPackage {
 
   async readBytes(pathOrEntry) {
     const e = typeof pathOrEntry === 'string' ? this.entry(pathOrEntry) : pathOrEntry;
-    if (!e) throw new Error('ZIP 内にファイルがありません: ' + pathOrEntry);
+    if (!e) throw new Error(t('zip.fileMissing', { path: pathOrEntry }));
     return this.zip.read(e);
   }
 
@@ -176,7 +177,7 @@ export class SongPackage {
   /** 譜面を読み込んで解析する。 */
   async loadChart(path) {
     const ent = this.entry(path);
-    if (!ent) throw new Error('譜面が見つかりません: ' + path);
+    if (!ent) throw new Error(t('zip.chartMissing', { path }));
     const chart = parseDTX(await this.readText(ent));
     chart.path = ent.name;
     chart.dir = dirOf(ent.name);

@@ -9,6 +9,7 @@
 // 保存形式は config.bindings: string[][](レーン → KeyboardEvent.code)のまま。
 
 import { LANE_KEY_DEFAULTS, keyLabel } from './input.js';
+import { t } from '../i18n.js';
 
 export const LANE_COUNT = LANE_KEY_DEFAULTS.length;
 
@@ -196,5 +197,5 @@ export function resetLane(bindings, lane) {
 
 /** レーンの割り当てを 1 行で表す("A / Q"、空なら "なし")。 */
 export function laneKeysText(codes) {
-  return codes && codes.length ? codes.map(keyLabel).join(' / ') : 'なし';
+  return codes && codes.length ? codes.map(keyLabel).join(' / ') : t('common.none');
 }

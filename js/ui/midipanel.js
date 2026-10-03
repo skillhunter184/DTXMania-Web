@@ -18,8 +18,13 @@ import {
   stepThreshold, setNoteThreshold, applyPreset, autoPreset, defaultMidiNotes, defaultVelocityMin, defaultLaneNotes,
   laneNotesText, noteName,
 } from './midibind.js';
+import { t } from '../i18n.js';
 
 const $ = (id) => document.getElementById(id);
+
+// 状態表示の文言は「今の言語で作り直す関数」で持つ(js/main.js と同じ。言語を切り替えたら relocalize で作り直す)
+const msg = (key, vars) => () => t(key, vars);
+const textOf = (m) => (typeof m === 'function' ? m() : m || '');
 
 function button(cls, text, fk) {
   const b = document.createElement('button');
@@ -57,6 +62,7 @@ export class MidiPanel {
     this._edit = null; // しきい値の行を開いているノート {lane, note}
     this._preset = 'auto';
     this._dirty = false;
+    this._status = ''; // 状態表示(文字列か msg)
   }
 
   build() {
@@ -68,7 +74,6 @@ export class MidiPanel {
       row.className = 'key-row midi-row';
       row.dataset.lane = String(lane);
       row.setAttribute('role', 'group');
-      row.setAttribute('aria-label', name + ' の MIDI 割り当て');
       const label = document.createElement('span');
       label.className = 'key-lane';
       label.setAttribute('aria-hidden', 'true');
@@ -76,20 +81,21 @@ export class MidiPanel {
       // レーン別の下限(元実装の MIDI Velocity ページ)。描き直しでは作り直さない(入力途中を壊さないため)
       const vmin = document.createElement('label');
       vmin.className = 'midi-vmin';
-      vmin.title = 'このレーンの MIDI ベロシティの下限。これ以下の強さの打鍵は捨てる(0〜127。クロストーク対策。既定は HH だけ 20)';
-      vmin.append('下限 ');
+      const vminText = document.createElement('span');
+      vminText.className = 'midi-vmin-text';
+      vmin.append(vminText, ' ');
       const input = document.createElement('input');
       input.type = 'number';
       input.min = '0';
       input.max = String(MAX_VELOCITY);
       input.step = '1';
-      input.setAttribute('aria-label', name + ' のベロシティ下限');
       input.onchange = () => this.setVelocityMin(lane, input.value);
       vmin.appendChild(input);
       const chips = document.createElement('div');
       chips.className = 'chips';
       row.append(label, vmin, chips);
       list.appendChild(row);
+      this._localizeRow(row, lane);
     }
     $('btn-midi-connect').onclick = () => this.connect();
     $('midi-preset').onchange = () => { this._preset = $('midi-preset').value; };
@@ -99,6 +105,28 @@ export class MidiPanel {
     this.renderAll();
     this.renderDevices();
     this.renderMonitor();
+  }
+
+  /** 行の作り直さない部分(行の名前・「下限」)の文言。 */
+  _localizeRow(row, lane) {
+    const name = LANE_NAMES[lane];
+    row.setAttribute('aria-label', t('midi.rowLabel', { lane: name }));
+    const vmin = row.querySelector('.midi-vmin');
+    vmin.title = t('midi.minTitle');
+    vmin.querySelector('.midi-vmin-text').textContent = t('midi.min');
+    vmin.querySelector('input').setAttribute('aria-label', t('midi.minLabel', { lane: name }));
+  }
+
+  /** 言語を切り替えたあと、この節の文言を作り直す(js/main.js の relocalize から)。 */
+  relocalize() {
+    for (let lane = 0; lane < LANE_COUNT; lane++) {
+      const row = this._row(lane);
+      if (row) this._localizeRow(row, lane);
+    }
+    this.renderAll();
+    this._dirty = true; // デバイス一覧とモニタは見えていれば今すぐ、隠れていれば開いたときに描く
+    this.refresh();
+    this.setStatus(this._status);
   }
 
   /** 見えていない間に溜まった変化(打鍵数・デバイス)を描き直す。 */
@@ -113,8 +141,10 @@ export class MidiPanel {
     return $('midi-list').querySelector('.midi-row[data-lane="' + lane + '"]');
   }
 
+  /** 状態表示。text は文字列か、今の言語の文言を返す関数(msg)。 */
   setStatus(text) {
-    $('midi-status-text').textContent = text || '';
+    this._status = text || '';
+    $('midi-status-text').textContent = textOf(text);
     $('midi-undo').hidden = !this._undo;
   }
 
@@ -150,7 +180,7 @@ export class MidiPanel {
       const target = row ? row.querySelector('[data-fk="add"]') : $('btn-midi-default');
       if (target) target.focus({ preventScroll: true });
     }
-    this.setStatus('元に戻しました');
+    this.setStatus(msg('common.undone'));
   }
 
   // ---- 描画 ----
@@ -180,13 +210,15 @@ export class MidiPanel {
       const own = b.threshold !== NO_THRESHOLD;
       const open = !!edit && edit.note === b.note;
       const key = button('chip-key' + (open ? ' open' : ''), own ? `${b.note} >${b.threshold}` : String(b.note), 'note:' + b.note);
-      key.title = (noteName(b.note) ? noteName(b.note) + '。' : '') + 'このノートだけのしきい値を変える';
+      key.title = noteName(b.note) ? t('midi.chipTitleNamed', { name: noteName(b.note) }) : t('midi.chipTitle');
       key.setAttribute('aria-expanded', open ? 'true' : 'false');
-      key.setAttribute('aria-label', `${name} のノート ${noteText(b.note)}。` + (own ? `しきい値 ${b.threshold}。` : '') + '押すとしきい値を変更');
+      key.setAttribute('aria-label', own
+        ? t('midi.chipLabelOwn', { lane: name, note: noteText(b.note), th: b.threshold })
+        : t('midi.chipLabel', { lane: name, note: noteText(b.note) }));
       key.onclick = () => this.toggleEdit(lane, b.note);
       const del = button('chip-del', '×', 'del:' + b.note);
-      del.title = '外す';
-      del.setAttribute('aria-label', `${name} からノート ${b.note} を外す`);
+      del.title = t('common.remove');
+      del.setAttribute('aria-label', t('midi.removeLabel', { lane: name, note: b.note }));
       del.onclick = () => this.removeNoteAt(lane, b.note);
       chip.append(key, del);
       chips.appendChild(chip);
@@ -194,29 +226,30 @@ export class MidiPanel {
     if (!list.length) {
       const none = document.createElement('span');
       none.className = 'chip-empty';
-      none.textContent = 'なし';
+      none.textContent = t('common.none');
       chips.appendChild(none);
     }
 
     const full = list.length >= MAX_NOTES_PER_LANE;
     const add = button('chip-add' + (capturing ? ' listening' : '') + (full && !capturing ? ' is-full' : ''),
-      capturing ? '🥁 叩いてください' : '＋ 叩いて追加', 'add');
+      t(capturing ? 'midi.hitNow' : 'midi.add'), 'add');
     if (full && !capturing) add.setAttribute('aria-disabled', 'true');
     add.setAttribute('aria-label', capturing
-      ? `${name} に登録するパッドを叩いてください`
-      : full ? `${name} は上限の ${MAX_NOTES_PER_LANE} ノートです` : `${name} にパッドを叩いて追加 (${list.length}/${MAX_NOTES_PER_LANE})`);
+      ? t('midi.capturingLabel', { lane: name })
+      : full ? t('midi.fullLabel', { lane: name, max: MAX_NOTES_PER_LANE })
+        : t('midi.addLabel', { lane: name, n: list.length, max: MAX_NOTES_PER_LANE }));
     add.onclick = () => this.startCapture(lane);
-    const reset = button('chip-lane-cmd', '既定', 'reset');
-    reset.setAttribute('aria-label', `${name} を既定(${laneNotesText(defaultLaneNotes(lane))})に戻す`);
-    reset.title = `GM ドラムマップの ${laneNotesText(defaultLaneNotes(lane))} に戻す`;
+    const reset = button('chip-lane-cmd', t('common.default'), 'reset');
+    reset.setAttribute('aria-label', t('assign.resetLabel', { lane: name, list: laneNotesText(defaultLaneNotes(lane)) }));
+    reset.title = t('midi.resetTitle', { list: laneNotesText(defaultLaneNotes(lane)) });
     reset.onclick = () => this.resetLane(lane);
-    const clear = button('chip-lane-cmd', '解除', 'clear');
-    clear.setAttribute('aria-label', `${name} の MIDI をすべて外す`);
+    const clear = button('chip-lane-cmd', t('common.clear'), 'clear');
+    clear.setAttribute('aria-label', t('midi.clearLabel', { lane: name }));
     clear.onclick = () => this.clearLane(lane);
     chips.append(add, reset, clear);
     if (capturing) {
-      const cancel = button('chip-cancel', '中止', 'cancel');
-      cancel.onclick = () => this.cancelCapture('中止しました');
+      const cancel = button('chip-cancel', t('common.cancel'), 'cancel');
+      cancel.onclick = () => this.cancelCapture(msg('common.canceled'));
       chips.appendChild(cancel);
     }
 
@@ -243,25 +276,25 @@ export class MidiPanel {
     const box = document.createElement('div');
     box.className = 'midi-detail';
     const title = document.createElement('span');
-    title.textContent = `ノート ${noteText(b.note)} のしきい値`;
+    title.textContent = t('midi.thTitle', { note: noteText(b.note) });
     const down = button('midi-step', '−', 'th-:' + b.note);
-    down.setAttribute('aria-label', 'しきい値を下げる(Ctrl で 10)');
+    down.setAttribute('aria-label', t('midi.thDown'));
     down.onclick = (e) => this.stepThresholdAt(lane, b.note, e.ctrlKey ? -10 : -1);
     const value = document.createElement('output');
     value.className = 'midi-th';
-    value.textContent = b.threshold === NO_THRESHOLD ? `> ${laneMin}(レーンの下限)` : `> ${b.threshold}`;
+    value.textContent = b.threshold === NO_THRESHOLD ? t('midi.thLane', { min: laneMin }) : `> ${b.threshold}`;
     const up = button('midi-step', '＋', 'th+:' + b.note);
-    up.setAttribute('aria-label', 'しきい値を上げる(Ctrl で 10)');
+    up.setAttribute('aria-label', t('midi.thUp'));
     up.onclick = (e) => this.stepThresholdAt(lane, b.note, e.ctrlKey ? 10 : 1);
     box.append(title, down, value, up);
     if (b.threshold !== NO_THRESHOLD) {
-      const back = button('chip-lane-cmd', 'レーンの下限に戻す', 'th0:' + b.note);
+      const back = button('chip-lane-cmd', t('midi.thReset'), 'th0:' + b.note);
       back.onclick = () => this.setThresholdAt(lane, b.note, NO_THRESHOLD);
       box.appendChild(back);
     }
     const hint = document.createElement('span');
     hint.className = 'note';
-    hint.textContent = 'この強さ以下の打鍵を捨てる。Ctrl+クリックで 10 ずつ。0 より下げるとレーンの下限に従う';
+    hint.textContent = t('midi.thHint');
     box.appendChild(hint);
     return box;
   }
@@ -279,33 +312,28 @@ export class MidiPanel {
       case 'unsupported':
         // Web MIDI は HTTPS か localhost でしか出てこない。serve.bat で LAN のアドレスから開くと Chrome でも無い。
         // iPhone / iPad はどのブラウザも WebKit で非対応。Web MIDI を差し込むブラウザアプリなら出てくる
-        text = (globalThis.isSecureContext === false
-          ? 'http の LAN アドレス(localhost 以外)で開いたページでは Web MIDI を使えません(HTTPS か localhost に限られる)。PC なら http://localhost:… で開いてください。'
-          : 'このブラウザは Web MIDI に対応していません。PC の Chrome / Edge / Firefox で開いてください(Safari は非対応)。')
-          + 'iPhone / iPad は Safari も Chrome も非対応なので、Web MIDI 付きのブラウザアプリ(Web MIDI Browser など)で開いてください。';
+        text = t(globalThis.isSecureContext === false ? 'midi.unsupportedHttp' : 'midi.unsupported');
         break;
       case 'off':
-        btn.textContent = '電子ドラムを使う';
-        text = '未接続。押すとブラウザが MIDI 機器の使用許可を尋ねます。';
+        btn.textContent = t('midi.connect');
+        text = t('midi.stateOff');
         break;
       case 'requesting':
-        btn.textContent = '接続中…';
-        text = 'ブラウザが MIDI 機器の使用許可を尋ねていたら「許可」を押してください。';
+        btn.textContent = t('midi.connecting');
+        text = t('midi.stateRequesting');
         break;
       case 'denied':
-        btn.textContent = 'もう一度試す';
-        text = 'MIDI 機器の使用が許可されていません。アドレスバー左のサイト設定で MIDI を許可してから押してください。';
+        btn.textContent = t('midi.retry');
+        text = t('midi.stateDenied');
         break;
       case 'error':
-        btn.textContent = 'もう一度試す';
-        text = 'MIDI を開けませんでした: ' + m.error;
+        btn.textContent = t('midi.retry');
+        text = t('midi.stateError', { error: m.error });
         break;
       default: {
-        btn.textContent = '開き直す';
+        btn.textContent = t('midi.reconnect');
         const found = m.devices.length;
-        text = found
-          ? `${m.openCount} / ${found} 台を開いています。`
-          : 'MIDI 機器が見つかりません。電子ドラムをつないで電源を入れてください(つなげば自動で開きます)。';
+        text = found ? t('midi.stateReady', { open: m.openCount, found }) : t('midi.stateNoDevice');
         break;
       }
     }
@@ -317,9 +345,9 @@ export class MidiPanel {
       const li = document.createElement('li');
       li.className = d.opened ? '' : 'closed';
       li.textContent = `[${i + 1}] ${d.name}`
-        + (d.opened ? '' : d.failed ? '(開けません。DTXMania などほかのアプリが使っていないか確認してください)' : '(開いています…)')
-        + `   打鍵 ${d.hitCount}`
-        + (d.lastNote < 0 ? '' : `   最後 note ${d.lastNote} vel ${d.lastVelocity}`);
+        + (d.opened ? '' : t(d.failed ? 'midi.devFailed' : 'midi.devOpening'))
+        + t('midi.devHits', { n: d.hitCount })
+        + (d.lastNote < 0 ? '' : t('midi.devLast', { note: d.lastNote, vel: d.lastVelocity }));
       ul.appendChild(li);
     });
 
@@ -331,7 +359,7 @@ export class MidiPanel {
       MIDI_PRESETS.forEach((p, i) => sel.appendChild(new Option(p.name, String(i))));
       sel.value = this._preset;
     }
-    sel.options[0].textContent = `AUTO(${autoPreset(m.devices.map((d) => d.name)).name})`;
+    sel.options[0].textContent = t('midi.presetAuto', { name: autoPreset(m.devices.map((d) => d.name)).name });
   }
 
   /** 打鍵モニタの「入力:」の行(元実装 RefreshMidiMonitor の下段。行き先は今の割り当てで引き直す)。 */
@@ -340,14 +368,14 @@ export class MidiPanel {
     const el = $('midi-monitor');
     const hits = this.midi.recentHits;
     if (!hits.length) {
-      el.textContent = '入力: (まだ届いていません)';
+      el.textContent = t('midi.monitorEmpty');
       return;
     }
-    el.textContent = '入力: ' + hits.map((h) => {
+    el.textContent = t('midi.monitor', { hits: hits.map((h) => {
       const c = this.midi.classify(h.note, h.velocity);
-      const to = c.lane < 0 ? '--' : LANE_NAMES[c.lane] + (c.accepted ? '' : '(弱)');
+      const to = c.lane < 0 ? '--' : LANE_NAMES[c.lane] + (c.accepted ? '' : t('midi.weak'));
       return `note ${h.note} v${h.velocity} →${to}`;
-    }).join('   ');
+    }).join('   ') });
   }
 
   /** MidiInput に届いたノートオン(モニタの更新と行き先レーンを光らせる)。 */
@@ -398,13 +426,13 @@ export class MidiPanel {
     this.beforeCapture();
     const name = LANE_NAMES[lane];
     if (this.config.midiNotes[lane].length >= MAX_NOTES_PER_LANE) {
-      this.setStatus(`${name} は上限の ${MAX_NOTES_PER_LANE} ノートです。× でどれか外してください。`);
+      this.setStatus(msg('midi.fullHint', { lane: name, max: MAX_NOTES_PER_LANE }));
       return;
     }
     if (this.midi.state !== 'ready') {
-      this.setStatus('MIDI 機器を開いています…');
+      this.setStatus(msg('midi.opening'));
       if (!(await this.connect())) {
-        this.setStatus('MIDI 機器を開けないため登録できません(上の表示を確認してください)。');
+        this.setStatus(msg('midi.cannotCapture'));
         return;
       }
     }
@@ -413,11 +441,11 @@ export class MidiPanel {
       if (e.key !== 'Escape' && e.code !== 'Escape') return; // 待ち受け中に効くキーは Esc だけ(元実装も MIDI ページは Esc のみ)
       e.preventDefault();
       e.stopPropagation();
-      this.cancelCapture('中止しました');
+      this.cancelCapture(msg('common.canceled'));
     };
-    const onOutside = (e) => { if (!$('midi-list').contains(e.target)) this.cancelCapture('中止しました'); };
-    const onVisibility = () => { if (document.hidden) this.cancelCapture('中止しました'); };
-    const timer = setTimeout(() => this.cancelCapture('時間切れで中止しました'), 30000);
+    const onOutside = (e) => { if (!$('midi-list').contains(e.target)) this.cancelCapture(msg('common.canceled')); };
+    const onVisibility = () => { if (document.hidden) this.cancelCapture(msg('common.canceled')); };
+    const timer = setTimeout(() => this.cancelCapture(msg('common.timeout')), 30000);
     const finish = () => {
       window.removeEventListener('keydown', onKey, true);
       document.removeEventListener('click', onOutside, true);
@@ -431,7 +459,7 @@ export class MidiPanel {
     this._capture = { lane, finish };
     this.midi.startCapture(this.config.midiVelocityMin[lane], (note, velocity) => this.applyCapture(note, velocity));
     this.renderLane(lane);
-    this.setStatus(`${name} に登録するパッドを叩いてください(Esc で中止。1 打で複数のノートが届いたらいちばん強いものを登録します)`);
+    this.setStatus(msg('midi.prompt', { lane: name }));
   }
 
   cancelCapture(reason) {
@@ -452,16 +480,19 @@ export class MidiPanel {
     const r = addNote(this.config.midiNotes, lane, note);
     if (!r.ok) {
       this.cancelCapture(r.reason === 'already'
-        ? `ノート ${noteText(note)} は ${name} に登録済みです(v${velocity} で届きました)`
-        : r.reason === 'full' ? `${name} は上限の ${MAX_NOTES_PER_LANE} ノートです。` : `ノート ${note} は登録できません。`);
+        ? msg('midi.already', { note: noteText(note), lane: name, vel: velocity })
+        : r.reason === 'full' ? msg('midi.full', { lane: name, max: MAX_NOTES_PER_LANE }) : msg('midi.invalid', { note }));
       return;
     }
     const other = r.stolenFrom;
-    let text = `${name} にノート ${noteText(note)} を登録しました(v${velocity}、${r.notes[lane].length}/${MAX_NOTES_PER_LANE})`;
-    if (other !== null) {
-      text += `。${LANE_NAMES[other]} から移しました`;
-      if (r.stolenEmptied) text += `(${LANE_NAMES[other]} は割り当てなしになりました)`;
-    }
+    const text = () => {
+      let s = t('midi.added', { lane: name, note: noteText(note), vel: velocity, n: r.notes[lane].length, max: MAX_NOTES_PER_LANE });
+      if (other !== null) {
+        s += t('assign.movedFrom', { lanes: LANE_NAMES[other] });
+        if (r.stolenEmptied) s += t('assign.nowEmpty', { lanes: LANE_NAMES[other] });
+      }
+      return s;
+    };
     this.commit({ notes: r.notes }, text, lane);
     this.cancelCapture(); // finish() が lane を描き直す
     if (other !== null) { this.renderLane(other); this.flashLane(other); }
@@ -474,9 +505,7 @@ export class MidiPanel {
     const r = removeNote(this.config.midiNotes, lane, note);
     if (!r.ok) return;
     const name = LANE_NAMES[lane];
-    this.commit({ notes: r.notes }, r.emptied
-      ? `${name} からノート ${note} を外しました。${name} は MIDI の割り当てなしです(既定には戻りません)。`
-      : `${name} からノート ${note} を外しました`, lane);
+    this.commit({ notes: r.notes }, msg(r.emptied ? 'midi.removedEmpty' : 'midi.removed', { lane: name, note }), lane);
     this.renderLane(lane);
   }
 
@@ -484,11 +513,14 @@ export class MidiPanel {
     this.cancelCapture();
     const r = resetLaneNotes(this.config.midiNotes, lane);
     const name = LANE_NAMES[lane];
-    let text = `${name} を既定(${laneNotesText(r.notes[lane])})に戻しました`;
     const stolen = r.stolenFrom.filter((l) => l !== lane);
-    if (stolen.length) text += `。${stolen.map((l) => LANE_NAMES[l]).join(' / ')} から取り上げました`;
     const emptied = r.stolenEmptied.filter((l) => l !== lane);
-    if (emptied.length) text += `(${emptied.map((l) => LANE_NAMES[l]).join(' / ')} は割り当てなしになりました)`;
+    const text = () => {
+      let s = t('assign.resetDone', { lane: name, list: laneNotesText(r.notes[lane]) });
+      if (stolen.length) s += t('assign.takenFrom', { lanes: stolen.map((l) => LANE_NAMES[l]).join(' / ') });
+      if (emptied.length) s += t('assign.nowEmpty', { lanes: emptied.map((l) => LANE_NAMES[l]).join(' / ') });
+      return s;
+    };
     this.commit({ notes: r.notes }, text, lane);
     this.renderLane(lane);
     for (const l of stolen) { this.renderLane(l); this.flashLane(l); }
@@ -497,14 +529,14 @@ export class MidiPanel {
   clearLane(lane) {
     this.cancelCapture();
     const r = clearLaneNotes(this.config.midiNotes, lane);
-    this.commit({ notes: r.notes }, `${LANE_NAMES[lane]} の MIDI をすべて外しました(既定には戻りません)`, lane);
+    this.commit({ notes: r.notes }, msg('midi.cleared', { lane: LANE_NAMES[lane] }), lane);
     this.renderLane(lane);
   }
 
   resetAll() {
     this.cancelCapture();
     this.commit({ notes: defaultMidiNotes(), velocityMin: defaultVelocityMin() },
-      '全レーンを既定(GM ドラムマップ。下限は HH だけ 20)に戻しました');
+      msg('midi.resetAllDone'));
     this.renderAll();
   }
 
@@ -515,9 +547,7 @@ export class MidiPanel {
       ? autoPreset(this.midi.devices.map((d) => d.name))
       : MIDI_PRESETS[Number(this._preset)] || MIDI_PRESETS[0];
     const r = applyPreset(this.config.midiNotes, p);
-    this.commit({ notes: r.notes },
-      `プリセット「${p.name}」を適用しました。キーボードの割り当てはそのままです。`
-      + 'RD は空になります(RD のチップは打ち分けの CY グループを「共通」にすると CY のパッドで叩けます)。');
+    this.commit({ notes: r.notes }, msg('midi.presetApplied', { name: p.name }));
     this.renderAll();
     for (let lane = 0; lane < LANE_COUNT; lane++) this.flashLane(lane);
   }
@@ -530,7 +560,7 @@ export class MidiPanel {
     if (clamped === prev) { this.renderLane(lane); return; }
     const next = this.config.midiVelocityMin.slice();
     next[lane] = clamped;
-    this.commit({ velocityMin: next }, `${LANE_NAMES[lane]} の下限を ${clamped} にしました(${clamped} 以下の強さの打鍵を捨てます)`, lane);
+    this.commit({ velocityMin: next }, msg('midi.minSet', { lane: LANE_NAMES[lane], v: clamped }), lane);
     const input = this._row(lane).querySelector('.midi-vmin input');
     if (input) input.value = String(clamped);
     this.renderLane(lane); // 開いているしきい値の行の「(レーンの下限)」も変わる
@@ -555,8 +585,8 @@ export class MidiPanel {
     const r = setNoteThreshold(this.config.midiNotes, lane, note, threshold);
     if (!r.ok) return;
     this.commit({ notes: r.notes }, threshold === NO_THRESHOLD
-      ? `ノート ${note} はレーンの下限(${this.config.midiVelocityMin[lane]})に従います`
-      : `ノート ${note} は強さ ${threshold} 以下を捨てます`, lane);
+      ? msg('midi.thFollow', { note, min: this.config.midiVelocityMin[lane] })
+      : msg('midi.thSet', { note, th: threshold }), lane);
     this.renderLane(lane);
   }
 }

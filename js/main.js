@@ -19,8 +19,13 @@ import {
 import { MidiInput } from './ui/midi.js';
 import { defaultMidiNotes, defaultVelocityMin, normalizeMidiNotes, normalizeVelocityMin } from './ui/midibind.js';
 import { MidiPanel } from './ui/midipanel.js';
+import { t, getLang, setLang, initialLang, applyDom } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
+
+// 状態表示の文言は「今の言語で作り直す関数」で持ち、言語を切り替えたら作り直す(文字列も受け付ける)。
+const msg = (key, vars) => () => t(key, vars);
+const textOf = (m) => (typeof m === 'function' ? m() : m || '');
 
 const DEFAULT_CONFIG = {
   bindings: defaultBindings(),
@@ -60,6 +65,8 @@ function levelText(level, dec) {
 
 class App {
   constructor() {
+    // 表示言語は設定(config)とは別に dojo.lang に置く(index.html の <head> のスクリプトも読むため)
+    setLang(initialLang(location.search, loadJSON('lang', null)));
     const saved = loadJSON('config', {}) || {};
     this.config = Object.assign({}, DEFAULT_CONFIG, saved);
     // 以前の「スキン画像(assets/skin)を使う」(skinImages)は、そのフォルダを指定したスキンへ移す
@@ -103,12 +110,18 @@ class App {
     this._keyPos = new Array(LANE_COUNT).fill(0); // 行ごとのカーソル位置(ローミング tabindex)
     this._seek = null; // 停止中のシークバー
     this._wakeLock = null;
+    this._status = null; // ホームの状態表示 {msg, error}(言語の切り替えで作り直す)
+    this._keyStatus = ''; // キー割り当ての状態表示(同上)
+    this._skinNotes = []; // スキンの下の注記(同上)
+    this._lastZip = null; // 「前回の ZIP を開く」の {blob, name}
     this.isTouch = matchMedia('(pointer: coarse)').matches;
     document.body.classList.toggle('touch', this.isTouch);
     document.body.classList.toggle('desktop', !this.isTouch);
   }
 
   async init() {
+    this.applyLanguage();
+    this.bindLanguage();
     this.bindHome();
     this.buildSettingsUi();
     this.bindSeekBar();
@@ -120,22 +133,70 @@ class App {
     const zipUrl = new URLSearchParams(location.search).get('zip');
     if (zipUrl) {
       try {
-        this.setStatus('ZIP を取得中… ' + zipUrl);
+        this.setStatus(msg('load.fetching', { url: zipUrl }));
         const r = await fetch(zipUrl);
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const blob = await r.blob();
         await this.loadPackage(blob, zipUrl.split('/').pop(), { fromCache: true });
       } catch (e) {
-        this.setStatus('ZIP の取得に失敗しました: ' + e.message, true);
+        this.setStatus(msg('load.fetchFailed', { msg: e.message }), true);
       }
     }
   }
 
   showLastButton(blob, name) {
     const b = $('btn-last');
+    this._lastZip = { blob, name };
     b.hidden = false;
-    b.textContent = '前回の ZIP を開く(' + (name || 'zip') + ')';
+    b.textContent = t('home.lastZip', { name: name || 'zip' });
     b.onclick = () => this.loadPackage(blob, name, { fromCache: true });
+  }
+
+  // ---- 表示言語(日本語 / English) ----
+
+  bindLanguage() {
+    for (const b of document.querySelectorAll('#lang-switch [data-lang]')) {
+      b.addEventListener('click', () => this.setLanguage(b.dataset.lang));
+    }
+  }
+
+  /** 言語を切り替えて保存し、画面の文言を書き直す。URL に ?lang= があればそれも合わせる(リロードで戻らないように)。 */
+  setLanguage(lang) {
+    if (lang === getLang()) return;
+    setLang(lang);
+    saveJSON('lang', getLang());
+    try {
+      const url = new URL(location.href);
+      if (url.searchParams.has('lang')) {
+        url.searchParams.set('lang', getLang());
+        history.replaceState(history.state, '', url);
+      }
+    } catch (e) {
+      // URL を書き換えられなくても切り替えは効く
+    }
+    this.applyLanguage();
+    this.relocalize();
+  }
+
+  /** index.html の文言(data-i18n)と <html lang>、切り替えボタンの状態。英語のとき隠していた画面も出す。 */
+  applyLanguage() {
+    const lang = getLang();
+    document.documentElement.lang = lang;
+    applyDom(document);
+    for (const b of document.querySelectorAll('#lang-switch [data-lang]')) b.setAttribute('aria-pressed', String(b.dataset.lang === lang));
+    document.documentElement.classList.remove('i18n-wait');
+  }
+
+  /** JS で組み立てた文言を今の言語で作り直す。切り替えはホーム画面でしかできないので、演奏画面の分は開くたびに作る。 */
+  relocalize() {
+    if (this._status) this.setStatus(this._status.msg, this._status.error);
+    if (this._lastZip) this.showLastButton(this._lastZip.blob, this._lastZip.name);
+    this.renderAllKeyLanes();
+    this.updateHelpKeys();
+    this.setKeyStatus(this._keyStatus);
+    if (this.midiPanel) this.midiPanel.relocalize();
+    if (this.skin) this.renderSkinFilesInfo();
+    this.renderSkinNote();
   }
 
   // ---- ホーム ----
@@ -171,7 +232,7 @@ class App {
     window.addEventListener('orientationchange', () => setTimeout(() => this.onResize(), 200));
     window.addEventListener('blur', () => {
       if (this.menu) this.menu.releaseAll();
-      this.cancelAssign('ウィンドウを離れたため中止しました');
+      this.cancelAssign(msg('keys.blur'));
     });
     // タブが隠れたら(スマホでアプリ切替など)演奏を一時停止し、ミスの山を作らない
     document.addEventListener('visibilitychange', () => {
@@ -196,16 +257,19 @@ class App {
     }
   }
 
+  /** ホームの状態表示。text は文字列か、今の言語の文言を返す関数(msg)。 */
   setStatus(text, error = false) {
+    this._status = text ? { msg: text, error } : null;
     const el = $('pkg-status');
-    el.hidden = !text;
-    el.textContent = text || '';
+    const s = textOf(text);
+    el.hidden = !s;
+    el.textContent = s;
     el.classList.toggle('error', error);
   }
 
   async loadPackage(blob, name, opts) {
     const gen = ++this._loadGen;
-    this.setStatus('ZIP を読み込み中…');
+    this.setStatus(msg('load.zip'));
     try {
       const pkg = await SongPackage.fromZip(blob, name);
       if (gen !== this._loadGen) { pkg.dispose(); return; } // 後から別の読み込みが始まった
@@ -217,13 +281,13 @@ class App {
       }
     } catch (e) {
       console.error(e);
-      if (gen === this._loadGen) this.setStatus('読み込みに失敗しました: ' + (e && e.message ? e.message : e), true);
+      if (gen === this._loadGen) this.setStatus(msg('load.failed', { msg: e && e.message ? e.message : e }), true);
     }
   }
 
   async loadFolder(files) {
     const gen = ++this._loadGen;
-    this.setStatus('フォルダを読み込み中…');
+    this.setStatus(msg('load.folder'));
     try {
       const pkg = await SongPackage.fromFiles(files);
       if (gen !== this._loadGen) { pkg.dispose(); return; }
@@ -232,7 +296,7 @@ class App {
       await this.showSongList();
     } catch (e) {
       console.error(e);
-      if (gen === this._loadGen) this.setStatus('読み込みに失敗しました: ' + (e && e.message ? e.message : e), true);
+      if (gen === this._loadGen) this.setStatus(msg('load.failed', { msg: e && e.message ? e.message : e }), true);
     }
   }
 
@@ -241,10 +305,10 @@ class App {
     const list = $('song-list');
     list.innerHTML = '';
     if (!pkg.songs.length) {
-      this.setStatus('この ZIP には .dtx 譜面が見つかりませんでした。', true);
+      this.setStatus(msg('load.noCharts'), true);
       return;
     }
-    this.setStatus(`${pkg.name || 'ZIP'}: ${pkg.songs.length} 曲`);
+    this.setStatus(msg('load.songCount', { name: pkg.name || 'ZIP', n: pkg.songs.length }));
     for (const song of pkg.songs) {
       const li = document.createElement('li');
       li.className = 'song';
@@ -330,7 +394,6 @@ class App {
       row.className = 'key-row';
       row.dataset.lane = String(lane);
       row.setAttribute('role', 'group');
-      row.setAttribute('aria-label', LANE_NAMES[lane] + ' のキー割り当て');
       const name = document.createElement('span');
       name.className = 'key-lane';
       name.setAttribute('aria-hidden', 'true');
@@ -354,16 +417,14 @@ class App {
     $('btn-keys-default').onclick = () => {
       this.cancelAssign();
       const before = this.config.bindings.map((a) => a.slice());
-      this.commitBindings(defaultBindings(), '全レーンを既定に戻しました', before);
+      this.commitBindings(defaultBindings(), msg('keys.resetAllDone'), before);
       this.renderAllKeyLanes();
       $('btn-keys-default').focus({ preventScroll: true });
     };
     this.renderAllKeyLanes();
     this.updateHelpKeys();
     const bad = (this._keysRepaired || []).map((l) => LANE_NAMES[l]);
-    this.setKeyStatus(bad.length
-      ? `${bad.join(' / ')} の設定が使えないキーだったので、割り当て直しました。確認してください。`
-      : '');
+    this.setKeyStatus(bad.length ? msg('keys.repaired', { lanes: bad.join(' / ') }) : '');
   }
 
   /** 1 レーン分だけ描き直す(変化した行以外のフォーカスとハンドラを壊さない)。 */
@@ -375,6 +436,7 @@ class App {
     const codes = this.config.bindings[lane]; // 毎回読み直す(差し替え前の配列を掴まない)
     const cap = this._assign && this._assign.lane === lane ? this._assign : null;
     const name = LANE_NAMES[lane];
+    row.setAttribute('aria-label', t('keys.rowLabel', { lane: name }));
     chips.textContent = '';
 
     codes.forEach((code, i) => {
@@ -385,16 +447,14 @@ class App {
       key.type = 'button';
       key.className = 'chip-key' + (capturing ? ' listening' : '');
       key.textContent = capturing ? '⌨' : keyLabel(code);
-      key.setAttribute('aria-label', capturing
-        ? `${name} の ${keyLabel(code)} を差し替え中。割り当てるキーを押してください`
-        : `${name} の ${keyLabel(code)}。Enter で差し替え、Delete で削除`);
+      key.setAttribute('aria-label', t(capturing ? 'keys.chipCapturing' : 'keys.chip', { lane: name, key: keyLabel(code) }));
       key.onclick = () => this.startAssign(lane, 'replace', i);
       const del = document.createElement('button');
       del.type = 'button';
       del.className = 'chip-del';
       del.textContent = '×';
-      del.title = '外す';
-      del.setAttribute('aria-label', `${name} から ${keyLabel(code)} を外す`);
+      del.title = t('common.remove');
+      del.setAttribute('aria-label', t('keys.removeLabel', { lane: name, key: keyLabel(code) }));
       del.onclick = () => this.removeKeyAt(lane, i);
       chip.appendChild(key);
       chip.appendChild(del);
@@ -403,7 +463,7 @@ class App {
     if (!codes.length) {
       const none = document.createElement('span');
       none.className = 'chip-empty';
-      none.textContent = 'なし';
+      none.textContent = t('common.none');
       chips.appendChild(none);
     }
 
@@ -412,27 +472,27 @@ class App {
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'chip-add' + (adding ? ' listening' : '') + (full && !adding ? ' is-full' : '');
-    add.textContent = adding ? '⌨ 入力待ち' : '＋ 追加';
+    add.textContent = t(adding ? 'keys.waiting' : 'keys.add');
     if (full && !adding) add.setAttribute('aria-disabled', 'true');
     add.setAttribute('aria-label', full
-      ? `${name} は上限の ${MAX_KEYS_PER_LANE} キーです`
-      : `${name} にキーを追加 (${codes.length}/${MAX_KEYS_PER_LANE})`);
+      ? t('keys.fullLabel', { lane: name, max: MAX_KEYS_PER_LANE })
+      : t('keys.addLabel', { lane: name, n: codes.length, max: MAX_KEYS_PER_LANE }));
     add.onclick = () => this.startAssign(lane, 'add', -1);
     chips.appendChild(add);
 
     const reset = document.createElement('button');
     reset.type = 'button';
     reset.className = 'chip-lane-cmd';
-    reset.textContent = '既定';
-    reset.setAttribute('aria-label', `${name} を既定(${laneKeysText(LANE_KEY_DEFAULTS[lane])})に戻す`);
+    reset.textContent = t('common.default');
+    reset.setAttribute('aria-label', t('assign.resetLabel', { lane: name, list: laneKeysText(LANE_KEY_DEFAULTS[lane]) }));
     reset.onclick = () => this.resetKeyLane(lane);
     chips.appendChild(reset);
 
     const clear = document.createElement('button');
     clear.type = 'button';
     clear.className = 'chip-lane-cmd';
-    clear.textContent = '解除';
-    clear.setAttribute('aria-label', `${name} のキーをすべて外す`);
+    clear.textContent = t('common.clear');
+    clear.setAttribute('aria-label', t('keys.clearLabel', { lane: name }));
     clear.onclick = () => this.clearKeyLane(lane);
     chips.appendChild(clear);
 
@@ -440,9 +500,9 @@ class App {
       const cancel = document.createElement('button');
       cancel.type = 'button';
       cancel.className = 'chip-cancel';
-      cancel.textContent = '中止';
+      cancel.textContent = t('common.cancel');
       cancel.tabIndex = 0; // _keyItems の対象外なので自前で持たせる
-      cancel.onclick = () => this.cancelAssign('中止しました');
+      cancel.onclick = () => this.cancelAssign(msg('common.canceled'));
       chips.appendChild(cancel);
     }
 
@@ -464,8 +524,10 @@ class App {
     setTimeout(() => row.classList.remove('row-changed'), 1000);
   }
 
+  /** キー割り当ての状態表示。text は文字列か、今の言語の文言を返す関数(msg)。 */
   setKeyStatus(text) {
-    $('key-status-text').textContent = text || '';
+    this._keyStatus = text || '';
+    $('key-status-text').textContent = textOf(text);
     // 「元に戻す」の有無はスナップショットの生死だけで決める。案内や中止のメッセージで消さない
     // (取り上げ / スワップに気付いて次の操作を始めた瞬間に復旧手段が消えてしまうため)。
     $('key-undo').hidden = !this._keysUndo;
@@ -500,7 +562,7 @@ class App {
       if (lane !== null) this._keyFocus(lane, this._keyPos[lane]);
       else $('btn-keys-default').focus({ preventScroll: true });
     }
-    this.setKeyStatus('元に戻しました');
+    this.setKeyStatus(msg('common.undone'));
   }
 
   /** 操作方法パネルのドラム行を今の割り当てで書き直す。 */
@@ -553,11 +615,11 @@ class App {
    */
   startAssign(lane, mode, index) {
     this.cancelAssign();
-    if (this.midiPanel) this.midiPanel.cancelCapture('中止しました'); // 電子ドラムの「叩いて追加」と同時には待たない
+    if (this.midiPanel) this.midiPanel.cancelCapture(msg('common.canceled')); // 電子ドラムの「叩いて追加」と同時には待たない
     const name = LANE_NAMES[lane];
     const codes = this.config.bindings[lane];
     if (mode === 'add' && codes.length >= MAX_KEYS_PER_LANE) {
-      this.setKeyStatus(`${name} は上限の ${MAX_KEYS_PER_LANE} キーです。× でどれか外すか、キー名を押して差し替えてください。`);
+      this.setKeyStatus(msg('keys.fullHint', { lane: name, max: MAX_KEYS_PER_LANE }));
       return;
     }
     if (mode === 'replace' && codes[index] === undefined) return;
@@ -567,17 +629,17 @@ class App {
       if (isModifierCode(code)) return; // 修飾キー単体は押し途中なので無視
       e.preventDefault();
       e.stopPropagation(); // 待ち受け中はアプリのホットキーもブラウザの既定も通さない
-      if (code === 'Escape') { this.cancelAssign('中止しました'); return; }
+      if (code === 'Escape') { this.cancelAssign(msg('common.canceled')); return; }
       if (!isAssignableCode(code)) {
-        this.setKeyStatus(`${keyLabel(code)} はメニュー操作に使うため割り当てできません。別のキーを押してください。`);
+        this.setKeyStatus(msg('keys.reserved', { key: keyLabel(code) }));
         return; // 待ち受けは続ける
       }
       this.applyAssign(code);
     };
-    const onOutside = (e) => { if (!$('key-list').contains(e.target)) this.cancelAssign('中止しました'); };
-    const onVisibility = () => { if (document.hidden) this.cancelAssign('中止しました'); };
+    const onOutside = (e) => { if (!$('key-list').contains(e.target)) this.cancelAssign(msg('common.canceled')); };
+    const onVisibility = () => { if (document.hidden) this.cancelAssign(msg('common.canceled')); };
     // 安全網。無言で畳まず理由を出す(旧実装は 10 秒で無通知だった)。
-    const timer = setTimeout(() => this.cancelAssign('時間切れで中止しました'), 30000);
+    const timer = setTimeout(() => this.cancelAssign(msg('common.timeout')), 30000);
     const finish = () => {
       window.removeEventListener('keydown', onKey, true);
       document.removeEventListener('click', onOutside, true); // pointerdown だとスクロール開始で誤爆する
@@ -592,8 +654,8 @@ class App {
     this._assign = { lane, mode, index, finish };
     this.renderKeyLane(lane);
     this.setKeyStatus(mode === 'add'
-      ? `${name} にキーを追加します。割り当てるキーを押してください(Esc で中止)`
-      : `${name} の ${keyLabel(codes[index])} を差し替えます。新しいキーを押してください(Esc で中止)`);
+      ? msg('keys.promptAdd', { lane: name })
+      : msg('keys.promptReplace', { lane: name, key: keyLabel(codes[index]) }));
   }
 
   /** 待ち受け中に押されたキーを割り当てる。 */
@@ -610,28 +672,31 @@ class App {
 
     if (!r.ok) {
       if (r.reason === 'already') {
-        this.setKeyStatus(`${keyLabel(code)} は ${name} に登録済みです。別のキーを押してください。`);
+        this.setKeyStatus(msg('keys.already', { key: keyLabel(code), lane: name }));
         return; // 待ち受け継続
       }
-      if (r.reason === 'same') this.cancelAssign('変更ありません');
-      else if (r.reason === 'full') this.cancelAssign(`${name} は上限の ${MAX_KEYS_PER_LANE} キーです。`);
-      else this.cancelAssign(`${keyLabel(code)} は割り当てできません。`);
+      if (r.reason === 'same') this.cancelAssign(msg('keys.same'));
+      else if (r.reason === 'full') this.cancelAssign(msg('keys.full', { lane: name, max: MAX_KEYS_PER_LANE }));
+      else this.cancelAssign(msg('keys.unassignable', { key: keyLabel(code) }));
       return;
     }
 
     const other = mode === 'add' ? r.stolenFrom : r.swappedWith;
-    let text;
-    if (mode === 'add') {
-      text = `${name} に ${keyLabel(code)} を追加しました (${r.bindings[lane].length}/${MAX_KEYS_PER_LANE})`;
-      if (other !== null && other !== lane) {
-        text += `。${LANE_NAMES[other]} から移しました`;
-        if (r.stolenEmptied) text += `(${LANE_NAMES[other]} は割り当てなしになりました)`;
+    const text = () => {
+      let s;
+      if (mode === 'add') {
+        s = t('keys.added', { lane: name, key: keyLabel(code), n: r.bindings[lane].length, max: MAX_KEYS_PER_LANE });
+        if (other !== null && other !== lane) {
+          s += t('assign.movedFrom', { lanes: LANE_NAMES[other] });
+          if (r.stolenEmptied) s += t('assign.nowEmpty', { lanes: LANE_NAMES[other] });
+        }
+      } else {
+        s = t('keys.replaced', { lane: name, old: keyLabel(old), key: keyLabel(code) });
+        if (other !== null && other !== lane) s += t('keys.swapped', { other: LANE_NAMES[other], old: keyLabel(old) });
+        else if (other === lane) s += t('keys.swappedInLane');
       }
-    } else {
-      text = `${name} の ${keyLabel(old)} を ${keyLabel(code)} に差し替えました`;
-      if (other !== null && other !== lane) text += `。${LANE_NAMES[other]} には ${keyLabel(old)} を入れ替えました`;
-      else if (other === lane) text += `(同じレーン内で入れ替え)`;
-    }
+      return s;
+    };
 
     this.commitBindings(r.bindings, text, before, lane);
     this.cancelAssign(); // finish() が lane を描き直す
@@ -649,8 +714,8 @@ class App {
     if (!r.ok) return;
     const name = LANE_NAMES[lane];
     this.commitBindings(r.bindings, r.emptied
-      ? `${name} から ${keyLabel(r.removed)} を外しました。${name} は割り当てなしです(既定には戻りません)。`
-      : `${name} から ${keyLabel(r.removed)} を外しました (${r.bindings[lane].length}/${MAX_KEYS_PER_LANE})`, before, lane);
+      ? msg('keys.removedEmpty', { lane: name, key: keyLabel(r.removed) })
+      : msg('keys.removed', { lane: name, key: keyLabel(r.removed), n: r.bindings[lane].length, max: MAX_KEYS_PER_LANE }), before, lane);
     this.renderKeyLane(lane);
     // 左隣のチップの「キー名」へ(そこなら Delete の連打がそのまま効く)。無ければ先頭 / ＋ 追加。
     // チップ 1 個 = キー名 + × の 2 ボタンなので、index 番目の左隣のキー名は (index - 1) * 2。
@@ -663,11 +728,14 @@ class App {
     const before = this.config.bindings.map((a) => a.slice());
     const r = resetLane(this.config.bindings, lane);
     const name = LANE_NAMES[lane];
-    let text = `${name} を既定(${laneKeysText(r.bindings[lane])})に戻しました`;
     const stolen = r.stolenFrom.filter((l) => l !== lane);
-    if (stolen.length) text += `。${stolen.map((l) => LANE_NAMES[l]).join(' / ')} から取り上げました`;
     const emptied = r.stolenEmptied.filter((l) => l !== lane);
-    if (emptied.length) text += `(${emptied.map((l) => LANE_NAMES[l]).join(' / ')} は割り当てなしになりました)`;
+    const text = () => {
+      let s = t('assign.resetDone', { lane: name, list: laneKeysText(r.bindings[lane]) });
+      if (stolen.length) s += t('assign.takenFrom', { lanes: stolen.map((l) => LANE_NAMES[l]).join(' / ') });
+      if (emptied.length) s += t('assign.nowEmpty', { lanes: emptied.map((l) => LANE_NAMES[l]).join(' / ') });
+      return s;
+    };
     this.commitBindings(r.bindings, text, before, lane);
     this.renderKeyLane(lane);
     for (const l of stolen) { this.renderKeyLane(l); this.flashKeyLane(l); }
@@ -679,7 +747,7 @@ class App {
     const before = this.config.bindings.map((a) => a.slice());
     const r = clearLane(this.config.bindings, lane);
     const name = LANE_NAMES[lane];
-    this.commitBindings(r.bindings, `${name} のキーをすべて外しました(既定には戻りません)`, before, lane);
+    this.commitBindings(r.bindings, msg('keys.cleared', { lane: name }), before, lane);
     this.renderKeyLane(lane);
     this._keyFocusEl(lane, this._keyRow(lane).querySelector('.chip-add'));
   }
@@ -713,8 +781,8 @@ class App {
     if (this.midiPanel) this.midiPanel.renderDevices();
     // 演奏中の抜き差しは画面に出す(叩いても鳴らない理由が分かるように)
     if (this.player && this.input && change) {
-      if (change.added.length) this.player.showStatus('MIDI: ' + change.added.join(', ') + ' をつなぎました', 2500);
-      if (change.removed.length) this.player.showStatus('MIDI: ' + change.removed.join(', ') + ' が外れました', 4000);
+      if (change.added.length) this.player.showStatus(t('midi.connectedToast', { names: change.added.join(', ') }), 2500);
+      if (change.removed.length) this.player.showStatus(t('midi.disconnectedToast', { names: change.removed.join(', ') }), 4000);
     }
   }
 
@@ -729,13 +797,13 @@ class App {
         this.midi.setBindings(c.midiNotes, c.midiVelocityMin);
         this.saveConfig();
       },
-      beforeCapture: () => this.cancelAssign('中止しました'),
+      beforeCapture: () => this.cancelAssign(msg('common.canceled')),
       visible: () => !$('screen-home').hidden && $('settings-panel').open,
     });
     this.midiPanel.build();
     $('settings-panel').addEventListener('toggle', () => this.midiPanel.refresh());
     const badMidi = (this._midiRepaired || []).map((l) => LANE_NAMES[l]);
-    if (badMidi.length) this.midiPanel.setStatus(`${badMidi.join(' / ')} の MIDI 設定が読めなかったので、既定に戻しました。確認してください。`);
+    if (badMidi.length) this.midiPanel.setStatus(msg('midi.repaired', { lanes: badMidi.join(' / ') }));
 
     const bindRange = (id, key, apply) => {
       const el = $(id);
@@ -791,7 +859,7 @@ class App {
         console.warn('スキンの読み込みに失敗:', e);
       }
       if (!files.length) {
-        this.setSkinNote('スキンの画像(chips.png / pads.png / score_panel.png / song_panel.png)が見つかりませんでした。');
+        this.setSkinNote(msg('skin.noneFound'));
         return;
       }
       this._skinFiles = files;
@@ -800,15 +868,27 @@ class App {
       showRows();
       this.saveConfig();
       await this.loadSkin();
-      if (!stored) this.setSkinNote('画像をブラウザに保存できなかったので、リロードすると読み込み直しになります。', true);
+      if (!stored) this.setSkinNote(msg('skin.notStored'), true);
     };
   }
 
-  /** スキンの下の注記(足りない画像など)。append なら今の注記に足す。 */
+  /** スキンの下の注記(足りない画像など)。text は文字列か msg。append なら今の注記に足す。 */
   setSkinNote(text, append = false) {
+    this._skinNotes = append ? this._skinNotes.concat(text ? [text] : []) : text ? [text] : [];
+    this.renderSkinNote();
+  }
+
+  renderSkinNote() {
     const note = $('cfg-skin-missing');
-    note.textContent = append && note.textContent ? note.textContent + ' ' + text : text;
+    note.textContent = this._skinNotes.map(textOf).filter(Boolean).join(' ');
     note.hidden = !note.textContent;
+  }
+
+  /** 「画像 / ZIP を選ぶ」の横の、読み込んだ画像の一覧。 */
+  renderSkinFilesInfo() {
+    $('cfg-skin-files-info').textContent = this._skinFiles && this._skinFiles.length
+      ? t('skin.loaded', { names: this._skinFiles.map((f) => f.name).join(' / ') })
+      : t('skin.notLoaded');
   }
 
   /** 設定のスキンの読み先(Skin.load に渡す)。既定のスキンなら null。 */
@@ -838,13 +918,11 @@ class App {
       if (this._skinLoad !== load) return; // 読み込み中に設定が変わった
       this.skin = skin;
       const c = this.config;
-      const info = $('cfg-skin-files-info');
-      info.textContent = this._skinFiles && this._skinFiles.length
-        ? '読み込み済み: ' + this._skinFiles.map((f) => f.name).join(' / ')
-        : 'まだ読み込んでいません';
-      const where = c.skin === 'folder' ? normalizeSkinPath(c.skinPath) + ' ' : '読み込んだ画像';
-      if (c.skin === 'files' && !(this._skinFiles && this._skinFiles.length)) this.setSkinNote('画像を読み込むまでは既定のスキンで描きます。');
-      else if (skin.missing.length && c.skin !== 'default') this.setSkinNote(`${where}に ${skin.missing.join(' / ')} が無いので、その部分は既定のスキンで描いています。`);
+      this.renderSkinFilesInfo();
+      const files = skin.missing.join(' / ');
+      if (c.skin === 'files' && !(this._skinFiles && this._skinFiles.length)) this.setSkinNote(msg('skin.untilLoaded'));
+      else if (skin.missing.length && c.skin === 'folder') this.setSkinNote(msg('skin.missingFolder', { path: normalizeSkinPath(c.skinPath), files }));
+      else if (skin.missing.length && c.skin === 'files') this.setSkinNote(msg('skin.missingFiles', { files }));
       else this.setSkinNote('');
     });
     return load;
@@ -892,7 +970,7 @@ class App {
     $('screen-home').hidden = true;
     $('screen-play').hidden = false;
     $('loading').hidden = false;
-    $('loading-text').textContent = '譜面を読み込み中…';
+    $('loading-text').textContent = t('load.chart');
     $('loading-bar').value = 0;
     $('loading-sub').textContent = '';
     $('play-title').textContent = song.title + (chartRef.label ? '  [' + chartRef.label + ']' : '');
@@ -924,22 +1002,22 @@ class App {
         }).catch(() => {});
       }
       await player.load(this.pkg, chart, (done, total, name) => {
-        $('loading-text').textContent = `音源を読み込み中… ${done} / ${total}`;
+        $('loading-text').textContent = t('load.sounds', { done, total });
         $('loading-bar').value = total ? (100 * done) / total : 0;
         $('loading-sub').textContent = name || '';
       });
       if (this.player !== player) return; // 読み込み中に戻った
       if (this.audio.failed.length) {
         console.warn('復号できなかった音源:', this.audio.failed);
-        player.showStatus(`音源 ${this.audio.failed.length} 個が読めません(合成音で代用)`, 4000);
+        player.showStatus(t('load.soundsFailed', { n: this.audio.failed.length }), 4000);
       }
       this.setupPlayScreen();
       $('loading').hidden = true;
       this.training.save();
     } catch (e) {
       console.error(e);
-      $('loading-text').textContent = '読み込みに失敗しました: ' + (e && e.message ? e.message : e);
-      $('loading-sub').innerHTML = '<button class="btn small secondary" id="btn-loadfail-back">戻る</button>';
+      $('loading-text').textContent = t('load.failed', { msg: e && e.message ? e.message : e });
+      $('loading-sub').innerHTML = `<button class="btn small secondary" id="btn-loadfail-back">${t('common.back')}</button>`;
       $('btn-loadfail-back').onclick = () => this.leavePlay();
     }
   }

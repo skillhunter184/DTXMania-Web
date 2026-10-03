@@ -15,6 +15,8 @@ GITADORA は同社の商標。ライセンスは末尾の「ライセンス」�
 - 判定・スコア・ゲージは DTXManiaNX 互換(Perfect 34 / Great 67 / Good 84 / Ok 117 ms、打ち分けグループ、
   XG スコア、達成率)。成績はどこにも保存しない(トレーニング扱い)
 - ビルド不要。静的ファイルだけで動く(Node 不要)
+- 画面は日本語と英語を切り替えられる(既定は日本語。ホームの右上の「日本語 / English」で切り替え、選んだ言語は保存する。
+  `index.html?lang=en` で英語版を直接開ける)
 
 ## 使い方
 
@@ -140,6 +142,7 @@ MIDI 設定画面の移植)と同じ考え方で:
 index.html            画面(ホーム / 演奏)
 css/app.css
 js/main.js            画面遷移・設定 UI・入力とメニューの接続・描画ループ
+js/i18n.js            画面の文言([日本語, 英語] の組)と言語の切り替え。index.html は data-i18n でここを引く
 js/core/              譜面と音源の読み込み(Unity/Python に依存しない純粋ロジック)
   encoding.js         Shift-JIS / UTF-8 / UTF-16 の判別
   zip.js              依存無しの ZIP 読み込み(Blob を必要な分だけ slice、DecompressionStream + 純 JS inflate)
@@ -205,7 +208,8 @@ build.bat            (または python tools/build.py)
 文字コード判別・ZIP(Shift-JIS 名、データディスクリプタ、純 JS inflate)・XA(4 / 6 / 8 bit・ステレオ。Python 版の復号と一致)・
 DTX パーサ(DTXManiaAI ParityTests の T1〜T4 移植ほか)・set.def・スコア式・ループ位置の計算・
 演奏コントローラ(判定・ミス・曲末・ループ折り返し・演奏速度)・キー割り当て(追加/差し替え/削除/取り上げ/上限/設定の修復)・
-MIDI(ノートオンの判定・しきい値・重なりのまとめ・叩いて登録・プリセットと機器名の照合)を
+MIDI(ノートオンの判定・しきい値・重なりのまとめ・叩いて登録・プリセットと機器名の照合)・
+表示言語(日英の文言の対応、index.html の日本語と辞書の一致、使っていないキー)を
 ブラウザ内で検証する。
 `tests/fixtures/local/*.zip` があれば実曲パックの結合テストも走る。
 
