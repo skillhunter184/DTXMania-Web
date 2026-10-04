@@ -5,6 +5,9 @@ GITADORA と同じレーンの並びのハイウェイに譜面が流れ、キ�
 ギター / ベースの譜面も、DTXManiaNX のギター画面と同じ判定・スコアでキーボードやタッチで弾ける。
 練習用の機能は DTXManiaAI のトレーニングモードのメニューをそのまま移植した(ギター / ベースにも同じメニューを使う)。
 
+**公開ページ: <https://skillhunter184.github.io/DTXMania-Web/>**(英語版は <https://skillhunter184.github.io/DTXMania-Web/?lang=en>)。
+インストールは要らず、開いて自分の曲の ZIP を選べば遊べる。ZIP はブラウザの中で読むだけで、サーバーには送らない。
+
 非公式のファンメイドのアプリで、DTXMania の各プロジェクトや株式会社コナミデジタルエンタテインメントとは関係がない
 (名前の DTXMania は、遊べる譜面の形式と移植元を表すもの。DTXMania の公式の Web 版ではない)。
 GITADORA は同社の商標。ライセンスは末尾の「ライセンス」を参照。
@@ -27,6 +30,11 @@ GITADORA は同社の商標。ライセンスは末尾の「ライセンス」�
 
 ### 起動
 
+いちばん手軽なのは[公開ページ](https://skillhunter184.github.io/DTXMania-Web/)を開くこと。HTTPS で配信しているので、
+LAN 配信(http)では使えない電子ドラム(Web MIDI)と画面のスリープ防止(Wake Lock)の制限を受けない
+(iPad で Web MIDI を使うには、下の「iPad / スマホから遊ぶ」のとおり専用のブラウザアプリが要る)。
+手元のファイルで動かすときは以下。
+
 **`index.html` をダブルクリックするだけで動く。** `file://` で開いたときは、`js/` を 1 本に束ねた
 `dist/dojo.bundle.js` を読む(ブラウザは `file://` から ES Modules を読み込めないため)。
 `js/` のソースを変更したら束ね直す:
@@ -38,7 +46,10 @@ python tools/build.py
 HTTP で配信した場合(`python -m http.server 8765` → `http://localhost:8765/`、GitHub Pages など)は
 `js/main.js` を ES Modules としてそのまま読むので、ビルドし直す必要はない(`?bundle=1` で束ね版を強制できる)。
 
-### iPad / スマホから遊ぶ(LAN 配信)
+### iPad / スマホから遊ぶ(公開ページ / LAN 配信)
+
+[公開ページ](https://skillhunter184.github.io/DTXMania-Web/)を iPad / スマホで直接開けば PC は要らない(ZIP はファイル App から選ぶ)。
+PC のフォルダに置いた ZIP を `?zip=` で開きたいときや、手元で変えたコードを試すときは LAN 配信を使う。
 
 PC で **`serve.bat` をダブルクリック**すると、このフォルダを LAN に配信して、iPad で開く URL
 (`http://(この PC のアドレス):8770/`)と、フォルダ内の ZIP を直接開く `?zip=` 付きの URL を表示する。
@@ -58,6 +69,7 @@ PC で **`serve.bat` をダブルクリック**すると、このフォルダを
 - Web MIDI は HTTPS か localhost に限られるので、LAN のアドレスで開いた http のページでは PC の Chrome でも使えない
   (Web MIDI Browser は自前で差し込むので http でも出てくる)
 - 画面のスリープ防止(Wake Lock)も HTTPS に限られるので効かない。止まっている間に暗くなるなら iPad の自動ロックを切る
+- 公開ページは HTTPS なので、上の 2 つ(Web MIDI と Wake Lock を http では使えない)の制限は受けない
 
 ### 譜面の読み込み
 
@@ -200,6 +212,7 @@ tools/make_skin.py    既定のスキン skins/default/ の画像を tools/skina
 skins/default/        既定のスキン(chips.png / pads.png / score_panel.png / song_panel.png / gb_chips.png / gb_neck.png)。書式は skins/README.md
 docs/spec/            元実装から抽出した挙動仕様(移植の根拠)
 assets/               手元の素材(自作スキンなど)。git には含めない
+.nojekyll             GitHub Pages に Jekyll の変換をさせないための空のファイル(「公開(GitHub Pages)」を参照)
 ```
 
 絵(チップ・パッド・判定ライン・SCORE DETAILED / SONG INFO パネル、ギター / ベースのチップ・ネック・ボタン)はすべてスキンの画像で描く(元実装に無い追加。
@@ -226,6 +239,17 @@ build.bat            (または python tools/build.py)
 
 `js/` を変更したら実行し直す。生成物なので git では追跡していない
 (並行作業で毎回衝突し、テキスト統合すると壊れたファイルが黙ってできるため)。
+
+## 公開(GitHub Pages)
+
+[公開ページ](https://skillhunter184.github.io/DTXMania-Web/)は GitHub Pages で `main` ブランチの直下をそのまま配信している
+(Settings → Pages の「Deploy from a branch」、`main` / `/ (root)`)。`main` に push すると 1〜2 分で反映される。
+HTTP 配信なので `js/` を直接読み、ビルドは要らない(git 管理外の `dist/dojo.bundle.js` は使わない)。
+
+- 直下の `.nojekyll` は消さない。これが無いと Pages が Jekyll を通し、`_` で始まるファイルが配信から外れるなどの事故が起きうる
+- 公開ページは `/DTXMania-Web/` の下にあるので、パスは相対で書く(`/js/...` のような絶対パスは壊れる)
+- リポジトリにあるものはすべて URL で開ける(`tests/index.html` や `docs/` も)。第三者の素材をコミットしないのは、
+  そのまま公開ページに載るからでもある。`?zip=` で開くデモ用の ZIP を置くなら、自作の譜面と音に限る
 
 ## テスト
 
