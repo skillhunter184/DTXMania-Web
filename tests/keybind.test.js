@@ -4,6 +4,7 @@ import {
   defaultBindings, normalizeBindings, isAssignableCode, isModifierCode, findCode, laneKeysText,
 } from '../js/ui/keybind.js';
 import { DrumInput, LANE_KEY_DEFAULTS } from '../js/ui/input.js';
+import { GB_KEY_DEFAULTS } from '../js/ui/gbinput.js';
 
 // レーン: 0 LC / 1 HH / 2 LP / 3 SD / 4 HT / 5 BD / 6 LT / 7 FT / 8 CY / 9 RD
 
@@ -236,4 +237,21 @@ test('input: multiple keys on one lane all fire, and each is a separate hit', ()
   release('KeyQ');
   press('KeyQ', 140);
   assertEq(hits.length, 3);
+});
+
+test('keybind: guitar / bass bindings use their own defaults (7 buttons)', () => {
+  const b = defaultBindings(GB_KEY_DEFAULTS);
+  assertEq(b.length, 7);
+  assertDeepEq(b[5], ['KeyJ', 'KeyK'], 'two pick keys for alternate picking');
+  for (const codes of GB_KEY_DEFAULTS) for (const code of codes) assertEq(isAssignableCode(code), true, code + ' must be assignable');
+  const norm = normalizeBindings([['KeyA'], 'broken', ['KeyD'], ['KeyF'], ['KeyG'], ['KeyJ', 'KeyK'], ['KeyL']], GB_KEY_DEFAULTS);
+  assertDeepEq(norm.repaired, [1]);
+  assertDeepEq(norm.bindings[1], ['KeyS']);
+  assertEq(normalizeBindings(null, GB_KEY_DEFAULTS).bindings.length, 7);
+  const moved = addKey(b, 0, 'KeyL').bindings; // WAIL の L を R へ
+  assertDeepEq(moved[6], []);
+  const back = resetLane(moved, 6, GB_KEY_DEFAULTS);
+  assertDeepEq(back.bindings[6], ['KeyL']);
+  assertDeepEq(back.stolenFrom, [0]);
+  assertEq(laneKeysText(b[5]), 'J / K');
 });

@@ -36,7 +36,7 @@
           <button type="button" data-lang="en" lang="en" aria-pressed="false">English</button>
         </div>
       </div>
-      <p data-i18n="home.tagline">DTX 譜面をブラウザで練習する。ZIP を選ぶだけ。キーボードでもタッチでも叩ける。</p>
+      <p data-i18n="home.tagline">DTX 譜面(ドラム・ギター・ベース)をブラウザで練習する。ZIP を選ぶだけ。キーボードでもタッチでも演奏できる。</p>
     </header>
 
     <div id="dropzone">
@@ -46,14 +46,14 @@
         <label class="btn secondary"><span data-i18n="home.pickFolder">フォルダを選ぶ</span><input type="file" id="file-dir" webkitdirectory multiple></label>
         <button id="btn-last" class="btn secondary" hidden>前回の ZIP を開く</button>
       </div>
-      <p class="note" data-i18n="home.dropNote">set.def があれば難易度ごとに、無ければ .dtx ごとに一覧します。音源は wav / ogg / mp3 / xa に対応。動画は再生しません。</p>
+      <p class="note" data-i18n="home.dropNote">set.def があれば難易度ごとに、無ければ .dtx ごとに一覧します。ドラム・ギター・ベースの譜面は楽器ごとの行に並び、楽器別のファイルに分かれた同じ曲は 1 つにまとめます。音源は wav / ogg / mp3 / xa に対応。動画は再生しません。</p>
     </div>
 
     <div id="pkg-status" class="status" hidden></div>
     <ul id="song-list"></ul>
 
     <details id="settings-panel">
-      <summary data-i18n="settings.summary">設定(キー割り当て・電子ドラム・音量・遅延補正・打ち分け)</summary>
+      <summary data-i18n="settings.summary">設定(キー割り当て・電子ドラム・ギター / ベース・音量・遅延補正・打ち分け)</summary>
       <div class="settings-grid">
         <section class="wide">
           <h3 data-i18n="settings.keys">キー割り当て</h3>
@@ -67,6 +67,19 @@
           <div id="key-list"></div>
           <p id="key-status" class="note" role="status" aria-live="polite"><span id="key-status-text"></span><button id="key-undo" class="btn small secondary" hidden data-i18n="common.undo">元に戻す</button></p>
           <button id="btn-keys-default" class="btn small secondary" data-i18n="settings.resetAll">全レーンを既定に戻す</button>
+        </section>
+        <section class="wide" id="gb-section">
+          <h3 data-i18n="settings.gbKeys">ギター / ベースのキー割り当て</h3>
+          <p class="note" data-i18n-html="settings.gbKeyNote">
+            <b>R G B Y P</b>(ネック)は押している間だけ押さえた扱いで、<b>PICK</b> を押した瞬間に押さえ方とチップを照合します。
+            押さえ方はチップとちょうど同じにします(OPEN は何も押さえない)。<b>WAIL</b> はピックが当たった直後のウェイリング。
+            ギターとベースで同じ割り当てを使い、ドラムの割り当てとは別です。操作は上のドラムのキー割り当てと同じです。
+          </p>
+          <div id="gb-key-list"></div>
+          <p id="gb-key-status" class="note" role="status" aria-live="polite"><span id="gb-key-status-text"></span><button id="gb-key-undo" class="btn small secondary" hidden data-i18n="common.undo">元に戻す</button></p>
+          <button id="btn-gb-keys-default" class="btn small secondary" data-i18n="settings.resetAllButtons">全ボタンを既定に戻す</button>
+          <label class="gb-option"><input type="checkbox" id="cfg-gb-bad"> <span data-i18n="settings.gbBad">空ピックでコンボを切る(BAD)</span></label>
+          <p class="note" data-i18n="settings.gbBadNote">押さえ方の違うピックやチップの無いところのピックで、コンボを切りゲージを減らします(DTXMania の Light を OFF にしたのと同じ。既定はしない)。</p>
         </section>
         <section class="wide" id="midi-section">
           <h3 data-i18n="settings.midi">電子ドラム(MIDI)</h3>
@@ -97,7 +110,8 @@
           <label><span data-i18n="settings.masterVolume">マスター音量</span> <input type="range" id="cfg-volume" min="0" max="100" step="5"> <span id="cfg-volume-v"></span></label>
           <label><span data-i18n="settings.drumVolume">ドラム音量</span> <input type="range" id="cfg-chip" min="0" max="100" step="5"> <span id="cfg-chip-v"></span></label>
           <label><span data-i18n="settings.bgmVolume">BGM 音量</span> <input type="range" id="cfg-bgm" min="0" max="100" step="5"> <span id="cfg-bgm-v"></span></label>
-          <p class="note" data-i18n="settings.volumeNote">ドラム音量と BGM 音量は演奏中でもトレーニングメニューから変えられます。</p>
+          <label><span data-i18n="settings.gbVolume">ギター / ベース音量</span> <input type="range" id="cfg-gb" min="0" max="100" step="5"> <span id="cfg-gb-v"></span></label>
+          <p class="note" data-i18n="settings.volumeNote">楽器の音量と BGM 音量は演奏中でもトレーニングメニューから変えられます。BGM 音量は弾いていない楽器(伴奏)の音にも効きます。</p>
           <label><span data-i18n="settings.latency">遅延補正(ms)</span> <input type="number" id="cfg-latency" min="-300" max="300" step="5"> <span class="note" data-i18n="settings.latencyNote">音が遅れて聞こえるなら + 方向</span></label>
         </section>
         <section>
@@ -123,7 +137,7 @@
             <span id="cfg-skin-files-info" class="note"></span>
             <input type="file" id="cfg-skin-file" multiple accept=".png,.webp,.jpg,.jpeg,.zip" hidden>
           </div>
-          <p class="note" data-i18n="settings.skinNote">スキンは chips.png / pads.png / score_panel.png / song_panel.png の 4 枚の画像です(作り方は skins/README.md)。
+          <p class="note" data-i18n="settings.skinNote">スキンは chips.png / pads.png / score_panel.png / song_panel.png / gb_chips.png / gb_neck.png の 6 枚の画像です(作り方は skins/README.md。gb_ の 2 枚はギター / ベースの画面)。
             フォルダは index.html からの相対パスで指定します。足りない画像は既定のスキンで補います。</p>
           <p id="cfg-skin-missing" class="note" role="status" hidden></p>
         </section>
@@ -146,11 +160,13 @@
       <summary data-i18n="help.summary">操作方法</summary>
       <div class="help">
         <p><b data-i18n="help.drums">ドラム</b>: <span id="help-keys"></span> <span class="note" data-i18n="help.drumsNote">(設定のキー割り当てで変更。1 レーンに複数キーを割り当てられます)</span></p>
+        <p><b data-i18n="help.guitar">ギター / ベース</b>: <span id="help-gb-keys"></span> <span class="note" data-i18n="help.guitarNote">(曲の一覧でギター・ベースの行から選ぶ。ネックのボタンを押さえて PICK で弾く)</span></p>
+        <p data-i18n-html="help.guitarPlay"><b>ギター / ベースの演奏</b>: チップは下から上へ流れ、画面上の判定ラインで弾きます(メニューの「リバース」で上から下へ)。和音は全部のボタンを押さえてから 1 回ピック。少しずれて押さえても、ピックの直後なら間に合います。帯の付いたチップ(ロングノート)は押さえ続けると加点。ピックが当たった直後に WAIL でウェイリングの加点。タッチではレーンを押すとそのボタンを押さえて弾き、レーンの外を押すと OPEN。弾いていないパートとドラムは自動で鳴ります。</p>
         <p data-i18n-html="help.midi"><b>電子ドラム</b>: 設定の「電子ドラム(MIDI)」で「電子ドラムを使う」を押して開く。パッドの割り当ては叩いて登録するか、機種のプリセットを適用。叩いたパッドの行き先は同じ欄のモニタで確かめられます。</p>
         <p data-i18n-html="help.menu"><b>トレーニングメニュー</b>: ↑↓ 項目 / ←→ 変更(Ctrl で 10 段) / Enter 決定 / Esc 戻る・終了 / F1 AUTO 切替</p>
-        <p data-i18n-html="help.seek"><b>譜面の確認</b>: 停止中・一時停止中は画面上部のシークバーで前後に送れます。バーをドラッグ(離すと小節頭に吸着)、◀ ▶ で 1 つ送り、◀◀ ▶▶ で 10 送り、バーの上でホイール。メニューの「現在位置」でも ←→ で送れます(Ctrl で 10 段)。送った位置から「演奏開始」で始まります(「リスタート」は曲頭・ループ開始位置から)。</p>
+        <p data-i18n-html="help.seek"><b>譜面の確認</b>: 停止中・一時停止中は画面上部(ギター / ベースの横画面は判定ラインが上にあるので画面下部。リバースでは上部)のシークバーで前後に送れます。バーをドラッグ(離すと小節頭に吸着)、◀ ▶ で 1 つ送り、◀◀ ▶▶ で 10 送り、バーの上でホイール。メニューの「現在位置」でも ←→ で送れます(Ctrl で 10 段)。送った位置から「演奏開始」で始まります(「リスタート」は曲頭・ループ開始位置から)。</p>
         <p data-i18n-html="help.touch"><b>タッチ</b>: レーンの列をタップで打鍵。メニューは「☰ メニュー」から。値の行は ◀ ▶ で変更、動作の行はタップで実行。</p>
-        <p data-i18n-html="help.items"><b>メニュー項目</b>: 自動演奏 / 自動演奏詳細(レーン別 AUTO) / ノーツ表示調整 / 判定タイミング調整 / ハイスピード / 演奏速度 / 開始待ち時間 / ドラム音量 / BGM 音量 / ループ演奏 / ループ位置単位 / ループ終了位置 / ループ開始位置 / 現在位置 / 演奏開始・停止 / リスタート / 一時停止 / トレーニング終了</p>
+        <p data-i18n-html="help.items"><b>メニュー項目</b>: 自動演奏 / 自動演奏詳細(レーン別・ボタン別 AUTO) / ノーツ表示調整 / 判定タイミング調整 / ハイスピード / 演奏速度 / 開始待ち時間 / ドラム音量(ギター / ベース音量) / BGM 音量 / リバース(ギター / ベースのみ) / ループ演奏 / ループ位置単位 / ループ終了位置 / ループ開始位置 / 現在位置 / 演奏開始・停止 / リスタート / 一時停止 / トレーニング終了</p>
         <p data-i18n="help.misc">待機中に叩くと音だけ鳴ります(ウォーミングアップ)。ループ区間の折り返しごとに開始待ち時間を置きます。成績はどこにも保存しません。</p>
       </div>
     </details>

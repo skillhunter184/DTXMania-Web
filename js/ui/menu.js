@@ -9,32 +9,45 @@ import {
   START_WAIT_MIN, START_WAIT_MAX, START_WAIT_STEP, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX,
   stepLoopBegin, stepLoopEnd, stepLoopTime, formatLoopTime, formatSignedMs, buildMeasureTimes,
 } from '../game/training.js';
-import { LANE_COUNT, LANE_NAMES } from '../core/dtx.js';
+import { LANE_COUNT, LANE_NAMES, INSTRUMENT } from '../core/dtx.js';
 import { t } from '../i18n.js';
 
 export const MENU_COMMAND = { NONE: 'none', START_STOP: 'startStop', RESTART: 'restart', PAUSE_RESUME: 'pauseResume', QUIT: 'quit' };
 
 // 「ドラム音量」「BGM 音量」「現在位置」は本アプリの追加項目(元実装には無い)。
 // 音量は演奏中でも耳で合わせられるように、位置は停止中に譜面を前後に送って確認するために置いている。
+// ギター / ベースの演奏では「ドラム音量」が弾くパートの音量になり、「リバース」(NX GuitarReverse / BassReverse)が加わる
+// (元実装はギター / ベースのトレーニングを持たない。項目の並びはドラムに合わせ、リバースは音量の後ろに置いた)。
 const ITEM = {
   AUTO: 0, AUTO_DETAIL: 1, NOTE_OFFSET: 2, JUDGE_OFFSET: 3, HI_SPEED: 4, PLAY_SPEED: 5, START_WAIT: 6,
   DRUM_VOLUME: 7, BGM_VOLUME: 8,
   LOOP: 9, LOOP_UNIT: 10, LOOP_END: 11, LOOP_BEGIN: 12, POSITION: 13,
   START_STOP: 14, RESTART: 15, PAUSE: 16, QUIT: 17,
+  REVERSE: 18,
 };
-const MAIN_COUNT = 18;
-// 項目名の文言のキー(js/i18n.js)。演奏開始 / 一時停止は状態で変わるので itemName で選ぶ
-const MAIN_NAMES = [
+// 項目名の文言のキー(js/i18n.js。ITEM の番号の順)。演奏開始 / 一時停止は状態で、音量は楽器で変わるので itemName で選ぶ
+const ITEM_NAMES = [
   'menu.autoPlay', 'menu.autoDetail', 'menu.noteOffset', 'menu.judgeOffset', 'menu.hiSpeed',
   'menu.playSpeed', 'menu.startWait', 'menu.drumVolume', 'menu.bgmVolume', 'menu.loop', 'menu.loopUnit',
   'menu.loopEnd', 'menu.loopBegin', 'menu.position', 'menu.start', 'menu.restart', 'menu.pause', 'menu.quit',
+  'menu.reverse',
 ];
+/** メイン画面の項目の並び(ドラムは元実装の順のまま)。 */
+const DRUM_ITEMS = [
+  ITEM.AUTO, ITEM.AUTO_DETAIL, ITEM.NOTE_OFFSET, ITEM.JUDGE_OFFSET, ITEM.HI_SPEED, ITEM.PLAY_SPEED, ITEM.START_WAIT,
+  ITEM.DRUM_VOLUME, ITEM.BGM_VOLUME, ITEM.LOOP, ITEM.LOOP_UNIT, ITEM.LOOP_END, ITEM.LOOP_BEGIN, ITEM.POSITION,
+  ITEM.START_STOP, ITEM.RESTART, ITEM.PAUSE, ITEM.QUIT,
+];
+const GB_ITEMS = [
+  ITEM.AUTO, ITEM.AUTO_DETAIL, ITEM.NOTE_OFFSET, ITEM.JUDGE_OFFSET, ITEM.HI_SPEED, ITEM.PLAY_SPEED, ITEM.START_WAIT,
+  ITEM.DRUM_VOLUME, ITEM.BGM_VOLUME, ITEM.REVERSE, ITEM.LOOP, ITEM.LOOP_UNIT, ITEM.LOOP_END, ITEM.LOOP_BEGIN, ITEM.POSITION,
+  ITEM.START_STOP, ITEM.RESTART, ITEM.PAUSE, ITEM.QUIT,
+];
+/** 自動演奏詳細のボタン名(ギター / ベース。js/game/training.js の gbAutoLanes の並び)。 */
+const GB_AUTO_NAMES = ['R', 'G', 'B', 'Y', 'P', 'PICK', 'WAIL'];
 
 /** 音量の刻み(%)。←→ で 5、Ctrl 併用で 50。 */
 const VOLUME_STEP = 5;
-const AUTO_DETAIL_ALL = LANE_COUNT;
-const AUTO_DETAIL_BACK = LANE_COUNT + 1;
-const AUTO_DETAIL_COUNT = LANE_COUNT + 2;
 
 /** NX tRepeatKey: 1 回目即時 → 200ms 後に 2 回目 → 以降 30ms 間隔。 */
 class RepeatKey {
@@ -80,10 +93,17 @@ const setHidden = (el, v) => { v = !!v; if (el.hidden !== v) el.hidden = v; };
 export class TrainingMenu {
   /**
    * @param {TrainingSettings} settings
-   * @param {{sound?: {cursor:()=>void, decide:()=>void, cancel:()=>void}, onPlaySpeedStep?: (delta:number)=>void, onChange?: ()=>void}} hooks
+   * @param {{sound?: {cursor:()=>void, decide:()=>void, cancel:()=>void}, onPlaySpeedStep?: (delta:number)=>void, onChange?: ()=>void,
+   *   instrument?: number}} hooks instrument は弾く楽器(INSTRUMENT。省略でドラム)
    */
   constructor(settings, hooks = {}) {
     this.s = settings;
+    this.instrument = hooks.instrument === undefined ? INSTRUMENT.DRUMS : hooks.instrument;
+    this.gb = this.instrument !== INSTRUMENT.DRUMS;
+    /** メイン画面の項目(ITEM の番号の並び)。 */
+    this.items = this.gb ? GB_ITEMS : DRUM_ITEMS;
+    /** 自動演奏詳細の行の名前(ドラムは LBD を除く 10 レーン、ギター / ベースは 7 ボタン)。 */
+    this.autoNames = this.gb ? GB_AUTO_NAMES : LANE_NAMES.slice(0, LANE_COUNT);
     this.sound = hooks.sound || { cursor() {}, decide() {}, cancel() {} };
     this.onPlaySpeedStep = hooks.onPlaySpeedStep || null;
     this.onChange = hooks.onChange || null;
@@ -118,7 +138,25 @@ export class TrainingMenu {
     return this.chart ? this.chart.durationMs : 0;
   }
   get itemCount() {
-    return this.page === 'main' ? MAIN_COUNT : AUTO_DETAIL_COUNT;
+    return this.page === 'main' ? this.items.length : this.autoNames.length + 2;
+  }
+
+  /** 自動演奏詳細の「すべて」「戻る」の行。 */
+  get _autoAll() {
+    return this.autoNames.length;
+  }
+  get _autoBack() {
+    return this.autoNames.length + 1;
+  }
+
+  /** 自動演奏詳細の AUTO の配列(設定の中の配列そのもの)。 */
+  get _autoFlags() {
+    return this.gb ? this.s.gbAutoLanes : this.s.autoLanes;
+  }
+
+  /** メイン画面の行 i の項目(ITEM の番号)。 */
+  _item(i) {
+    return this.items[i];
   }
 
   /** 譜面を差し替える(小節位置の一覧を作り直す)。 */
@@ -142,7 +180,8 @@ export class TrainingMenu {
     this.state = root.querySelector('.tmenu-state');
     this.list = root.querySelector('.tmenu-rows');
     this.rows = [];
-    for (let i = 0; i < MAIN_COUNT; i++) {
+    const rowCount = Math.max(this.items.length, this.autoNames.length + 2);
+    for (let i = 0; i < rowCount; i++) {
       const li = document.createElement('li');
       li.className = 'tmenu-row';
       li.innerHTML = `<span class="tmenu-name"></span><button class="tmenu-btn tmenu-left" aria-label="${t('menu.decrease')}">◀</button><span class="tmenu-value"></span><button class="tmenu-btn tmenu-right" aria-label="${t('menu.increase')}">▶</button>`;
@@ -191,7 +230,7 @@ export class TrainingMenu {
   _tapRow(i) {
     if (i >= this.itemCount) return;
     this.cursor = i;
-    const immediate = this.page === 'auto' || this.isAction(i) || i === ITEM.AUTO_DETAIL;
+    const immediate = this.page === 'auto' || this.isAction(i) || this._item(i) === ITEM.AUTO_DETAIL;
     if (immediate) this._pendingCommand = this.decide();
     else this._playCursor();
     this.refresh();
@@ -283,11 +322,11 @@ export class TrainingMenu {
 
   decide() {
     if (this.page === 'auto') {
-      if (this.cursor === AUTO_DETAIL_BACK) this.backToMain();
+      if (this.cursor === this._autoBack) this.backToMain();
       else this.changeValue(+1);
       return MENU_COMMAND.NONE;
     }
-    switch (this.cursor) {
+    switch (this._item(this.cursor)) {
       case ITEM.AUTO_DETAIL:
         this.page = 'auto';
         this.cursor = 0;
@@ -314,7 +353,7 @@ export class TrainingMenu {
 
   backToMain() {
     this.page = 'main';
-    this.cursor = ITEM.AUTO_DETAIL;
+    this.cursor = this.items.indexOf(ITEM.AUTO_DETAIL);
     this.sound.cancel();
   }
 
@@ -322,23 +361,29 @@ export class TrainingMenu {
     if (delta === 0) return;
     const s = this.s;
     if (this.page === 'auto') {
-      if (this.cursor === AUTO_DETAIL_BACK) return;
-      if (this.cursor === AUTO_DETAIL_ALL) {
+      if (this.cursor === this._autoBack) return;
+      const flags = this._autoFlags;
+      const n = this.autoNames.length;
+      if (this.cursor === this._autoAll) {
         let allOn = true;
-        for (let i = 0; i < LANE_COUNT; i++) if (!s.autoLanes[i]) { allOn = false; break; }
-        for (let i = 0; i < LANE_COUNT; i++) s.autoLanes[i] = !allOn;
+        for (let i = 0; i < n; i++) if (!flags[i]) { allOn = false; break; }
+        for (let i = 0; i < n; i++) flags[i] = !allOn;
       } else {
-        s.autoLanes[this.cursor] = !s.autoLanes[this.cursor];
+        flags[this.cursor] = !flags[this.cursor];
       }
       this._changed();
       return;
     }
-    switch (this.cursor) {
+    const item = this._item(this.cursor);
+    switch (item) {
       case ITEM.AUTO: s.autoPlay = !s.autoPlay; break;
       case ITEM.AUTO_DETAIL: return; // サブメニューは Enter でのみ開く(←→ のリピートで LC を連打しないため)
       case ITEM.NOTE_OFFSET: s.noteOffsetMs = clamp(s.noteOffsetMs + delta, NOTE_OFFSET_MIN, NOTE_OFFSET_MAX); break;
       case ITEM.JUDGE_OFFSET: s.judgeOffsetMs = clamp(s.judgeOffsetMs + delta, JUDGE_OFFSET_MIN, JUDGE_OFFSET_MAX); break;
-      case ITEM.HI_SPEED: s.scrollSpeedTenth = clamp(s.scrollSpeedTenth + delta, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX); break; // 0.1 刻み(Ctrl で 1.0)
+      case ITEM.HI_SPEED: // 0.1 刻み(Ctrl で 1.0)。ギター / ベースは別に持つ
+        if (this.gb) s.gbScrollSpeedTenth = clamp(s.gbScrollSpeedTenth + delta, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX);
+        else s.scrollSpeedTenth = clamp(s.scrollSpeedTenth + delta, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX);
+        break;
       case ITEM.PLAY_SPEED:
         if (this.onPlaySpeedStep) this.onPlaySpeedStep(delta);
         break;
@@ -346,11 +391,12 @@ export class TrainingMenu {
       case ITEM.DRUM_VOLUME: case ITEM.BGM_VOLUME: {
         // 音量はトレーニング設定ではなくアプリ設定なので、training.save() を呼ぶ _changed() は通さない
         if (!this.onVolumeStep) return;
-        if (!this.onVolumeStep(this.cursor === ITEM.BGM_VOLUME ? 'bgm' : 'chip', delta * VOLUME_STEP)) return;
+        if (!this.onVolumeStep(item === ITEM.BGM_VOLUME ? 'bgm' : 'chip', delta * VOLUME_STEP)) return;
         this._playCursor();
         this.refresh();
         return;
       }
+      case ITEM.REVERSE: s.gbReverse = !s.gbReverse; break;
       case ITEM.LOOP: s.loop = !s.loop; break;
       case ITEM.LOOP_UNIT: s.loopUnit = s.loopUnit === LOOP_UNIT.MEASURE ? LOOP_UNIT.SECOND : LOOP_UNIT.MEASURE; break;
       case ITEM.LOOP_END: {
@@ -367,7 +413,7 @@ export class TrainingMenu {
       }
       case ITEM.POSITION: {
         // 設定ではなく演奏位置そのものを動かすので、training.save() は呼ばない
-        if (!this.onSeek || this.isDisabled(ITEM.POSITION)) return;
+        if (!this.onSeek || this.isDisabled(this.cursor)) return;
         const cur = this.positionMs;
         const v = stepLoopTime(cur, delta, s.loopUnit, this.measureTimes, this.seekMaxMs);
         if (v === cur || !this.onSeek(v)) return;
@@ -388,13 +434,14 @@ export class TrainingMenu {
 
   // ---- 表示 ----
   isAction(i) {
-    if (this.page === 'auto') return i === AUTO_DETAIL_BACK;
-    return i === ITEM.START_STOP || i === ITEM.RESTART || i === ITEM.PAUSE || i === ITEM.QUIT;
+    if (this.page === 'auto') return i === this._autoBack;
+    const item = this._item(i);
+    return item === ITEM.START_STOP || item === ITEM.RESTART || item === ITEM.PAUSE || item === ITEM.QUIT;
   }
 
   isDisabled(i) {
     if (this.page === 'auto') return false;
-    switch (i) {
+    switch (this._item(i)) {
       case ITEM.LOOP_UNIT: case ITEM.LOOP_END: case ITEM.LOOP_BEGIN: return !this.s.loop;
       case ITEM.PAUSE: return !this.playing;
       case ITEM.POSITION: return !this.canSeek || !this.canSeek();
@@ -414,37 +461,40 @@ export class TrainingMenu {
   }
 
   hasValueButtons(i) {
-    if (this.page === 'auto') return i !== AUTO_DETAIL_BACK;
-    return !this.isAction(i) && i !== ITEM.AUTO_DETAIL;
+    if (this.page === 'auto') return i !== this._autoBack;
+    return !this.isAction(i) && this._item(i) !== ITEM.AUTO_DETAIL;
   }
 
   itemName(i) {
     if (this.page === 'auto') {
-      if (i === AUTO_DETAIL_BACK) return t('menu.back');
-      if (i === AUTO_DETAIL_ALL) return t('menu.all');
-      return LANE_NAMES[i];
+      if (i === this._autoBack) return t('menu.back');
+      if (i === this._autoAll) return t('menu.all');
+      return this.autoNames[i];
     }
-    if (i === ITEM.START_STOP) return t(this.playing ? 'menu.stop' : 'menu.start');
-    if (i === ITEM.PAUSE) return t(this.paused ? 'menu.resume' : 'menu.pause');
-    return t(MAIN_NAMES[i]);
+    const item = this._item(i);
+    if (item === ITEM.START_STOP) return t(this.playing ? 'menu.stop' : 'menu.start');
+    if (item === ITEM.PAUSE) return t(this.paused ? 'menu.resume' : 'menu.pause');
+    if (item === ITEM.DRUM_VOLUME && this.gb) return t(this.instrument === INSTRUMENT.BASS ? 'menu.bassVolume' : 'menu.guitarVolume');
+    return t(ITEM_NAMES[item]);
   }
 
   itemValue(i) {
     const s = this.s;
     if (this.page === 'auto') {
-      if (i === AUTO_DETAIL_BACK || i === AUTO_DETAIL_ALL) return '';
-      return s.autoLanes[i] ? 'AUTO' : t('menu.manual');
+      if (i === this._autoBack || i === this._autoAll) return '';
+      return this._autoFlags[i] ? 'AUTO' : t('menu.manual');
     }
-    switch (i) {
+    switch (this._item(i)) {
       case ITEM.AUTO: return s.autoPlay ? 'ON' : 'OFF';
       case ITEM.AUTO_DETAIL: return this.autoLaneSummary();
       case ITEM.NOTE_OFFSET: return formatSignedMs(s.noteOffsetMs);
       case ITEM.JUDGE_OFFSET: return formatSignedMs(s.judgeOffsetMs);
-      case ITEM.HI_SPEED: return 'x' + s.hiSpeedRatio.toFixed(1);
+      case ITEM.HI_SPEED: return 'x' + (this.gb ? s.gbHiSpeedRatio : s.hiSpeedRatio).toFixed(1);
       case ITEM.PLAY_SPEED: return 'x' + s.playSpeedRatio.toFixed(2);
       case ITEM.START_WAIT: return (s.startWaitMs / 1000).toFixed(1) + ' s';
       case ITEM.DRUM_VOLUME: return (this.getVolume ? this.getVolume('chip') : 0) + ' %';
       case ITEM.BGM_VOLUME: return (this.getVolume ? this.getVolume('bgm') : 0) + ' %';
+      case ITEM.REVERSE: return s.gbReverse ? 'ON' : 'OFF';
       case ITEM.LOOP: return !s.loop ? 'OFF' : s.loopRangeValid ? 'ON' : t('menu.loopInvalid');
       case ITEM.LOOP_UNIT: return t(s.loopUnit === LOOP_UNIT.MEASURE ? 'menu.unitMeasure' : 'menu.unitSecond');
       case ITEM.LOOP_END: return formatLoopTime(s.loopEndMs, s.loopUnit, this.measureTimes);
@@ -455,11 +505,13 @@ export class TrainingMenu {
   }
 
   autoLaneSummary() {
+    const flags = this._autoFlags;
+    const count = this.autoNames.length;
     let n = 0;
-    for (let i = 0; i < LANE_COUNT; i++) if (this.s.autoLanes[i]) n++;
+    for (let i = 0; i < count; i++) if (flags[i]) n++;
     if (n === 0) return t('menu.none');
-    if (n === LANE_COUNT) return t('menu.all');
-    return t('menu.lanes', { n });
+    if (n === count) return t('menu.all');
+    return t(this.gb ? 'menu.buttons' : 'menu.lanes', { n });
   }
 
   refresh() {

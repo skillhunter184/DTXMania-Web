@@ -1,7 +1,7 @@
 import { test, assert, assertEq, assertDeepEq } from './runner.js';
 import { TrainingSettings, LOOP_UNIT } from '../js/game/training.js';
 import { TrainingMenu, MENU_COMMAND } from '../js/ui/menu.js';
-import { parseDTX } from '../js/core/dtx.js';
+import { parseDTX, INSTRUMENT } from '../js/core/dtx.js';
 
 function makeMenu() {
   const s = new TrainingSettings();
@@ -251,5 +251,84 @@ test('menu: refresh writes the DOM only when a shown value changed', () => {
   } finally {
     mo.disconnect();
     m.destroy();
+  }
+});
+
+test('menu: guitar / bass variant (button AUTO, own hi-speed, part volume, reverse)', () => {
+  const s = new TrainingSettings();
+  const volumes = [];
+  const m = new TrainingMenu(s, {
+    instrument: INSTRUMENT.BASS,
+    getVolume: (kind) => (kind === 'chip' ? 70 : 90),
+    onVolumeStep: (kind, step) => { volumes.push([kind, step]); return true; },
+  });
+  m.setChart(parseDTX('#BPM: 120\n#000A1: 01\n#003A1: 01\n'));
+  assertEq(m.itemCount, 19);
+  assertEq(m.itemName(7), 'ベース音量');
+  assertEq(m.itemValue(7), '70 %');
+  assertEq(m.itemName(9), 'リバース');
+  assertEq(m.itemValue(9), 'OFF');
+  assertEq(m.itemName(10), 'ループ演奏');
+  assertEq(m.itemName(15), '演奏開始');
+  assertEq(m.itemName(18), 'トレーニング終了');
+  // リバースの切り替え
+  m.cursor = 9;
+  m.keyDown('ArrowRight', false, 0);
+  m.keyUp('ArrowRight');
+  assertEq(s.gbReverse, true);
+  assertEq(m.itemValue(9), 'ON');
+  // ハイスピードはドラムと別
+  m.cursor = 4;
+  m.keyDown('ArrowRight', true, 0);
+  m.keyUp('ArrowRight');
+  assertEq(s.gbScrollSpeedTenth, 30);
+  assertEq(s.scrollSpeedTenth, 10, 'drum hi-speed untouched');
+  assertEq(m.itemValue(4), 'x3.0');
+  // 音量は 'chip' のバス(main.js がギター / ベース音量に振り分ける)
+  m.cursor = 7;
+  m.keyDown('ArrowLeft', false, 0);
+  m.keyUp('ArrowLeft');
+  assertDeepEq(volumes, [['chip', -5]]);
+  // 動作の行(番号がドラムと 1 つずれる)
+  m.cursor = 15;
+  m.keyDown('Enter', false, 0);
+  assertEq(m.takeCommand(), MENU_COMMAND.START_STOP);
+  m.cursor = 18;
+  assertEq(m.isAction(18), true);
+  // 自動演奏詳細: R G B Y P PICK WAIL
+  m.cursor = 1;
+  m.keyDown('Enter', false, 0);
+  assertEq(m.page, 'auto');
+  assertEq(m.itemCount, 9);
+  assertEq(m.itemName(0), 'R');
+  assertEq(m.itemName(5), 'PICK');
+  assertEq(m.itemName(6), 'WAIL');
+  assertEq(m.itemName(7), 'すべて');
+  m.cursor = 5;
+  m.keyDown('Enter', false, 0);
+  assertEq(s.gbAutoLanes[5], true);
+  assertEq(s.autoLanes.some(Boolean), false, 'drum lanes untouched');
+  assertEq(m.autoLaneSummary(), '1 ボタン');
+  m.cursor = 7;
+  m.keyDown('Enter', false, 0);
+  assertEq(s.gbAutoLanes.every(Boolean), true);
+  m.keyDown('Escape', false, 0);
+  assertEq(m.page, 'main');
+  assertEq(m.cursor, 1);
+  assertEq(m.itemValue(1), 'すべて');
+});
+
+test('menu: guitar / bass 現在位置 works with loop off (row → item mapping)', () => {
+  for (const instrument of [INSTRUMENT.DRUMS, INSTRUMENT.GUITAR, INSTRUMENT.BASS]) {
+    const s = new TrainingSettings();
+    const seeks = [];
+    const m = new TrainingMenu(s, { instrument, canSeek: () => true, getPositionMs: () => 0, onSeek: (ms) => { seeks.push(ms); return true; } });
+    m.setChart(parseDTX('#BPM: 120\n#00013: 01\n#00313: 01\n'));
+    m.cursor = m.items.indexOf(13); // ITEM.POSITION
+    assertEq(m.itemName(m.cursor), '現在位置');
+    assertEq(s.loop, false);
+    m.keyDown('ArrowRight', false, 0);
+    m.keyUp('ArrowRight');
+    assertDeepEq(seeks, [2000], 'instrument ' + instrument);
   }
 });

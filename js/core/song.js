@@ -9,6 +9,7 @@ import { ZipArchive, FileSetArchive } from './zip.js';
 import { decodeText } from './encoding.js';
 import { parseSetDef, parseBoxDef } from './setdef.js';
 import { parseDTX, parseDTXHeader } from './dtx.js';
+import { mergeInstrumentSongs } from './instmerge.js';
 import { t } from '../i18n.js';
 
 function dirOf(path) {
@@ -161,16 +162,28 @@ export class SongPackage {
         songs.push({ title: header.title || baseName(ent.name), dir, genre, charts: [{ label: '', path: ent.name, header }] });
       }
     }
-    this.songs = songs;
+    // 楽器別のファイルに分かれた同じ曲(「曲名 (Drum)」「曲名 (Guitar)」「曲名 (Bass)」)は 1 項目にまとめる
+    this.songs = mergeInstrumentSongs(songs);
   }
 
+  /**
+   * 一覧に出す DTX ヘッダ。level / levelDec はドラム、levels / levelDecs は楽器ごと(0 ドラム / 1 ギター / 2 ベース)、
+   * noteMask は譜面に入っている楽器(bit0 ドラム / bit1 ギター / bit2 ベース)。
+   */
   async _header(entry) {
     try {
       const h = parseDTXHeader(await this.readText(entry));
-      return { title: h.title, artist: h.artist, comment: h.comment, bpm: h.bpm, level: h.level[0], levelDec: h.levelDec[0], preimage: h.preimage, preview: h.preview, laneHasNotes: h.laneHasNotes };
+      return {
+        title: h.title, artist: h.artist, comment: h.comment, bpm: h.bpm, level: h.level[0], levelDec: h.levelDec[0],
+        levels: h.level.slice(), levelDecs: h.levelDec.slice(), noteMask: h.noteMask,
+        preimage: h.preimage, preview: h.preview, laneHasNotes: h.laneHasNotes,
+      };
     } catch (e) {
       console.warn('DTX ヘッダの読み込みに失敗:', entry.name, e);
-      return { title: '', artist: '', comment: '', bpm: 0, level: 0, levelDec: 0, preimage: '', preview: '', laneHasNotes: [] };
+      return {
+        title: '', artist: '', comment: '', bpm: 0, level: 0, levelDec: 0, levels: [0, 0, 0], levelDecs: [0, 0, 0], noteMask: 0,
+        preimage: '', preview: '', laneHasNotes: [],
+      };
     }
   }
 

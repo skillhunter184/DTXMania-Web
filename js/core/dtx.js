@@ -5,6 +5,9 @@
 // - ch 02 = 小節長(その小節以降に持続)、ch 03 = BPM(16 進 2 桁、BASEBPM 加算)、ch 08 = #BPMxx 参照
 // - 小節線(0x50)/拍線(0x51)はパース後に内部生成し、0xC1(拍線シフト)/0xC2(表示指定)を反映
 // - ドラム可視チップ 0x11-0x1C、不可視 0x31-0x3C、ボーナス 0x4C-0x4F、BGM 01、SE 0x61-0x92、歓声 0x1F、フィルイン 0x53
+// - ギター 0x20-0x27 / 0x93-0x9F / 0xA9-0xAF / 0xD0-0xD3、ベース 0xA0-0xA7 / 0xC5-0xCF / 0xDA-0xDF / 0xE1-0xE8
+//   (チップの押さえ方 = R=4 G=2 B=1 Y=16 P=32 のビット。0 は OPEN)。ウェイリング 0x28 / 0xA8、
+//   ロングノート 0x2C / 0x2D、空ピック音 0xBA / 0xBB、ウェイリング音 0x2F(docs/spec/dtx-audio.md §7.3・§7.5・§9.3)
 // - #RANDOM / #IF / #ENDIF(食い込み書式 #IF1 も可)
 //
 // 譜面編集(将来の拡張)のため、各ノートに DTX 上の小節番号・小節内 tick・チップ ID・元チャンネルを保持し、
@@ -58,6 +61,67 @@ const CH_BONUS_MIN = 0x4c;
 const CH_BONUS_MAX = 0x4f;
 // ボーナスチップの値(36 進)→ レーン(1=LC 2=HH 3=LP 4=SD 5=HT 6=BD 7=LT 8=FT 9=CY 10=RD)
 const BONUS_VALUE_TO_LANE = [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+/** 楽器の番号(#DLEVEL / #GLEVEL / #BLEVEL の添字と同じ)。 */
+export const INSTRUMENT = { DRUMS: 0, GUITAR: 1, BASS: 2 };
+
+/** ギター / ベースの押さえ方のビット(NX と同じ値。0 は OPEN = 何も押さない)。 */
+export const GB_BIT = { R: 4, G: 2, B: 1, Y: 16, P: 32 };
+/** ネックのボタンの並び(画面の左から R G B Y P)→ ビット。 */
+export const GB_LANE_BITS = [4, 2, 1, 16, 32];
+export const GB_LANE_NAMES = ['R', 'G', 'B', 'Y', 'P'];
+export const GB_LANE_COUNT = 5;
+/** 押さえ方のビットが取りうる範囲(R G B Y P)。 */
+export const GB_BITS_MASK = 0x37;
+
+const CH_GUITAR_WAILING = 0x28;
+const CH_BASS_WAILING = 0xa8;
+const CH_GUITAR_LONG = 0x2c;
+const CH_BASS_LONG = 0x2d;
+const CH_GUITAR_WAIL_SOUND = 0x2f;
+const CH_GUITAR_NO_CHIP = 0xba;
+const CH_BASS_NO_CHIP = 0xbb;
+
+/**
+ * ギター / ベースの可視チャンネル → {part, bits}(docs/spec/dtx-audio.md §9.3)。
+ * RGB の 3 ビット p(0..7)ごとに、3 レーン・+Y・+P・+Y+P の 4 系統のチャンネルがある。
+ */
+export const GB_CHANNEL = (() => {
+  const map = {};
+  const put = (part, chs, extra) => chs.forEach((ch, p) => { map[ch] = { part, bits: p | extra }; });
+  const seq = (from) => Array.from({ length: 8 }, (_, i) => from + i);
+  put(INSTRUMENT.GUITAR, seq(0x20), 0);
+  put(INSTRUMENT.GUITAR, seq(0x93), GB_BIT.Y);
+  put(INSTRUMENT.GUITAR, [0x9b, 0x9c, 0x9d, 0x9e, 0x9f, 0xa9, 0xaa, 0xab], GB_BIT.P);
+  put(INSTRUMENT.GUITAR, [0xac, 0xad, 0xae, 0xaf, 0xd0, 0xd1, 0xd2, 0xd3], GB_BIT.Y | GB_BIT.P);
+  put(INSTRUMENT.BASS, seq(0xa0), 0);
+  put(INSTRUMENT.BASS, [0xc5, 0xc6, 0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd], GB_BIT.Y);
+  put(INSTRUMENT.BASS, [0xce, 0xcf, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf], GB_BIT.P);
+  put(INSTRUMENT.BASS, [0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8], GB_BIT.Y | GB_BIT.P);
+  return map;
+})();
+
+/**
+ * チャンネルがどの楽器の譜面か(選曲の楽器の判定。DTXManiaAI DtxChart.InstrumentOfChannel)。
+ * ドラムは可視・不可視、ギター / ベースは可視チップ・ウェイリング・ロングノートの制御。それ以外は -1。
+ */
+export function instrumentOfChannel(ch) {
+  if ((ch >= 0x11 && ch <= 0x1c) || (ch >= CH_HIDDEN_MIN && ch <= CH_HIDDEN_MAX)) return INSTRUMENT.DRUMS;
+  const gb = GB_CHANNEL[ch];
+  if (gb) return gb.part;
+  if (ch === CH_GUITAR_WAILING || ch === CH_GUITAR_LONG) return INSTRUMENT.GUITAR;
+  if (ch === CH_BASS_WAILING || ch === CH_BASS_LONG) return INSTRUMENT.BASS;
+  return -1;
+}
+
+function newGbPart() {
+  return {
+    notes: [], // {timeMs, part, bits, open, wavId, channel, pos, measure, tick, lnEndMs, lnEndPos}
+    wailing: [], // ウェイリングチップ {timeMs, pos}(音は無い)
+    noChipEvents: [], // 空ピック音の切り替え {timeMs, wavId}
+    hasYP: false, // Y / P を使うチップがある(5 レーン譜面)
+  };
+}
 
 /** SE チャンネル(SE01-SE32。NX EChannel の飛び番を含む)。 */
 export function isSeChannel(ch) {
@@ -209,12 +273,32 @@ function newChart() {
     movieEvents: [], barLines: [], bpmChanges: [],
     bonusChipCount: 0, durationMs: 0, lastNoteMs: 0,
     laneHasNotes: new Array(LANE_COUNT).fill(false),
+    // ギター / ベース(INSTRUMENT.GUITAR / BASS で引く: gbPart(chart, inst))。ウェイリング音の切り替え(0x2F)はギターだけ
+    guitar: newGbPart(), bass: newGbPart(), wailSoundEvents: [],
+    // 譜面に入っている楽器(bit0 ドラム / bit1 ギター / bit2 ベース。instrumentOfChannel のチップが 1 個でもあれば立つ)
+    noteMask: 0,
     rawLines: [],
   };
 }
 
+/** 楽器のギター / ベースの譜面(INSTRUMENT.GUITAR / BASS)。それ以外は null。 */
+export function gbPart(chart, inst) {
+  if (inst === INSTRUMENT.GUITAR) return chart.guitar;
+  if (inst === INSTRUMENT.BASS) return chart.bass;
+  return null;
+}
+
+/**
+ * レベルの値(NX / DTXManiaAI と同じく int.TryParse: 符号付きの整数だけ。'74.5' や '7x' は読まずに前の値のまま)。
+ * 読めなければ NaN。ギター / ベースの有無をレベルからも決めるので(js/core/instmerge.js)、半端な値で行を出さないように。
+ */
+function parseLevelInt(param) {
+  const s = String(param).trim();
+  return /^[+-]?\d+$/.test(s) ? parseInt(s, 10) : NaN;
+}
+
 function setLevel(chart, part, param) {
-  let v = parseInt(param, 10);
+  let v = parseLevelInt(param);
   if (!Number.isFinite(v)) return;
   v = Math.min(Math.max(v, 0), 1000);
   if (v >= 100) {
@@ -227,7 +311,7 @@ function setLevel(chart, part, param) {
 }
 
 function setLevelDec(chart, part, param) {
-  const v = parseInt(param, 10);
+  const v = parseLevelInt(param);
   if (Number.isFinite(v)) chart.levelDec[part] = Math.min(Math.max(v, 0), 10);
 }
 
@@ -288,8 +372,10 @@ function parseDataLine(body, chips, state) {
   if (colon < 5) return;
   const measure = parseInt(body.slice(0, 3), 10);
   if (!Number.isFinite(measure)) return;
-  const channel = parseInt(body.slice(3, 5), 16);
-  if (!Number.isFinite(channel)) return;
+  // チャンネルは 16 進 2 桁(NX は読めない行を捨てる。'2X' を 0x02 = 小節長と読まないように。ヘッダの読み込みと同じ)
+  const cc = body.slice(3, 5);
+  if (!/^[0-9A-Fa-f]{2}$/.test(cc)) return;
+  const channel = parseInt(cc, 16);
   let data = body.slice(colon + 1);
   const semi = data.indexOf(';');
   if (semi !== -1) data = data.slice(0, semi);
@@ -412,6 +498,7 @@ export function parseDTX(text, opts = {}) {
   applyBeatLineDisplay(chips);
 
   const bonusMarks = [];
+  const longChips = { [INSTRUMENT.GUITAR]: [], [INSTRUMENT.BASS]: [] }; // ロングノートの制御チップ(位置の順)
   let currMs = 0.0;
   let bpm = chart.bpm;
   let barLen = 1.0;
@@ -449,6 +536,27 @@ export function parseDTX(text, opts = {}) {
       chart.bonusChipCount++;
       const bv = parseBase36(chip.wavId);
       if (bv >= 1 && bv < BONUS_VALUE_TO_LANE.length) bonusMarks.push({ pos: chip.pos, lane: BONUS_VALUE_TO_LANE[bv] });
+    } else if (GB_CHANNEL[ch]) {
+      const { part, bits } = GB_CHANNEL[ch];
+      const gb = gbPart(chart, part);
+      gb.notes.push({
+        timeMs: chip.timeMs, part, bits, open: bits === 0, wavId: chip.wavId, channel: ch, pos: chip.pos,
+        measure: chip.measure, tick: chip.tick, lnEndMs: -1, lnEndPos: -1,
+      });
+      if (bits & (GB_BIT.Y | GB_BIT.P)) gb.hasYP = true;
+      chart.noteMask |= 1 << part;
+    } else if (ch === CH_GUITAR_WAILING || ch === CH_BASS_WAILING) {
+      const part = ch === CH_GUITAR_WAILING ? INSTRUMENT.GUITAR : INSTRUMENT.BASS;
+      gbPart(chart, part).wailing.push({ timeMs: chip.timeMs, pos: chip.pos });
+      chart.noteMask |= 1 << part;
+    } else if (ch === CH_GUITAR_LONG || ch === CH_BASS_LONG) {
+      const part = ch === CH_GUITAR_LONG ? INSTRUMENT.GUITAR : INSTRUMENT.BASS;
+      longChips[part].push({ timeMs: chip.timeMs, pos: chip.pos });
+      chart.noteMask |= 1 << part;
+    } else if (ch === CH_GUITAR_NO_CHIP || ch === CH_BASS_NO_CHIP) {
+      gbPart(chart, ch === CH_GUITAR_NO_CHIP ? INSTRUMENT.GUITAR : INSTRUMENT.BASS).noChipEvents.push({ timeMs: chip.timeMs, wavId: chip.wavId });
+    } else if (ch === CH_GUITAR_WAIL_SOUND) {
+      chart.wailSoundEvents.push({ timeMs: chip.timeMs, wavId: chip.wavId });
     } else {
       const hidden = ch >= CH_HIDDEN_MIN && ch <= CH_HIDDEN_MAX;
       const visibleChannel = hidden ? ch - 0x20 : ch;
@@ -464,6 +572,7 @@ export function parseDTX(text, opts = {}) {
           chart.laneHasNotes[lane] = true;
           if (chip.timeMs > chart.lastNoteMs) chart.lastNoteMs = chip.timeMs;
         }
+        chart.noteMask |= 1 << INSTRUMENT.DRUMS;
       }
     }
   }
@@ -471,6 +580,7 @@ export function parseDTX(text, opts = {}) {
   for (const mark of bonusMarks) {
     for (const n of chart.notes) if (n.pos === mark.pos && n.lane === mark.lane) n.bonus = true;
   }
+  for (const part of [INSTRUMENT.GUITAR, INSTRUMENT.BASS]) pairLongNotes(gbPart(chart, part).notes, longChips[part]);
 
   const byTime = (a, b) => a.timeMs - b.timeMs;
   chart.notes.sort(byTime);
@@ -480,8 +590,38 @@ export function parseDTX(text, opts = {}) {
   chart.cheerEvents.sort(byTime);
   chart.seEvents.sort(byTime);
   chart.bgmEvents.sort(byTime);
-  chart.durationMs = chart.lastNoteMs;
+  chart.wailSoundEvents.sort(byTime);
+  // 曲の長さはドラム・ギター・ベースの可視チップ(ロングノートの終端を含む)のいちばん遅い時刻
+  // (docs/spec/dtx-audio.md §7.4。ドラムしか無い譜面は従来どおり最後のドラムのチップ)
+  let duration = chart.lastNoteMs;
+  for (const gb of [chart.guitar, chart.bass]) {
+    gb.notes.sort(byTime);
+    gb.wailing.sort(byTime);
+    gb.noChipEvents.sort(byTime);
+    for (const n of gb.notes) duration = Math.max(duration, n.timeMs, n.lnEndMs);
+  }
+  chart.durationMs = duration;
   return chart;
+}
+
+/**
+ * ロングノートの対付け(NX CDTX / DTXManiaAI PairLongNotes。docs/spec/dtx-audio.md §7.5)。notes と longChips は位置の順。
+ * 制御チップは「始端・終端・始端・終端…」の順に読む。始端は同じ位置の OPEN でないチップ(無ければ次の制御チップを
+ * 改めて始端として読む)。始端と終端の間(終端の位置を含む)にほかのチップがあれば、その組は捨てる。
+ */
+export function pairLongNotes(notes, longChips) {
+  let cand = null;
+  for (const ln of longChips) {
+    if (!cand) {
+      cand = notes.find((n) => n.pos === ln.pos && !n.open) || null;
+      continue;
+    }
+    const start = cand;
+    cand = null;
+    if (notes.some((n) => n.pos > start.pos && n.pos <= ln.pos)) continue;
+    start.lnEndMs = ln.timeMs;
+    start.lnEndPos = ln.pos;
+  }
 }
 
 /**
@@ -501,15 +641,19 @@ export function parseDTXHeader(text) {
     if (ifStack.skipsLine(o)) continue;
     if (/^[0-9]{3}/.test(body)) {
       if (!ifStack.inIfBlock) bodyStarted = true;
-      // 楽器ごとの譜面有無(ドラムのみ)
-      const ch = parseInt(body.slice(3, 5), 16);
+      // 楽器ごとの譜面有無(ドラムはレーンごと、ギター / ベースは楽器ごと。DTXManiaAI DtxHeader.NoteChannel)
+      const ch = /^[0-9a-fA-F]{2}$/.test(body.slice(3, 5)) ? parseInt(body.slice(3, 5), 16) : NaN;
       if (Number.isFinite(ch)) {
         const vis = ch >= CH_HIDDEN_MIN && ch <= CH_HIDDEN_MAX ? ch - 0x20 : ch;
         const lane = CHANNEL_TO_LANE[vis];
-        if (lane !== undefined && !chart.laneHasNotes[lane]) {
+        const inst = instrumentOfChannel(ch);
+        if ((lane !== undefined && !chart.laneHasNotes[lane]) || (inst >= 0 && !(chart.noteMask & (1 << inst)))) {
           const colon = body.indexOf(':');
           const data = colon >= 0 ? body.slice(colon + 1) : '';
-          if (/[^0 \t_;]/.test(data.split(';')[0])) chart.laneHasNotes[lane] = true;
+          if (/[^0 \t_;]/.test(data.split(';')[0])) {
+            if (lane !== undefined) chart.laneHasNotes[lane] = true;
+            if (inst >= 0) chart.noteMask |= 1 << inst;
+          }
         }
       }
       continue;
@@ -535,6 +679,16 @@ export function requiredWavIds(chart) {
   for (const n of chart.bgmEvents) add(n.wavId);
   for (const n of chart.notes) add(n.wavId);
   for (const n of chart.hiddenNotes) add(n.wavId);
+  // ギター / ベースのチップと空ピック音・ウェイリング音(ウェイリングチップは音を持たない。docs/spec/dtx-audio.md §7.6)
+  for (const gb of [chart.guitar, chart.bass]) {
+    if (!gb) continue;
+    for (const n of gb.notes) add(n.wavId);
+  }
+  for (const gb of [chart.guitar, chart.bass]) {
+    if (!gb) continue;
+    for (const n of gb.noChipEvents) add(n.wavId);
+  }
+  for (const n of chart.wailSoundEvents || []) add(n.wavId);
   for (const n of chart.seEvents) add(n.wavId);
   for (const n of chart.cheerEvents) add(n.wavId);
   return ordered;

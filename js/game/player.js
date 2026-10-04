@@ -8,7 +8,7 @@
 // 状態: standby(待機) / startin(開始待ち) / playing / paused。
 // 自動発音(BGM・SE・AUTO チップ)は AudioContext に先読みスケジュールして正確に鳴らす。
 
-import { LANE_COUNT } from '../core/dtx.js';
+import { LANE_COUNT, INSTRUMENT } from '../core/dtx.js';
 import { AudioEngine } from '../core/audio.js';
 import { HitRanges, JUDGE, searchLanes, tieHitsAll, applyChartDowngrade, LEFT_BASS_DRUM_CHANNEL } from './hitranges.js';
 import { PlayStats } from './judge.js';
@@ -95,6 +95,10 @@ export class Player {
     this._autoSoundIndex = 0; // notes の先読みカーソル(AUTO レーンの音)
     this._chartVoices = new Set(); // 自動発音した voice(ジャンプ/停止で止める)
     this._seLast = new Map(); // SE チャンネル → voice
+    // 弾いていない楽器のチップ(伴奏。ドラムの演奏ではギター / ベース、ギターの演奏ではドラムともう一方のパート)
+    this.accomp = []; // {timeMs, wavId, mono}(時刻順。mono が同じものは前の音を止めてから鳴らす)
+    this._accompIndex = 0;
+    this._accompLast = new Map(); // mono → voice
 
     // 演出(実時間 ms、performance.now)
     this.laneFlashUntil = new Array(LANE_COUNT).fill(0);
@@ -122,18 +126,36 @@ export class Player {
   async load(pkg, chart, onProgress) {
     this.pkg = pkg;
     this.chart = chart;
+    this._prepareChart(chart);
+    this.measureTimes = buildMeasureTimes(chart);
+    await this.audio.loadChartSounds(pkg, chart, onProgress);
+    this._afterSoundsLoaded();
+    // ループ区間は譜面ごとに初期化(0〜譜面長)
+    this.settings.loopBeginMs = 0;
+    this.settings.loopEndMs = Math.max(0, chart.durationMs);
+    this.ratio = this.settings.playSpeedRatio;
+    this.scrollRatioSetting = this.hiSpeedSetting;
+    this.scrollCurrentRatio = this.scrollRatioSetting;
+    this.applySettings();
+    this.enterStandby(true);
+  }
+
+  /** 弾く楽器のチップ・成績・伴奏を譜面から作る(ドラム。ギター / ベースは js/game/gbplayer.js が差し替える)。 */
+  _prepareChart(chart) {
     this.notes = chart.notes;
     this.hiddenNotes = chart.hiddenNotes;
     this.judged = new Array(this.notes.length).fill(false);
     this.hiddenJudged = new Array(this.hiddenNotes.length).fill(false);
     this.stats = new PlayStats(this.notes.length, chart.bonusChipCount);
     this.stats.damageLevel = this.config.damageLevel;
-    this.measureTimes = buildMeasureTimes(chart);
     const hasLC = chart.laneHasNotes[0];
     const hasRD = chart.laneHasNotes[9];
     this.groups = applyChartDowngrade(hasLC, hasRD, this.config);
     this.searchWindowMs = Math.max(this.config.hitRanges.searchWindowMs, this.config.pedalHitRanges.searchWindowMs);
-    await this.audio.loadChartSounds(pkg, chart, onProgress);
+    this.accomp = buildAccompaniment(chart, INSTRUMENT.DRUMS);
+  }
+
+  _afterSoundsLoaded() {
     // 合成音(音源の無いチップ・チップの無いレーンの空打ち用)を読み込み中に作っておく。初めて使うときに作ると
     // 演奏中に 1 フレーム 5〜17 ms 止まり、その空打ち音も遅れる。作る時期だけの変更で、音の中身は同じ(元実装には無い)。
     // AudioEngine がバッファを持ち続けるので 2 曲目以降は何もしない。作れなければ今までどおり初回に作る
@@ -142,14 +164,11 @@ export class Player {
     } catch (e) {
       console.warn('合成音の準備に失敗:', e);
     }
-    // ループ区間は譜面ごとに初期化(0〜譜面長)
-    this.settings.loopBeginMs = 0;
-    this.settings.loopEndMs = Math.max(0, chart.durationMs);
-    this.ratio = this.settings.playSpeedRatio;
-    this.scrollRatioSetting = this.settings.hiSpeedRatio;
-    this.scrollCurrentRatio = this.scrollRatioSetting;
-    this.applySettings();
-    this.enterStandby(true);
+  }
+
+  /** ハイスピードの設定値(倍率)。ギター / ベースは別に持つ(js/game/gbplayer.js)。 */
+  get hiSpeedSetting() {
+    return this.settings.hiSpeedRatio;
   }
 
   // ---- 時計 ----
@@ -263,7 +282,7 @@ export class Player {
     this.auto = s.autoPlay;
     this.judgeOffsetMs = s.judgeOffsetMs;
     this.noteDrawOffsetMs = s.noteOffsetMs;
-    this.scrollRatioSetting = s.hiSpeedRatio;
+    this.scrollRatioSetting = this.hiSpeedSetting;
     let all = true;
     for (let i = 0; i < LANE_COUNT; i++) {
       this.laneAuto[i] = s.autoLanes[i];
@@ -506,7 +525,9 @@ export class Player {
     this._bgmIndex = countBefore(this.chart.bgmEvents, target);
     this._seIndex = countBefore(this.chart.seEvents, target);
     this._autoSoundIndex = countBefore(this.notes, target);
+    this._accompIndex = countBefore(this.accomp, target);
     this._seLast.clear();
+    this._accompLast.clear();
     if (this.state === PLAYER_STATE.PLAYING) {
       this._anchorReal = this.nowReal();
       this._anchorSong = target;
@@ -517,13 +538,14 @@ export class Player {
     else this._stopChartVoices();
   }
 
-  /** BGM/SE を現在位置から鳴らし直す(ResyncAutoSounds)。 */
+  /** BGM/SE(と伴奏)を現在位置から鳴らし直す(ResyncAutoSounds)。 */
   resyncAutoSounds(songMs) {
     this._stopChartVoices();
     this._seLast.clear();
     this._bgmIndex = countBefore(this.chart.bgmEvents, songMs);
     this._seIndex = countBefore(this.chart.seEvents, songMs);
     this._autoSoundIndex = countBefore(this.notes, songMs);
+    this._accompIndex = countBefore(this.accomp, songMs);
     // 未判定のチップは手動ヒット時に音を出せるよう、判定済みのものだけ発音済み扱いにする
     for (let i = 0; i < this.notes.length; i++) this.notes[i].soundScheduled = this.judged[i];
     // 開始時刻は songMs の実時刻(過去なら playBuffer が遅れたぶんだけ頭を飛ばす)
@@ -545,6 +567,27 @@ export class Player {
     };
     resync(this.chart.bgmEvents, true);
     resync(this.chart.seEvents, false);
+    // 伴奏: 鳴りかけの音を途中から。前の音を止める組(ギター / ベース)は最後の 1 個だけが鳴っているはずなので、それだけ
+    const lastOfMono = new Map();
+    for (let i = 0; i < this._accompIndex; i++) if (this.accomp[i].mono) lastOfMono.set(this.accomp[i].mono, i);
+    for (let i = 0; i < this._accompIndex; i++) {
+      const ev = this.accomp[i];
+      if (ev.mono && lastOfMono.get(ev.mono) !== i) continue;
+      const buf = this.audio.buffers.get(ev.wavId);
+      if (!buf) continue;
+      const offsetSec = (songMs - ev.timeMs) / 1000;
+      if (offsetSec >= buf.duration) continue;
+      const v = this._playAccomp(ev, when, offsetSec);
+      if (v && ev.mono) this._accompLast.set(ev.mono, v);
+    }
+  }
+
+  /** 伴奏のチップを 1 個鳴らす(BGM と同じバス。音量は AUTO のチップと同じ相対音量)。 */
+  _playAccomp(ev, when, offset = 0) {
+    const { volume, pan } = AudioEngine.gainPan(this.chart, ev.wavId);
+    const v = this.audio.play(ev.wavId, { when, offset, volume: volume * this.config.autoChipVolume, pan, rate: this.ratio, bus: 'bgm' });
+    if (v) this._trackVoice(v);
+    return v;
   }
 
   /** 自動発音した voice を覚えておく(ジャンプ/停止で止める)。鳴り終わったら外す。 */
@@ -557,6 +600,7 @@ export class Player {
     for (const v of this._chartVoices) this.audio.stopVoice(v);
     this._chartVoices.clear();
     this._seLast.clear();
+    this._accompLast.clear();
   }
 
   // ---- 毎フレーム ----
@@ -602,9 +646,13 @@ export class Player {
 
     // 曲末 → 待機(成績は残す)
     if (this.notes.length > 0 && this.loopEndMs === -1 && songMs > this.chart.durationMs + FINISH_TAIL_MS * this.ratio) {
+      this._onSongEnd();
       this.enterStandby(false);
     }
   }
+
+  /** 曲を最後まで演奏した(ループしていない)。ギター / ベースのフルコンボの加点に使う。 */
+  _onSongEnd() {}
 
   /**
    * ハイスピードのなめらか変化(2ms ごとに目標へ近づける)。
@@ -633,7 +681,12 @@ export class Player {
 
   /** 実時間 1ms あたりのピクセル数(1080p)。 */
   get pixelsPerMs() {
-    return SCROLL_BASE_PX_PER_MS * this.scrollCurrentRatio;
+    return this.scrollBasePxPerMs * this.scrollCurrentRatio;
+  }
+
+  /** ハイスピード x1.0 の速さ(1080p の px/ms)。ギター / ベースはドラムの半分(js/game/gbplayer.js)。 */
+  get scrollBasePxPerMs() {
+    return SCROLL_BASE_PX_PER_MS;
   }
 
   /** 描画用の譜面時刻(ノーツ表示調整を反映。判定には使わない)。 */
@@ -673,7 +726,22 @@ export class Player {
         this._seLast.set(ev.channel, v);
       }
     }
-    // AUTO チップの音(判定は processJudgement で songMs 到達時に行う)
+    // 伴奏(弾いていない楽器のチップ。NX はバーの通過で音だけ鳴らす)。ギター / ベースは前の音を止めてから鳴らす
+    while (this._accompIndex < this.accomp.length && this.accomp[this._accompIndex].timeMs <= limit) {
+      const ev = this.accomp[this._accompIndex++];
+      const when = this.ctxTimeAt(ev.timeMs);
+      if (ev.mono) {
+        const prev = this._accompLast.get(ev.mono);
+        if (prev) this.audio.stopVoice(prev, when);
+      }
+      const v = this._playAccomp(ev, when);
+      if (v && ev.mono) this._accompLast.set(ev.mono, v);
+    }
+    this._scheduleNoteSounds(limit);
+  }
+
+  /** 弾いている楽器の AUTO チップの音を limit(譜面時刻)まで予約する(判定は processJudgement で songMs 到達時に行う)。 */
+  _scheduleNoteSounds(limit) {
     while (this._autoSoundIndex < this.notes.length && this.notes[this._autoSoundIndex].timeMs <= limit) {
       const i = this._autoSoundIndex++;
       const n = this.notes[i];
@@ -945,6 +1013,22 @@ export class Player {
     this.chart = null;
     this.audio.stopAll();
   }
+}
+
+/**
+ * 伴奏のイベント(弾いていない楽器のチップ。時刻順)。played は弾く楽器(INSTRUMENT)。
+ * ドラムは可視チップだけ(不可視チップは叩いたときだけ鳴る音なので伴奏にしない)。ギター / ベースは mono を付け、
+ * 同じパートの前の音を止めてから鳴らす(NX tPlaySound のギター / ベースの扱い)。
+ */
+export function buildAccompaniment(chart, played) {
+  const out = [];
+  if (played !== INSTRUMENT.DRUMS) for (const n of chart.notes) out.push({ timeMs: n.timeMs, wavId: n.wavId, mono: null });
+  for (const [inst, gb, key] of [[INSTRUMENT.GUITAR, chart.guitar, 'guitar'], [INSTRUMENT.BASS, chart.bass, 'bass']]) {
+    if (inst === played || !gb) continue;
+    for (const n of gb.notes) out.push({ timeMs: n.timeMs, wavId: n.wavId, mono: key });
+  }
+  out.sort((a, b) => a.timeMs - b.timeMs);
+  return out;
 }
 
 /** timeMs < target となるイベント数(先頭から。時刻順が前提)。 */

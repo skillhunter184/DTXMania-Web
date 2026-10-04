@@ -8,7 +8,7 @@ import { parseDTX } from '../js/core/dtx.js';
 
 // t() を使うファイル。キーの書き間違いと、使われていないキーを探す。t() を使うファイルを足したらここにも足す
 const SOURCES = [
-  '../index.html', '../js/main.js', '../js/ui/menu.js', '../js/ui/midipanel.js', '../js/ui/keybind.js',
+  '../index.html', '../js/main.js', '../js/ui/menu.js', '../js/ui/midipanel.js', '../js/ui/keybind.js', '../js/ui/keypanel.js',
   '../js/ui/midibind.js', '../js/ui/renderer.js', '../js/game/player.js', '../js/game/training.js',
   '../js/core/zip.js', '../js/core/song.js',
 ];

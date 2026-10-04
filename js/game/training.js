@@ -17,6 +17,11 @@ export const SCROLL_SPEED_MIN = 1, SCROLL_SPEED_MAX = 2000; // x0.1 〜 x200.0
 export const PLAY_SPEED_MIN = 5, PLAY_SPEED_MAX = 40;
 export const AUTO_LANE_COUNT = 11; // 0-9 がレーン、10 が LBD(NX 互換で 11 桁保つ)
 export const AUTO_LANE_LBD = 10;
+// ギター / ベースのボタン別 AUTO(R G B Y P / ピック / ウェイリング。NX [AutoPlay] の GuitarR〜GuitarWailing と同じ並び)。
+// ギターとベースは同時に 1 つしか弾かないので 1 組を共有する(NX は楽器ごとに持つ)
+export const GB_AUTO_COUNT = 7;
+export const GB_AUTO_PICK = 5;
+export const GB_AUTO_WAIL = 6;
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -42,6 +47,17 @@ export class TrainingSettings {
     /** ループ開始/終了位置(ms、譜面時刻)。保存しない。 */
     this.loopBeginMs = 0;
     this.loopEndMs = 0;
+    // ---- ギター / ベース(本アプリの追加。ドラムと別に持つ) ----
+    /** ボタン別 AUTO(GB_AUTO_COUNT 個)。 */
+    this.gbAutoLanes = new Array(GB_AUTO_COUNT).fill(false);
+    /**
+     * ハイスピード(0.1 刻み)。ギターの流れる速さの基準はドラムの半分なので別に持つ(NX も楽器ごと)。
+     * 既定は x2.0(本アプリで決めた値)。NX の既定 x1.0 はギターだと判定ラインまで約 5.8 秒かかり、
+     * ドラムの既定(約 3.6 秒)よりずっと遅いため。
+     */
+    this.gbScrollSpeedTenth = 20;
+    /** リバース(判定ラインを画面下に置き、チップを上から下へ流す。NX GuitarReverse / BassReverse)。 */
+    this.gbReverse = false;
   }
 
   get loopRangeValid() {
@@ -53,11 +69,16 @@ export class TrainingSettings {
   get hiSpeedRatio() {
     return this.scrollSpeedTenth * 0.1;
   }
+  get gbHiSpeedRatio() {
+    return this.gbScrollSpeedTenth * 0.1;
+  }
 
   clamp() {
     this.noteOffsetMs = clamp(this.noteOffsetMs | 0, NOTE_OFFSET_MIN, NOTE_OFFSET_MAX);
     this.judgeOffsetMs = clamp(this.judgeOffsetMs | 0, JUDGE_OFFSET_MIN, JUDGE_OFFSET_MAX);
     this.scrollSpeedTenth = clamp(this.scrollSpeedTenth | 0, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX);
+    this.gbScrollSpeedTenth = clamp(this.gbScrollSpeedTenth | 0, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX);
+    this.gbReverse = !!this.gbReverse;
     this.playSpeed = clamp(this.playSpeed | 0, PLAY_SPEED_MIN, PLAY_SPEED_MAX);
     this.startWaitMs = clamp(this.startWaitMs | 0, START_WAIT_MIN, START_WAIT_MAX);
     this.startWaitMs = Math.floor(this.startWaitMs / START_WAIT_STEP) * START_WAIT_STEP;
@@ -68,6 +89,11 @@ export class TrainingSettings {
       const a = new Array(AUTO_LANE_COUNT).fill(false);
       if (Array.isArray(this.autoLanes)) for (let i = 0; i < Math.min(a.length, this.autoLanes.length); i++) a[i] = !!this.autoLanes[i];
       this.autoLanes = a;
+    }
+    if (!Array.isArray(this.gbAutoLanes) || this.gbAutoLanes.length !== GB_AUTO_COUNT) {
+      const a = new Array(GB_AUTO_COUNT).fill(false);
+      if (Array.isArray(this.gbAutoLanes)) for (let i = 0; i < Math.min(a.length, this.gbAutoLanes.length); i++) a[i] = !!this.gbAutoLanes[i];
+      this.gbAutoLanes = a;
     }
     return this;
   }
@@ -92,6 +118,9 @@ export class TrainingSettings {
       startWaitMs: this.startWaitMs,
       loop: this.loop,
       loopUnit: this.loopUnit,
+      gbAutoLanes: this.gbAutoLanes.map((b) => (b ? '1' : '0')).join(''),
+      gbScrollSpeedTenth: this.gbScrollSpeedTenth,
+      gbReverse: this.gbReverse,
     };
   }
 
@@ -100,9 +129,13 @@ export class TrainingSettings {
     if (obj && typeof obj === 'object') {
       if ('autoPlay' in obj) s.autoPlay = !!obj.autoPlay;
       if (typeof obj.autoLanes === 'string') s.autoLanesFromString(obj.autoLanes);
-      for (const k of ['noteOffsetMs', 'judgeOffsetMs', 'scrollSpeedTenth', 'playSpeed', 'startWaitMs', 'loopUnit']) {
+      for (const k of ['noteOffsetMs', 'judgeOffsetMs', 'scrollSpeedTenth', 'playSpeed', 'startWaitMs', 'loopUnit', 'gbScrollSpeedTenth']) {
         if (Number.isFinite(obj[k])) s[k] = obj[k];
       }
+      if (typeof obj.gbAutoLanes === 'string') {
+        for (let i = 0; i < s.gbAutoLanes.length && i < obj.gbAutoLanes.length; i++) s.gbAutoLanes[i] = obj.gbAutoLanes[i] !== '0';
+      }
+      if ('gbReverse' in obj) s.gbReverse = !!obj.gbReverse;
       // 0.5 刻みで保存されていた頃の設定を引き継ぐ(x0.5 の整数 → 0.1 刻み = ×5)
       if (!Number.isFinite(obj.scrollSpeedTenth) && Number.isFinite(obj.scrollSpeed)) {
         s.scrollSpeedTenth = obj.scrollSpeed * 5;

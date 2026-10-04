@@ -15,10 +15,13 @@
 <div id="view"></div>
 <pre id="out" hidden></pre>
 <script type="module">
-  import { PAD_SRC, PAD_ROW_GRAY, PAD_ROW_LIT, JUDGE_SRC, COLUMN_ORDER } from '../../js/ui/skin.js';
+  import { PAD_SRC, PAD_ROW_GRAY, PAD_ROW_LIT, JUDGE_SRC, COLUMN_ORDER, GB_CHIPS_SRC, GB_NECK_SRC } from '../../js/ui/skin.js';
   import { drawChipArt, drawJudgeArt } from './chips.js';
   import { drawPadArt } from './pads.js';
   import { drawScorePanelArt, drawSongPanelArt } from './panels.js';
+  import {
+    drawGbChipArt, drawGbBodyArt, drawGbOpenArt, drawGbWailArt, drawGbTopArt, drawGbBottomArt, drawGbHitBarArt, drawGbStripArt,
+  } from './guitar.js';
 
   // 画像の大きさと並びは skins/README.md(js/ui/skin.js の SKIN_PARTS の標準の配置)
   const S = Number(new URLSearchParams(location.search).get('scale')) || 2;
@@ -77,7 +80,43 @@
     drawSongPanelArt(g);
   }
 
-  const files = { 'chips.png': chips, 'pads.png': pads, 'score_panel.png': score, 'song_panel.png': song };
+  /** 枠 [x, y, w, h] の中に (0, 0)-(w, h) の論理 px で描く。 */
+  function cell(g, [x, y, w, h], draw) {
+    g.save();
+    g.translate(x, y);
+    draw(w, h);
+    g.restore();
+  }
+
+  // gb_chips.png(320×180): チップ・ロングノートの胴(R G B Y P)・OPEN・ウェイリングチップ
+  const gbChips = sheet(320, 180);
+  {
+    const g = gbChips.getContext('2d');
+    g.scale(S, S);
+    GB_CHIPS_SRC.chips.forEach((r, i) => cell(g, r, (w, h) => drawGbChipArt(g, i, w, h)));
+    GB_CHIPS_SRC.bodies.forEach((r, i) => cell(g, r, (w, h) => drawGbBodyArt(g, i, w, h)));
+    cell(g, GB_CHIPS_SRC.open, (w, h) => drawGbOpenArt(g, w, h));
+    cell(g, GB_CHIPS_SRC.wail, (w, h) => drawGbWailArt(g, w, h));
+  }
+
+  // gb_neck.png(424×408): ボタン列(消灯・点灯)・下の枠(通常・ピック点灯)・判定ライン・パネルの地
+  const gbNeck = sheet(424, 408);
+  {
+    const g = gbNeck.getContext('2d');
+    g.scale(S, S);
+    const N = GB_NECK_SRC;
+    cell(g, N.top, (w, h) => drawGbTopArt(g, false, w, h));
+    cell(g, N.topLit, (w, h) => drawGbTopArt(g, true, w, h));
+    cell(g, N.bottom, (w, h) => drawGbBottomArt(g, false, w, h));
+    cell(g, N.bottomLit, (w, h) => drawGbBottomArt(g, true, w, h));
+    cell(g, N.hitBar, (w, h) => drawGbHitBarArt(g, w, h));
+    cell(g, N.strip, (w, h) => drawGbStripArt(g, w, h));
+  }
+
+  const files = {
+    'chips.png': chips, 'pads.png': pads, 'score_panel.png': score, 'song_panel.png': song,
+    'gb_chips.png': gbChips, 'gb_neck.png': gbNeck,
+  };
   const view = document.getElementById('view');
   for (const [name, c] of Object.entries(files)) {
     const h = document.createElement('h2');

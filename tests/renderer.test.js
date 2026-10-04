@@ -238,7 +238,7 @@ async function quiet(fn) {
 
 test('skin: the bundled default skin is read as images in the standard layout', async () => {
   const skin = await Skin.load(null, { defaultBase: DEFAULT_BASE });
-  assertEq(Object.keys(skin.images).sort().join(','), 'chips,pads,scorePanel,songPanel', 'every part is an image');
+  assertEq(Object.keys(skin.images).sort().join(','), 'chips,gbChips,gbNeck,pads,scorePanel,songPanel', 'every part is an image');
   assertEq(skin.missing.length, 0, 'nothing missing');
   for (const [part, cands] of Object.entries(SKIN_PARTS)) {
     const img = skin.images[part];
@@ -264,7 +264,7 @@ test('skin: a skin in the earlier file names is read in its own layout; missing 
   assertEq(skin.layouts.chips.chips.LC.join(','), '9,308,245,48', 'earlier chip sheet');
   assertEq(skin.layouts.chips.chips.RD.join(','), skin.layouts.chips.chips.CY.join(','), 'RD uses the CY chip');
   assertEq(skin.scales.pads, 1);
-  assertEq(skin.missing.join(','), 'score_panel.png,song_panel.png', 'reported by the standard names');
+  assertEq(skin.missing.join(','), 'score_panel.png,song_panel.png,gb_chips.png,gb_neck.png', 'reported by the standard names');
   assert(skin.images.scorePanel && skin.images.songPanel, 'panels taken from the default skin');
   assertEq(skin.scorePanel.src[0], 0, 'default panel in the standard layout');
 });
@@ -275,6 +275,8 @@ test('skin: a high-resolution skin is scaled to its layout and drawn at the logi
     ['pads.webp', await pngBlob(2340, 567)],
     ['score_panel.jpg', await pngBlob(744, 792)],
     ['song_panel.png', await pngBlob(1332, 417)],
+    ['gb_chips.png', await pngBlob(960, 540)],
+    ['GB_NECK.webp', await pngBlob(1272, 1224)],
   ]);
   const skin = await Skin.load({ files }, { defaultBase: null });
   assertEq(skin.missing.length, 0, 'names match without case or extension');
@@ -282,6 +284,7 @@ test('skin: a high-resolution skin is scaled to its layout and drawn at the logi
   assertEq(skin.layouts.chips.chips.RD.join(','), '12,660,360,48', 'the last row (RD)');
   assertEq(skin.scorePanel.countRight, 152 * 3);
   assertEq(skin.songPanel.jacket.join(','), '30,90,300,300');
+  assertEq(skin.layouts.gbChips.wail.join(','), '12,216,243,306', 'guitar parts scaled too');
   const c = document.createElement('canvas');
   c.width = 1920;
   c.height = 1080;
@@ -314,7 +317,7 @@ test('skin: picked images and ZIPs keep only the skin images; folder paths get a
 test('skin: without any image every part falls back to plain shapes inside its box', async () => {
   const skin = await quiet(() => Skin.load({ base: 'no-such-skin/' }, { defaultBase: 'no-such-default/' }));
   assertEq(Object.keys(skin.images).length, 0);
-  assertEq(skin.missing.join(','), 'chips.png,pads.png,score_panel.png,song_panel.png');
+  assertEq(skin.missing.join(','), 'chips.png,pads.png,score_panel.png,song_panel.png,gb_chips.png,gb_neck.png');
   assertEq(skin.scorePanel.rows.length, 6, 'numbers still placed by the standard layout');
   assertEq(skin.judge, null);
   const c = document.createElement('canvas');

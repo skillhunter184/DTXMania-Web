@@ -3,19 +3,21 @@
 import { SongPackage } from './core/song.js';
 import { AudioEngine } from './core/audio.js';
 import { loadJSON, saveJSON, saveLastZip, loadLastZip, saveSkinFiles, loadSkinFiles } from './core/storage.js';
-import { LANE_NAMES } from './core/dtx.js';
+import { LANE_NAMES, INSTRUMENT, gbPart } from './core/dtx.js';
+import { chartHasInstrument } from './core/instmerge.js';
 import { TrainingSettings, LOOP_UNIT, stepLoopTime, formatLoopTime } from './game/training.js';
 import { Player, PLAYER_STATE } from './game/player.js';
+import { GuitarPlayer } from './game/gbplayer.js';
 import { HitRanges } from './game/hitranges.js';
 import { Skin, PANELS, LEGACY_SKIN_BASE, collectSkinFiles, normalizeSkinPath } from './ui/skin.js';
 import { Renderer } from './ui/renderer.js';
+import { GuitarRenderer } from './ui/gbrenderer.js';
 import { FramePacer, IDLE_DRAW_FPS } from './ui/framepace.js';
 import { TrainingMenu, MENU_COMMAND } from './ui/menu.js';
-import { DrumInput, LANE_KEY_DEFAULTS, keyLabel, eventCode } from './ui/input.js';
-import {
-  LANE_COUNT, MAX_KEYS_PER_LANE, addKey, replaceKey, removeKey, clearLane, resetLane,
-  defaultBindings, normalizeBindings, isAssignableCode, isModifierCode, laneKeysText,
-} from './ui/keybind.js';
+import { DrumInput, LANE_KEY_DEFAULTS } from './ui/input.js';
+import { GuitarInput, GB_KEY_DEFAULTS, GB_BUTTON_NAMES } from './ui/gbinput.js';
+import { defaultBindings, normalizeBindings, laneKeysText } from './ui/keybind.js';
+import { KeyBindPanel } from './ui/keypanel.js';
 import { MidiInput } from './ui/midi.js';
 import { defaultMidiNotes, defaultVelocityMin, normalizeMidiNotes, normalizeVelocityMin } from './ui/midibind.js';
 import { MidiPanel } from './ui/midipanel.js';
@@ -29,6 +31,10 @@ const textOf = (m) => (typeof m === 'function' ? m() : m || '');
 
 const DEFAULT_CONFIG = {
   bindings: defaultBindings(),
+  // ギター / ベースのキー(R G B Y P / PICK / WAIL。ドラムとは別に持ち、ギターとベースで共有する。js/ui/gbinput.js)
+  gbBindings: defaultBindings(GB_KEY_DEFAULTS),
+  gbVolume: 100, // 弾いているギター / ベースの音量(ドラムの chipVolume と同じく 'chip' のバス)
+  gbLight: true, // 空ピック(押さえ方の違うピック)を BAD にしない(NX GuitarLight / BassLight。既定 ON)
   // 電子ドラム(MIDI)。キーボードの bindings とは別に持つ(js/ui/midibind.js の冒頭)
   midiNotes: defaultMidiNotes(),
   midiVelocityMin: defaultVelocityMin(),
@@ -56,7 +62,10 @@ function clockText(ms) {
   return m + ':' + (t - m * 60).toFixed(1).padStart(4, '0');
 }
 
-/** #DLEVEL の表示(DTXMania と同じ 2 桁レベルは 1/10、3 桁は 1/100 の小数表記)。 */
+/** 楽器の表示名のキー(js/i18n.js。INSTRUMENT の番号の順)。 */
+const INSTRUMENT_NAMES = ['song.drums', 'song.guitar', 'song.bass'];
+
+/** #DLEVEL / #GLEVEL / #BLEVEL の表示(DTXMania と同じ 2 桁レベルは 1/10、3 桁は 1/100 の小数表記)。 */
 function levelText(level, dec) {
   if (!level) return '';
   const v = level >= 100 ? level / 10 : level / 10 + (dec || 0) / 100;
@@ -76,6 +85,10 @@ class App {
     const norm = normalizeBindings(this.config.bindings);
     this.config.bindings = norm.bindings;
     this._keysRepaired = norm.repaired; // 起動時に直したレーン(設定を開いたときに知らせる)
+    const gbNorm = normalizeBindings(this.config.gbBindings, GB_KEY_DEFAULTS);
+    this.config.gbBindings = gbNorm.bindings;
+    this._gbKeysRepaired = gbNorm.repaired;
+    this.config.gbLight = this.config.gbLight !== false;
     const midiNorm = normalizeMidiNotes(this.config.midiNotes);
     this.config.midiNotes = midiNorm.notes;
     this.config.midiVelocityMin = normalizeVelocityMin(this.config.midiVelocityMin);
@@ -92,6 +105,7 @@ class App {
     this.audio = new AudioEngine();
     this.audio.userLatencyMs = this.config.latencyMs;
     this.audio.setMasterVolume(this.config.masterVolume / 100);
+    this.playInst = INSTRUMENT.DRUMS; // 演奏中の楽器(音量の振り分けとメニューに使う)
     this.applyVolumes();
     this.skin = null;
     this._skinLoad = null; // 設定に合わせた Skin の読み込み(loadSkin)。演奏開始はこれを待つ
@@ -104,14 +118,11 @@ class App {
     this.raf = 0;
     this.pacer = new FramePacer(); // 停止中の描画の間引き(画面の Hz は曲をまたいで持ち越す)
     this._loadGen = 0;
-    this._assign = null; // キー割り当ての待ち受け {lane, mode, index, finish}
-    this._keysUndo = null; // 直前の bindings(1 段だけの「元に戻す」)
-    this._keysUndoLane = null; // その操作をしたレーン(undo 後にフォーカスを戻す先)
-    this._keyPos = new Array(LANE_COUNT).fill(0); // 行ごとのカーソル位置(ローミング tabindex)
+    this.keyPanel = null; // 設定の「キー割り当て」(js/ui/keypanel.js)
+    this.gbKeyPanel = null; // 同じくギター / ベース
     this._seek = null; // 停止中のシークバー
     this._wakeLock = null;
     this._status = null; // ホームの状態表示 {msg, error}(言語の切り替えで作り直す)
-    this._keyStatus = ''; // キー割り当ての状態表示(同上)
     this._skinNotes = []; // スキンの下の注記(同上)
     this._lastZip = null; // 「前回の ZIP を開く」の {blob, name}
     this.isTouch = matchMedia('(pointer: coarse)').matches;
@@ -191,9 +202,10 @@ class App {
   relocalize() {
     if (this._status) this.setStatus(this._status.msg, this._status.error);
     if (this._lastZip) this.showLastButton(this._lastZip.blob, this._lastZip.name);
-    this.renderAllKeyLanes();
+    if (this.keyPanel) this.keyPanel.relocalize();
+    if (this.gbKeyPanel) this.gbKeyPanel.relocalize();
     this.updateHelpKeys();
-    this.setKeyStatus(this._keyStatus);
+    if (this.pkg) this.renderSongList();
     if (this.midiPanel) this.midiPanel.relocalize();
     if (this.skin) this.renderSkinFilesInfo();
     this.renderSkinNote();
@@ -302,13 +314,24 @@ class App {
 
   async showSongList() {
     const pkg = this.pkg;
-    const list = $('song-list');
-    list.innerHTML = '';
     if (!pkg.songs.length) {
+      $('song-list').innerHTML = '';
       this.setStatus(msg('load.noCharts'), true);
       return;
     }
     this.setStatus(msg('load.songCount', { name: pkg.name || 'ZIP', n: pkg.songs.length }));
+    this.renderSongList();
+  }
+
+  /**
+   * 曲の一覧。曲ごとに、楽器(ドラム / ギター / ベース)ごとの行に難易度のボタンを並べる。1 つの譜面にギターとベースが
+   * 入っていれば両方の行に出る。楽器の判らない譜面(レベルもチップも無い)はドラムの行に置く(以前の一覧と同じ)。
+   */
+  renderSongList() {
+    const pkg = this.pkg;
+    const list = $('song-list');
+    list.innerHTML = '';
+    if (!pkg || !pkg.songs.length) return;
     for (const song of pkg.songs) {
       const li = document.createElement('li');
       li.className = 'song';
@@ -318,17 +341,32 @@ class App {
       const meta = document.createElement('div');
       meta.className = 'meta';
       const h = song.charts[0].header;
-      meta.innerHTML = `<div class="title"></div><div class="artist"></div><div class="charts"></div>`;
+      meta.innerHTML = `<div class="title"></div><div class="artist"></div>`;
       meta.querySelector('.title').textContent = song.title;
       meta.querySelector('.artist').textContent = [h.artist, h.bpm ? 'BPM ' + h.bpm : ''].filter(Boolean).join('  ');
-      const charts = meta.querySelector('.charts');
-      for (const c of song.charts) {
-        const b = document.createElement('button');
-        b.innerHTML = `<span class="lbl"></span><span class="lv"></span>`;
-        b.querySelector('.lbl').textContent = c.label || c.header.title || c.path.split('/').pop();
-        b.querySelector('.lv').textContent = levelText(c.header.level, c.header.levelDec);
-        b.onclick = () => this.startChart(song, c);
-        charts.appendChild(b);
+      for (const inst of [INSTRUMENT.DRUMS, INSTRUMENT.GUITAR, INSTRUMENT.BASS]) {
+        const charts = song.charts.filter((c) => chartHasInstrument(c.header, inst)
+          || (inst === INSTRUMENT.DRUMS && ![0, 1, 2].some((i) => chartHasInstrument(c.header, i))));
+        if (!charts.length) continue;
+        const row = document.createElement('div');
+        row.className = 'charts inst-' + inst;
+        const tag = document.createElement('span');
+        tag.className = 'inst';
+        tag.textContent = t(INSTRUMENT_NAMES[inst]);
+        row.appendChild(tag);
+        for (const c of charts) {
+          const b = document.createElement('button');
+          b.innerHTML = `<span class="lbl"></span><span class="lv"></span>`;
+          const label = c.label || c.header.title || c.path.split('/').pop();
+          b.querySelector('.lbl').textContent = label;
+          const levels = c.header.levels || [c.header.level, 0, 0];
+          const decs = c.header.levelDecs || [c.header.levelDec, 0, 0];
+          b.querySelector('.lv').textContent = levelText(levels[inst], decs[inst]);
+          b.setAttribute('aria-label', t('song.playLabel', { inst: t(INSTRUMENT_NAMES[inst]), label }));
+          b.onclick = () => this.startChart(song, c, inst);
+          row.appendChild(b);
+        }
+        meta.appendChild(row);
       }
       li.appendChild(img);
       li.appendChild(meta);
@@ -337,419 +375,55 @@ class App {
     }
   }
 
-  // ---- キー割り当て UI ----
-  // 1 レーン = 1 行のチップ列。キー名を押すと差し替え、× で 1 個外す、＋ 追加で足す。
-  // タブ停止点は 1 行 1 個だけにして(ローミング tabindex)、行内は ←→、レーン間は ↑↓ で移動する。
+  // ---- キー割り当て UI(js/ui/keypanel.js) ----
 
   /** キー割り当ての待ち受けを畳む(割り当ては行わない)。reason を渡すと状態表示も書き換える。 */
   cancelAssign(reason) {
-    const a = this._assign;
-    if (!a) return;
-    this._assign = null;
-    a.finish();
-    if (reason) this.setKeyStatus(reason);
-  }
-
-  _keyRow(lane) {
-    return $('key-list').querySelector('.key-row[data-lane="' + lane + '"]');
-  }
-
-  /**
-   * 行内のカーソル対象ボタン(DOM 順)。
-   * 「中止」は待ち受け中だけ現れて消えるので対象から外す。含めると、中止を押した拍子に
-   * カーソルが 1 つ手前(= レーンを空にする「解除」)へ滑ってしまう。
-   */
-  _keyItems(lane) {
-    const row = this._keyRow(lane);
-    return row ? Array.from(row.querySelectorAll('button:not(.chip-cancel)')) : [];
-  }
-
-  /** 行のタブ停止点をカーソル位置の 1 個だけにする。 */
-  _keyApplyTabIndex(lane) {
-    const items = this._keyItems(lane);
-    if (!items.length) return;
-    const pos = Math.max(0, Math.min(this._keyPos[lane], items.length - 1));
-    this._keyPos[lane] = pos;
-    items.forEach((b, i) => { b.tabIndex = i === pos ? 0 : -1; });
-  }
-
-  _keyFocus(lane, pos) {
-    const items = this._keyItems(lane);
-    if (!items.length) return;
-    this._keyPos[lane] = Math.max(0, Math.min(pos, items.length - 1));
-    this._keyApplyTabIndex(lane);
-    items[this._keyPos[lane]].focus({ preventScroll: true });
-  }
-
-  _keyFocusEl(lane, el) {
-    const i = el ? this._keyItems(lane).indexOf(el) : -1;
-    if (i >= 0) this._keyFocus(lane, i);
+    if (this.keyPanel) this.keyPanel.cancelAssign(reason);
+    if (this.gbKeyPanel) this.gbKeyPanel.cancelAssign(reason);
   }
 
   buildKeyUi() {
-    const list = $('key-list');
-    list.textContent = '';
-    for (let lane = 0; lane < LANE_COUNT; lane++) {
-      const row = document.createElement('div');
-      row.className = 'key-row';
-      row.dataset.lane = String(lane);
-      row.setAttribute('role', 'group');
-      const name = document.createElement('span');
-      name.className = 'key-lane';
-      name.setAttribute('aria-hidden', 'true');
-      name.textContent = LANE_NAMES[lane];
-      const chips = document.createElement('div');
-      chips.className = 'chips';
-      row.appendChild(name);
-      row.appendChild(chips);
-      list.appendChild(row);
-    }
-    // マウスで押したときもカーソル位置を合わせる(再描画後のフォーカス復帰に使う)
-    list.addEventListener('focusin', (e) => {
-      const row = e.target.closest ? e.target.closest('.key-row') : null;
-      if (!row) return;
-      const lane = Number(row.dataset.lane);
-      const i = this._keyItems(lane).indexOf(e.target);
-      if (i >= 0 && i !== this._keyPos[lane]) { this._keyPos[lane] = i; this._keyApplyTabIndex(lane); }
-    });
-    list.addEventListener('keydown', (e) => this.onKeyListKey(e));
-    $('key-undo').onclick = () => this.undoKeys();
-    $('btn-keys-default').onclick = () => {
-      this.cancelAssign();
-      const before = this.config.bindings.map((a) => a.slice());
-      this.commitBindings(defaultBindings(), msg('keys.resetAllDone'), before);
-      this.renderAllKeyLanes();
-      $('btn-keys-default').focus({ preventScroll: true });
+    // ドラムとギター / ベースの欄・電子ドラムの「叩いて追加」は同時には待たない(待ち受けを始めたらほかを畳む)
+    const others = (self) => () => {
+      for (const p of [this.keyPanel, this.gbKeyPanel]) if (p && p !== self) p.cancelAssign(msg('common.canceled'));
+      if (this.midiPanel) this.midiPanel.cancelCapture(msg('common.canceled'));
     };
-    this.renderAllKeyLanes();
-    this.updateHelpKeys();
-    const bad = (this._keysRepaired || []).map((l) => LANE_NAMES[l]);
-    this.setKeyStatus(bad.length ? msg('keys.repaired', { lanes: bad.join(' / ') }) : '');
-  }
-
-  /** 1 レーン分だけ描き直す(変化した行以外のフォーカスとハンドラを壊さない)。 */
-  renderKeyLane(lane) {
-    const row = this._keyRow(lane);
-    if (!row) return;
-    const chips = row.querySelector('.chips');
-    const hadFocus = row.contains(document.activeElement);
-    const codes = this.config.bindings[lane]; // 毎回読み直す(差し替え前の配列を掴まない)
-    const cap = this._assign && this._assign.lane === lane ? this._assign : null;
-    const name = LANE_NAMES[lane];
-    row.setAttribute('aria-label', t('keys.rowLabel', { lane: name }));
-    chips.textContent = '';
-
-    codes.forEach((code, i) => {
-      const capturing = !!cap && cap.mode === 'replace' && cap.index === i;
-      const chip = document.createElement('span');
-      chip.className = 'chip';
-      const key = document.createElement('button');
-      key.type = 'button';
-      key.className = 'chip-key' + (capturing ? ' listening' : '');
-      key.textContent = capturing ? '⌨' : keyLabel(code);
-      key.setAttribute('aria-label', t(capturing ? 'keys.chipCapturing' : 'keys.chip', { lane: name, key: keyLabel(code) }));
-      key.onclick = () => this.startAssign(lane, 'replace', i);
-      const del = document.createElement('button');
-      del.type = 'button';
-      del.className = 'chip-del';
-      del.textContent = '×';
-      del.title = t('common.remove');
-      del.setAttribute('aria-label', t('keys.removeLabel', { lane: name, key: keyLabel(code) }));
-      del.onclick = () => this.removeKeyAt(lane, i);
-      chip.appendChild(key);
-      chip.appendChild(del);
-      chips.appendChild(chip);
+    this.keyPanel = new KeyBindPanel({
+      list: $('key-list'),
+      statusText: $('key-status-text'),
+      undoButton: $('key-undo'),
+      resetAllButton: $('btn-keys-default'),
+      names: LANE_NAMES,
+      defaults: LANE_KEY_DEFAULTS,
+      getBindings: () => this.config.bindings,
+      setBindings: (next) => { this.config.bindings = next; this.saveConfig(); },
+      onChange: () => this.updateHelpKeys(),
     });
-    if (!codes.length) {
-      const none = document.createElement('span');
-      none.className = 'chip-empty';
-      none.textContent = t('common.none');
-      chips.appendChild(none);
-    }
-
-    const adding = !!cap && cap.mode === 'add';
-    const full = codes.length >= MAX_KEYS_PER_LANE;
-    const add = document.createElement('button');
-    add.type = 'button';
-    add.className = 'chip-add' + (adding ? ' listening' : '') + (full && !adding ? ' is-full' : '');
-    add.textContent = t(adding ? 'keys.waiting' : 'keys.add');
-    if (full && !adding) add.setAttribute('aria-disabled', 'true');
-    add.setAttribute('aria-label', full
-      ? t('keys.fullLabel', { lane: name, max: MAX_KEYS_PER_LANE })
-      : t('keys.addLabel', { lane: name, n: codes.length, max: MAX_KEYS_PER_LANE }));
-    add.onclick = () => this.startAssign(lane, 'add', -1);
-    chips.appendChild(add);
-
-    const reset = document.createElement('button');
-    reset.type = 'button';
-    reset.className = 'chip-lane-cmd';
-    reset.textContent = t('common.default');
-    reset.setAttribute('aria-label', t('assign.resetLabel', { lane: name, list: laneKeysText(LANE_KEY_DEFAULTS[lane]) }));
-    reset.onclick = () => this.resetKeyLane(lane);
-    chips.appendChild(reset);
-
-    const clear = document.createElement('button');
-    clear.type = 'button';
-    clear.className = 'chip-lane-cmd';
-    clear.textContent = t('common.clear');
-    clear.setAttribute('aria-label', t('keys.clearLabel', { lane: name }));
-    clear.onclick = () => this.clearKeyLane(lane);
-    chips.appendChild(clear);
-
-    if (cap) {
-      const cancel = document.createElement('button');
-      cancel.type = 'button';
-      cancel.className = 'chip-cancel';
-      cancel.textContent = t('common.cancel');
-      cancel.tabIndex = 0; // _keyItems の対象外なので自前で持たせる
-      cancel.onclick = () => this.cancelAssign(msg('common.canceled'));
-      chips.appendChild(cancel);
-    }
-
-    if (hadFocus) this._keyFocus(lane, this._keyPos[lane]);
-    else this._keyApplyTabIndex(lane);
-  }
-
-  renderAllKeyLanes() {
-    for (let lane = 0; lane < LANE_COUNT; lane++) this.renderKeyLane(lane);
-  }
-
-  /** 他レーンから取り上げた / 入れ替えた行を 1 秒だけ光らせる(気付かれずに変わらないように)。 */
-  flashKeyLane(lane) {
-    const row = this._keyRow(lane);
-    if (!row) return;
-    row.classList.remove('row-changed');
-    void row.offsetWidth; // アニメーションを再start させる
-    row.classList.add('row-changed');
-    setTimeout(() => row.classList.remove('row-changed'), 1000);
-  }
-
-  /** キー割り当ての状態表示。text は文字列か、今の言語の文言を返す関数(msg)。 */
-  setKeyStatus(text) {
-    this._keyStatus = text || '';
-    $('key-status-text').textContent = textOf(text);
-    // 「元に戻す」の有無はスナップショットの生死だけで決める。案内や中止のメッセージで消さない
-    // (取り上げ / スワップに気付いて次の操作を始めた瞬間に復旧手段が消えてしまうため)。
-    $('key-undo').hidden = !this._keysUndo;
-  }
-
-  /** bindings を差し替えて保存する。before を渡すと「元に戻す」を出す。 */
-  commitBindings(next, text, before, lane) {
-    if (before) {
-      this._keysUndo = before;
-      this._keysUndoLane = lane === undefined ? null : lane;
-    }
-    this.config.bindings = next;
-    this.saveConfig();
+    this.keyPanel.beforeAssign = others(this.keyPanel);
+    this.gbKeyPanel = new KeyBindPanel({
+      list: $('gb-key-list'),
+      statusText: $('gb-key-status-text'),
+      undoButton: $('gb-key-undo'),
+      resetAllButton: $('btn-gb-keys-default'),
+      names: GB_BUTTON_NAMES,
+      defaults: GB_KEY_DEFAULTS,
+      getBindings: () => this.config.gbBindings,
+      setBindings: (next) => { this.config.gbBindings = next; this.saveConfig(); },
+      onChange: () => this.updateHelpKeys(),
+    });
+    this.gbKeyPanel.beforeAssign = others(this.gbKeyPanel);
+    this.keyPanel.build(this._keysRepaired || []);
+    this.gbKeyPanel.build(this._gbKeysRepaired || []);
     this.updateHelpKeys();
-    this.setKeyStatus(text);
   }
 
-  undoKeys() {
-    const prev = this._keysUndo;
-    if (!prev) return;
-    const lane = this._keysUndoLane;
-    // 「元に戻す」自身が消えるので、フォーカスを body に落とさないよう先に逃がす
-    const hadFocus = document.activeElement === $('key-undo');
-    this.cancelAssign();
-    this._keysUndo = null;
-    this._keysUndoLane = null;
-    this.config.bindings = prev;
-    this.saveConfig();
-    this.updateHelpKeys();
-    this.renderAllKeyLanes();
-    if (hadFocus) {
-      if (lane !== null) this._keyFocus(lane, this._keyPos[lane]);
-      else $('btn-keys-default').focus({ preventScroll: true });
-    }
-    this.setKeyStatus(msg('common.undone'));
-  }
-
-  /** 操作方法パネルのドラム行を今の割り当てで書き直す。 */
+  /** 操作方法パネルのドラム行とギター / ベース行を今の割り当てで書き直す。 */
   updateHelpKeys() {
     const el = $('help-keys');
-    if (!el) return;
-    el.textContent = this.config.bindings.map((codes, lane) => `${LANE_NAMES[lane]}=${laneKeysText(codes)}`).join('  ');
-  }
-
-  /** #key-list 内のキー操作(カーソル移動と Delete)。キャプチャ中はここまで来ない。 */
-  onKeyListKey(e) {
-    const row = e.target.closest ? e.target.closest('.key-row') : null;
-    if (!row) return;
-    const lane = Number(row.dataset.lane);
-    const items = this._keyItems(lane);
-    const pos = items.indexOf(e.target);
-    const code = eventCode(e);
-    // Space はボタンの既定の活性化を殺す。BD の試し打ちで割り当てが暴発するのを防ぐ(実行は Enter)。
-    if (code === 'Space') { e.preventDefault(); return; }
-    if (code === 'ArrowLeft' || code === 'ArrowRight') {
-      e.preventDefault();
-      this._keyFocus(lane, pos + (code === 'ArrowLeft' ? -1 : 1));
-      return;
-    }
-    if (code === 'Home' || code === 'End') {
-      e.preventDefault();
-      this._keyFocus(lane, code === 'Home' ? 0 : items.length - 1);
-      return;
-    }
-    if (code === 'ArrowUp' || code === 'ArrowDown') {
-      e.preventDefault();
-      const next = (lane + (code === 'ArrowUp' ? -1 : 1) + LANE_COUNT) % LANE_COUNT;
-      this._keyFocus(next, this._keyPos[next]);
-      return;
-    }
-    if (code === 'Delete' || code === 'Backspace') {
-      const chip = e.target.closest('.chip');
-      if (!chip) return;
-      e.preventDefault();
-      const index = Array.from(row.querySelectorAll('.chip')).indexOf(chip);
-      if (index >= 0) this.removeKeyAt(lane, index);
-    }
-  }
-
-  /**
-   * キー入力の待ち受けを始める。
-   * @param {number} lane
-   * @param {'add'|'replace'} mode
-   * @param {number} index replace のときの位置
-   */
-  startAssign(lane, mode, index) {
-    this.cancelAssign();
-    if (this.midiPanel) this.midiPanel.cancelCapture(msg('common.canceled')); // 電子ドラムの「叩いて追加」と同時には待たない
-    const name = LANE_NAMES[lane];
-    const codes = this.config.bindings[lane];
-    if (mode === 'add' && codes.length >= MAX_KEYS_PER_LANE) {
-      this.setKeyStatus(msg('keys.fullHint', { lane: name, max: MAX_KEYS_PER_LANE }));
-      return;
-    }
-    if (mode === 'replace' && codes[index] === undefined) return;
-
-    const onKey = (e) => {
-      const code = eventCode(e);
-      if (isModifierCode(code)) return; // 修飾キー単体は押し途中なので無視
-      e.preventDefault();
-      e.stopPropagation(); // 待ち受け中はアプリのホットキーもブラウザの既定も通さない
-      if (code === 'Escape') { this.cancelAssign(msg('common.canceled')); return; }
-      if (!isAssignableCode(code)) {
-        this.setKeyStatus(msg('keys.reserved', { key: keyLabel(code) }));
-        return; // 待ち受けは続ける
-      }
-      this.applyAssign(code);
-    };
-    const onOutside = (e) => { if (!$('key-list').contains(e.target)) this.cancelAssign(msg('common.canceled')); };
-    const onVisibility = () => { if (document.hidden) this.cancelAssign(msg('common.canceled')); };
-    // 安全網。無言で畳まず理由を出す(旧実装は 10 秒で無通知だった)。
-    const timer = setTimeout(() => this.cancelAssign(msg('common.timeout')), 30000);
-    const finish = () => {
-      window.removeEventListener('keydown', onKey, true);
-      document.removeEventListener('click', onOutside, true); // pointerdown だとスクロール開始で誤爆する
-      document.removeEventListener('visibilitychange', onVisibility);
-      clearTimeout(timer);
-      this.renderKeyLane(lane);
-    };
-    window.addEventListener('keydown', onKey, true);
-    document.addEventListener('click', onOutside, true);
-    document.addEventListener('visibilitychange', onVisibility);
-
-    this._assign = { lane, mode, index, finish };
-    this.renderKeyLane(lane);
-    this.setKeyStatus(mode === 'add'
-      ? msg('keys.promptAdd', { lane: name })
-      : msg('keys.promptReplace', { lane: name, key: keyLabel(codes[index]) }));
-  }
-
-  /** 待ち受け中に押されたキーを割り当てる。 */
-  applyAssign(code) {
-    const a = this._assign;
-    if (!a) return;
-    const { lane, mode, index } = a;
-    const name = LANE_NAMES[lane];
-    const before = this.config.bindings.map((x) => x.slice());
-    const old = mode === 'replace' ? this.config.bindings[lane][index] : null;
-    const r = mode === 'add'
-      ? addKey(this.config.bindings, lane, code)
-      : replaceKey(this.config.bindings, lane, index, code);
-
-    if (!r.ok) {
-      if (r.reason === 'already') {
-        this.setKeyStatus(msg('keys.already', { key: keyLabel(code), lane: name }));
-        return; // 待ち受け継続
-      }
-      if (r.reason === 'same') this.cancelAssign(msg('keys.same'));
-      else if (r.reason === 'full') this.cancelAssign(msg('keys.full', { lane: name, max: MAX_KEYS_PER_LANE }));
-      else this.cancelAssign(msg('keys.unassignable', { key: keyLabel(code) }));
-      return;
-    }
-
-    const other = mode === 'add' ? r.stolenFrom : r.swappedWith;
-    const text = () => {
-      let s;
-      if (mode === 'add') {
-        s = t('keys.added', { lane: name, key: keyLabel(code), n: r.bindings[lane].length, max: MAX_KEYS_PER_LANE });
-        if (other !== null && other !== lane) {
-          s += t('assign.movedFrom', { lanes: LANE_NAMES[other] });
-          if (r.stolenEmptied) s += t('assign.nowEmpty', { lanes: LANE_NAMES[other] });
-        }
-      } else {
-        s = t('keys.replaced', { lane: name, old: keyLabel(old), key: keyLabel(code) });
-        if (other !== null && other !== lane) s += t('keys.swapped', { other: LANE_NAMES[other], old: keyLabel(old) });
-        else if (other === lane) s += t('keys.swappedInLane');
-      }
-      return s;
-    };
-
-    this.commitBindings(r.bindings, text, before, lane);
-    this.cancelAssign(); // finish() が lane を描き直す
-    if (other !== null && other !== lane) { this.renderKeyLane(other); this.flashKeyLane(other); }
-    const row = this._keyRow(lane);
-    this._keyFocusEl(lane, mode === 'add'
-      ? row.querySelector('.chip-add') // 続けてもう 1 個足せるように
-      : row.querySelectorAll('.chip-key')[index]);
-  }
-
-  removeKeyAt(lane, index) {
-    this.cancelAssign();
-    const before = this.config.bindings.map((a) => a.slice());
-    const r = removeKey(this.config.bindings, lane, index);
-    if (!r.ok) return;
-    const name = LANE_NAMES[lane];
-    this.commitBindings(r.bindings, r.emptied
-      ? msg('keys.removedEmpty', { lane: name, key: keyLabel(r.removed) })
-      : msg('keys.removed', { lane: name, key: keyLabel(r.removed), n: r.bindings[lane].length, max: MAX_KEYS_PER_LANE }), before, lane);
-    this.renderKeyLane(lane);
-    // 左隣のチップの「キー名」へ(そこなら Delete の連打がそのまま効く)。無ければ先頭 / ＋ 追加。
-    // チップ 1 個 = キー名 + × の 2 ボタンなので、index 番目の左隣のキー名は (index - 1) * 2。
-    if (index > 0) this._keyFocus(lane, index * 2 - 2);
-    else this._keyFocusEl(lane, this._keyRow(lane).querySelector(r.emptied ? '.chip-add' : '.chip-key'));
-  }
-
-  resetKeyLane(lane) {
-    this.cancelAssign();
-    const before = this.config.bindings.map((a) => a.slice());
-    const r = resetLane(this.config.bindings, lane);
-    const name = LANE_NAMES[lane];
-    const stolen = r.stolenFrom.filter((l) => l !== lane);
-    const emptied = r.stolenEmptied.filter((l) => l !== lane);
-    const text = () => {
-      let s = t('assign.resetDone', { lane: name, list: laneKeysText(r.bindings[lane]) });
-      if (stolen.length) s += t('assign.takenFrom', { lanes: stolen.map((l) => LANE_NAMES[l]).join(' / ') });
-      if (emptied.length) s += t('assign.nowEmpty', { lanes: emptied.map((l) => LANE_NAMES[l]).join(' / ') });
-      return s;
-    };
-    this.commitBindings(r.bindings, text, before, lane);
-    this.renderKeyLane(lane);
-    for (const l of stolen) { this.renderKeyLane(l); this.flashKeyLane(l); }
-    this._keyFocusEl(lane, this._keyRow(lane).querySelector('.chip-key'));
-  }
-
-  clearKeyLane(lane) {
-    this.cancelAssign();
-    const before = this.config.bindings.map((a) => a.slice());
-    const r = clearLane(this.config.bindings, lane);
-    const name = LANE_NAMES[lane];
-    this.commitBindings(r.bindings, msg('keys.cleared', { lane: name }), before, lane);
-    this.renderKeyLane(lane);
-    this._keyFocusEl(lane, this._keyRow(lane).querySelector('.chip-add'));
+    if (el) el.textContent = this.config.bindings.map((codes, lane) => `${LANE_NAMES[lane]}=${laneKeysText(codes)}`).join('  ');
+    const gb = $('help-gb-keys');
+    if (gb) gb.textContent = this.config.gbBindings.map((codes, b) => `${GB_BUTTON_NAMES[b]}=${laneKeysText(codes)}`).join('  ');
   }
 
   // ---- 電子ドラム(MIDI) ----
@@ -815,6 +489,10 @@ class App {
     bindRange('cfg-volume', 'masterVolume', (v) => this.audio.setMasterVolume(v / 100));
     bindRange('cfg-chip', 'chipVolume', () => this.applyVolumes());
     bindRange('cfg-bgm', 'bgmVolume', () => this.applyVolumes());
+    bindRange('cfg-gb', 'gbVolume', () => this.applyVolumes());
+    const bad = $('cfg-gb-bad');
+    bad.checked = !c.gbLight;
+    bad.onchange = () => { c.gbLight = !bad.checked; this.saveConfig(); };
     const lat = $('cfg-latency');
     lat.value = c.latencyMs;
     lat.onchange = () => { c.latencyMs = Number(lat.value) || 0; this.audio.userLatencyMs = c.latencyMs; this.saveConfig(); };
@@ -928,10 +606,19 @@ class App {
     return load;
   }
 
-  /** ドラム音量 / BGM 音量を AudioEngine のバスへ反映する(鳴っている音にも効く)。 */
+  /**
+   * ドラム音量(ギター / ベースの演奏中はギター / ベース音量)と BGM 音量を AudioEngine のバスへ反映する(鳴っている音にも効く)。
+   * 'chip' のバスは弾いている楽器の音、'bgm' のバスは BGM と伴奏(弾いていない楽器のチップ)。
+   */
   applyVolumes() {
-    this.audio.setBusVolume('chip', (this.config.chipVolume || 0) / 100);
+    this.audio.setBusVolume('chip', (this.config[this._volumeKey('chip')] || 0) / 100);
     this.audio.setBusVolume('bgm', (this.config.bgmVolume || 0) / 100);
+  }
+
+  /** 音量の種類 → 設定の項目('chip' は演奏中の楽器で変わる)。 */
+  _volumeKey(kind) {
+    if (kind === 'bgm') return 'bgmVolume';
+    return this.playInst === INSTRUMENT.DRUMS ? 'chipVolume' : 'gbVolume';
   }
 
   /**
@@ -940,22 +627,23 @@ class App {
    * @returns {boolean} 値が変わったら true
    */
   stepVolume(kind, step) {
-    const key = kind === 'bgm' ? 'bgmVolume' : 'chipVolume';
+    const key = this._volumeKey(kind);
     const before = this.config[key];
     const v = Math.max(0, Math.min(100, Math.round(before + step)));
     if (v === before) return false;
     this.config[key] = v;
     this.applyVolumes();
     this.saveConfig();
-    const el = $(kind === 'bgm' ? 'cfg-bgm' : 'cfg-chip');
+    const id = { bgmVolume: 'cfg-bgm', chipVolume: 'cfg-chip', gbVolume: 'cfg-gb' }[key];
+    const el = $(id);
     if (el) el.value = String(v); // 設定パネルのスライダーもずらさない
-    const label = $((kind === 'bgm' ? 'cfg-bgm' : 'cfg-chip') + '-v');
+    const label = $(id + '-v');
     if (label) label.textContent = String(v);
     return true;
   }
 
   volumeOf(kind) {
-    return this.config[kind === 'bgm' ? 'bgmVolume' : 'chipVolume'] || 0;
+    return this.config[this._volumeKey(kind)] || 0;
   }
 
   saveConfig() {
@@ -963,35 +651,53 @@ class App {
   }
 
   // ---- 演奏 ----
-  async startChart(song, chartRef) {
+  /**
+   * @param {number} [inst] 弾く楽器(INSTRUMENT。省略でドラム)。ギター / ベースは譜面のそのパートを弾き、ほかは伴奏になる
+   */
+  async startChart(song, chartRef, inst = INSTRUMENT.DRUMS) {
     const c = this.config;
     this.cancelAssign();
     await this.audio.ensureContext();
+    this.playInst = inst;
+    this.applyVolumes();
     $('screen-home').hidden = true;
     $('screen-play').hidden = false;
     $('loading').hidden = false;
     $('loading-text').textContent = t('load.chart');
     $('loading-bar').value = 0;
     $('loading-sub').textContent = '';
-    $('play-title').textContent = song.title + (chartRef.label ? '  [' + chartRef.label + ']' : '');
+    const instTag = inst === INSTRUMENT.DRUMS ? '' : '  ' + t(INSTRUMENT_NAMES[inst]);
+    $('play-title').textContent = song.title + (chartRef.label ? '  [' + chartRef.label + ']' : '') + instTag;
     try {
       const skin = await this._skinLoad;
       const chart = await this.pkg.loadChart(chartRef.path);
-      const player = new Player({
-        audio: this.audio,
-        settings: this.training,
-        config: {
-          hhGroup: c.hhGroup, ftGroup: c.ftGroup, cyGroup: c.cyGroup, bdGroup: c.bdGroup,
-          hitRanges: HitRanges.default, pedalHitRanges: HitRanges.default,
-          chipVolume: 1.0, autoChipVolume: 0.8,
-        },
-      });
+      const base = { chipVolume: 1.0, autoChipVolume: 0.8 };
+      let player;
+      if (inst === INSTRUMENT.DRUMS) {
+        player = new Player({
+          audio: this.audio,
+          settings: this.training,
+          config: {
+            ...base,
+            hhGroup: c.hhGroup, ftGroup: c.ftGroup, cyGroup: c.cyGroup, bdGroup: c.bdGroup,
+            hitRanges: HitRanges.default, pedalHitRanges: HitRanges.default,
+          },
+        });
+      } else {
+        if (!gbPart(chart, inst).notes.length) throw new Error(t('load.noPart', { inst: t(INSTRUMENT_NAMES[inst]) }));
+        player = new GuitarPlayer({
+          audio: this.audio,
+          settings: this.training,
+          inst,
+          config: { ...base, gbHitRanges: HitRanges.default, light: c.gbLight },
+        });
+      }
       this.player = player;
       player.onQuit = () => this.leavePlay();
       const canvas = $('canvas');
-      this.renderer = new Renderer(canvas, skin, player);
+      this.renderer = inst === INSTRUMENT.DRUMS ? new Renderer(canvas, skin, player) : new GuitarRenderer(canvas, skin, player);
       this.renderer.showLag = !!c.showLag;
-      const lvl = chart.level[0] ? 'LEVEL ' + levelText(chart.level[0], chart.levelDec[0]) : '';
+      const lvl = chart.level[inst] ? 'LEVEL ' + levelText(chart.level[inst], chart.levelDec[inst]) : '';
       this.renderer.songInfo = { title: chart.title || song.title, artist: chart.artist, level: lvl, jacket: null };
       if (chart.preimage) {
         this.pkg.imageUrl(chart.dir, chart.preimage).then((u) => {
@@ -1027,6 +733,7 @@ class App {
     const overlay = $('overlay');
     overlay.innerHTML = '';
     this.menu = new TrainingMenu(this.training, {
+      instrument: this.playInst,
       sound: this.uiSounds(),
       onPlaySpeedStep: (d) => player.playSpeedStep(d),
       onChange: () => this.training.save(),
@@ -1039,17 +746,28 @@ class App {
     this.menu.setChart(player.chart);
     this.menu.build(overlay);
 
-    this.input = new DrumInput({
-      onHit: (lane, ts, source) => {
-        player.hit(lane, ts, { touch: source === 'touch' });
-        this.pacer.forceNext(); // 待機中の試し打ちの光も、停止中の間引きを待たずに出す
-      },
-      onKey: (code, down, ev) => {
-        this.pacer.forceNext(); // 停止中にメニューで変えた値(ハイスピード・現在位置など)も次のフレームで出す
-        return this.onKey(code, down, ev);
-      },
-    });
-    this.input.setBindings(this.config.bindings);
+    const onKey = (code, down, ev) => {
+      this.pacer.forceNext(); // 停止中にメニューで変えた値(ハイスピード・現在位置など)も次のフレームで出す
+      return this.onKey(code, down, ev);
+    };
+    if (this.playInst === INSTRUMENT.DRUMS) {
+      this.input = new DrumInput({
+        onHit: (lane, ts, source) => {
+          player.hit(lane, ts, { touch: source === 'touch' });
+          this.pacer.forceNext(); // 待機中の試し打ちの光も、停止中の間引きを待たずに出す
+        },
+        onKey,
+      });
+      this.input.setBindings(this.config.bindings);
+    } else {
+      this.input = new GuitarInput({
+        onFret: (lane, down, ts) => { player.fret(lane, down, ts); this.pacer.forceNext(); },
+        onPick: (ts, source) => { player.pick(ts, { touch: source === 'touch' }); this.pacer.forceNext(); },
+        onWail: (ts) => { player.wail(ts); this.pacer.forceNext(); },
+        onKey,
+      });
+      this.input.setBindings(this.config.gbBindings);
+    }
     this.input.hitTest = (x, y) => this.renderer.hitTestLane(x, y);
     this.input.attach($('canvas'));
 
@@ -1133,12 +851,22 @@ class App {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     const bar = $('playbar').getBoundingClientRect();
     const topInset = Math.max(0, bar.bottom - stage.getBoundingClientRect().top);
-    $('seekbar').style.top = topInset + 'px'; // プレイバーの直下に出す
     this.renderer.resize(w, h, dpr, this.config.layout || 'auto', topInset);
+    this._placeSeekBar(topInset);
     // 大きさを変えるとキャンバスの中身が消えるので、停止中の間引きに当たっても次のフレームは必ず描く
     this.pacer.forceNext();
     const portrait = this.renderer.mode === 'portrait';
     document.body.classList.toggle('portrait', portrait);
+    this._layoutMenu();
+  }
+
+  /** トレーニングメニューの置き場所(横画面はハイウェイの右のパネル、縦画面はボトムシート)。 */
+  _layoutMenu() {
+    if (!this.renderer) return;
+    const stage = $('stage');
+    const w = stage.clientWidth;
+    const h = stage.clientHeight;
+    const portrait = this.renderer.mode === 'portrait';
     if (this.menu && this.menu.root) {
       const m = this.menu.root;
       if (portrait) {
@@ -1159,10 +887,41 @@ class App {
         m.style.top = top + 'px';
         m.style.width = width + 'px';
         m.style.height = '';
-        m.style.maxHeight = Math.max(200, h - top - 8) + 'px';
+        // シークバーが画面下にあるとき(ギター / ベース)は、その上で止める(下の行がシークバーの裏に隠れないように)
+        const below = this._seekAtBottom ? this._seekBarHeight() : 0;
+        m.style.maxHeight = Math.max(200, h - top - 8 - below) + 'px';
         m.style.fontSize = font + 'px';
       }
     }
+  }
+
+  /**
+   * シークバーの位置。ふだんはプレイバーの直下(= ハイウェイの上端側。ドラムの判定ラインは画面下)。
+   * ギター / ベースの判定ラインが画面上にあるとき(リバースでないとき)は、覆わないよう画面下に出す。
+   * 縦画面は画面下をメニューのシートが使うので上のまま(止めている間だけ出るので、判定ラインに掛かっても演奏の邪魔にはならない)。
+   */
+  _placeSeekBar(topInset) {
+    const bar = $('seekbar');
+    const bottom = this._seekBelongsAtBottom();
+    this._seekAtBottom = bottom;
+    if (topInset !== undefined) this._seekTopInset = topInset;
+    bar.classList.toggle('at-bottom', bottom);
+    bar.style.top = bottom ? '' : (this._seekTopInset || 0) + 'px';
+  }
+
+  /** シークバーの高さ(CSS px)。止めている間だけ出るので、隠れているときは一瞬出して測る。 */
+  _seekBarHeight() {
+    const bar = $('seekbar');
+    if (!bar.hidden) return bar.offsetHeight;
+    bar.hidden = false;
+    const hgt = bar.offsetHeight;
+    bar.hidden = true;
+    return hgt;
+  }
+
+  _seekBelongsAtBottom() {
+    const r = this.renderer;
+    return !!(r && r.seekBarAtBottom && r.mode !== 'portrait');
   }
 
   // ---- 停止中のシークバー(譜面の確認) ----
@@ -1270,6 +1029,11 @@ class App {
     const s = this._seek;
     const p = this.player;
     if (!s || !p) return;
+    // メニューでリバースを切り替えると判定ラインが動くので、シークバーもついていく
+    if (this._seekBelongsAtBottom() !== this._seekAtBottom) {
+      this._placeSeekBar();
+      this._layoutMenu();
+    }
     const show = p.canSeek;
     if (s.shown !== show) {
       s.bar.hidden = !show;
@@ -1310,6 +1074,8 @@ class App {
     if (this.renderer) this.renderer._releaseBase(); // キャンバスと同じ大きさの作り置きをすぐ手放す
     this.renderer = null;
     this.training.save();
+    this.playInst = INSTRUMENT.DRUMS;
+    this.applyVolumes();
     document.body.classList.remove('portrait');
     if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
     $('screen-play').hidden = true;

@@ -13,7 +13,7 @@ import { t } from '../i18n.js';
 
 const JUDGE_TEXT = ['PERFECT', 'GREAT', 'GOOD', 'OK', 'MISS'];
 const JUDGE_COLOR = ['rgb(255,242,77)', 'rgb(102,255,128)', 'rgb(102,204,255)', 'rgb(204,128,255)', 'rgb(255,102,102)'];
-const FONT = '"Segoe UI", "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif';
+export const FONT = '"Segoe UI", "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif';
 const PORTRAIT_MARGIN = 80;
 
 // 演出の下敷き(元実装に無い追加)。新しい Renderer の最初の数フレームは、演奏中に出る演出を本番と同じ関数で
@@ -25,6 +25,10 @@ const PORTRAIT_MARGIN = 80;
 // 演出の描き方を足したら _drawWarm にも足すこと。
 const WARM_AGES = [1, 3, 10, 30, 120, 200, 205, 209, 245, 280];
 
+/**
+ * ドラムの演奏画面。ギター / ベースの画面(js/ui/gbrenderer.js の GuitarRenderer)はこれを継ぎ、静止部分・演奏面・
+ * 下敷きと、HUD の置き場所(_hudAnchors など)だけを差し替える(成績のパネル・ゲージ・進捗バー・コンボは共通)。
+ */
 export class Renderer {
   /**
    * @param {HTMLCanvasElement} canvas
@@ -61,8 +65,7 @@ export class Renderer {
     const aspect = cssW / Math.max(1, cssH);
     this.mode = mode === 'auto' ? (aspect < 1.2 ? 'portrait' : 'landscape') : mode;
     if (this.mode === 'portrait') {
-      const vx = LANE_X0 - PORTRAIT_MARGIN;
-      const vw = LANE_W + PORTRAIT_MARGIN * 2;
+      const { x: vx, w: vw } = this._portraitView();
       this.view = { x: vx, y: 0, w: vw, h: CANVAS_H };
     } else {
       this.view = { x: 0, y: 0, w: CANVAS_W, h: CANVAS_H };
@@ -123,7 +126,7 @@ export class Renderer {
     const W = this.canvas.width;
     const H = this.canvas.height;
     const opaque = this._warm <= 0;
-    const key = [W, H, this.scale, this.dpr, this.offsetX, this.offsetY, this.view.x, opaque].join('|');
+    const key = [W, H, this.scale, this.dpr, this.offsetX, this.offsetY, this.view.x, opaque, this._baseKeyExtra()].join('|');
     if (this._base && this._baseKey === key) return this._base;
     this._releaseBase();
     const c = document.createElement('canvas');
@@ -133,15 +136,30 @@ export class Renderer {
     g.fillStyle = '#000';
     g.fillRect(0, 0, W, H);
     this._setTransform(g);
+    this._drawStatic(g);
+    this._base = c;
+    this._baseKey = key;
+    return c;
+  }
+
+  /** 静止部分の作り置きを作り直す条件(大きさ以外。ギター / ベースは判定ラインの向き)。 */
+  _baseKeyExtra() {
+    return '';
+  }
+
+  /** 静止部分の中身(論理座標の変換を掛けた g に描く)。 */
+  _drawStatic(g) {
     const skin = this.skin;
     g.drawImage(skin.laneStrip(), LANE_X0, LANE_Y0);
     skin.drawJudge(g);
     skin.drawPads(g, this.scale * this.dpr);
     skin.drawScorePanel(g);
     skin.drawSongPanel(g);
-    this._base = c;
-    this._baseKey = key;
-    return c;
+  }
+
+  /** 縦画面で切り出す横の範囲(論理座標)。 */
+  _portraitView() {
+    return { x: LANE_X0 - PORTRAIT_MARGIN, w: LANE_W + PORTRAIT_MARGIN * 2 };
   }
 
   draw(perfNow) {
@@ -155,7 +173,13 @@ export class Renderer {
     g.drawImage(base, 0, 0);
     this._setTransform(g);
     if (!p.chart) return;
+    this._drawPlayfield(g, perfNow);
+    this._drawHud(g, perfNow);
+  }
 
+  /** 演奏面(レーンフラッシュ・小節線・チップ・パッド・ファイア・判定文字)。 */
+  _drawPlayfield(g, perfNow) {
+    const p = this.player;
     const drawMs = p.drawMs;
     const ppm = p.pixelsPerMs;
     const ratio = p.ratio;
@@ -225,16 +249,18 @@ export class Renderer {
       const js = p.judgeStr[lane];
       if (js.judge >= 0) this._drawJudge(g, lane, js.judge, perfNow - js.at, js.auto, js.lagMs, this.showLag);
     }
+  }
 
+  /** コンボ・状態表示・ステータス行・成績(ドラムとギター / ベースで共通。置き場所は _hudAnchors などで変える)。 */
+  _drawHud(g, perfNow) {
+    const p = this.player;
     const stats = p.stats;
-    if (stats.combo >= 2) {
-      const t = perfNow - p.comboJumpAt;
-      this._drawCombo(g, stats.combo, t >= 0 && t < 180 ? -15 * 1.5 * Math.sin((Math.PI * t) / 180) : 0);
-    }
+    if (stats.combo >= 2) this._drawCombo(g, stats.combo, this._comboJump(perfNow - p.comboJumpAt));
 
+    const a = this._hudAnchors();
     // 状態表示(待機・開始待ち・一時停止)
     if (p.state !== PLAYER_STATE.PLAYING) {
-      const cx = LANE_X0 + LANE_W / 2;
+      const cx = a.cx;
       g.textAlign = 'center';
       g.textBaseline = 'middle';
       g.font = `bold 64px ${FONT}`;
@@ -242,15 +268,15 @@ export class Renderer {
       g.strokeStyle = 'rgba(0,0,0,0.8)';
       g.fillStyle = p.state === PLAYER_STATE.PAUSED ? 'rgb(255,200,120)' : 'rgb(255,230,140)';
       const text = p.stateText();
-      g.strokeText(text, cx, 520);
-      g.fillText(text, cx, 520);
+      g.strokeText(text, cx, a.stateY);
+      g.fillText(text, cx, a.stateY);
       if (p.state === PLAYER_STATE.STANDBY) {
         g.font = `24px ${FONT}`;
         g.fillStyle = 'rgba(255,255,255,0.85)';
         g.lineWidth = 3;
         const hint = t(this.mode === 'portrait' ? 'play.hintPortrait' : 'play.hintLandscape');
-        g.strokeText(hint, cx, 570);
-        g.fillText(hint, cx, 570);
+        g.strokeText(hint, cx, a.stateY + 50);
+        g.fillText(hint, cx, a.stateY + 50);
       }
     }
 
@@ -263,12 +289,56 @@ export class Renderer {
       g.lineWidth = 4;
       g.strokeStyle = 'rgba(0,0,0,0.8)';
       g.fillStyle = 'rgb(255,230,140)';
-      g.strokeText(p.statusText, LANE_X0 + 12, 160);
-      g.fillText(p.statusText, LANE_X0 + 12, 160);
+      g.strokeText(p.statusText, a.statusX, a.statusY);
+      g.fillText(p.statusText, a.statusX, a.statusY);
     }
 
     if (this.mode === 'portrait') this._drawCompactHud(g);
     else this._drawPanels(g);
+  }
+
+  /** 状態表示の中心 x と縦位置(案内はその 50 下)、ステータス行の左端と縦位置。 */
+  _hudAnchors() {
+    return { cx: LANE_X0 + LANE_W / 2, stateY: 520, statusX: LANE_X0 + 12, statusY: 160 };
+  }
+
+  /** コンボの跳ね(t はコンボが増えてからの経過 ms。上へ負)。 */
+  _comboJump(t) {
+    return t >= 0 && t < 180 ? -15 * 1.5 * Math.sin((Math.PI * t) / 180) : 0;
+  }
+
+  /** コンボの数の中心(ラベルはその 60 下)。 */
+  _comboCenter() {
+    // 横画面はハイウェイ左の空き列(スコアと同じ縦線上)に置き、チップに重ねない。
+    // 縦画面はハイウェイ両脇に 80px しか余白が無いので、従来どおり中央上部に置く
+    const x = this.mode === 'portrait'
+      ? LANE_X0 + LANE_W / 2
+      : PANELS.scoreDetailed.x + PANELS.scoreDetailed.w / 2;
+    return { x, y: 330 };
+  }
+
+  /** 横画面のゲージと曲進捗バーの [x, y, 幅, 高さ](flip は進捗バーを上から下へ伸ばす)。 */
+  _sideBars() {
+    const gy = LANE_Y0 + 140;
+    const gh = JUDGE_Y - LANE_Y0 - 200;
+    return { gauge: [LANE_X0 - 42, gy, 22, gh], progress: [LANE_X0 - 78, gy, 14, gh], flip: false };
+  }
+
+  /** 縦画面の成績表示の左上と幅、ゲージと曲進捗バー(splitSpeed なら速さを別の行にする)。 */
+  _compactLayout() {
+    // 縦画面はハイウェイ内右端にゲージ、その右の余白に進捗バー
+    // (小節番号を LANE_X0 + LANE_W + 6 から左詰めで描くので、3 桁ぶん空けた先に置く)
+    const gy = LANE_Y0 + 140;
+    const gh = JUDGE_Y - LANE_Y0 - 200;
+    return {
+      x: LANE_X0 + 8, y: 16, w: LANE_W - 20,
+      gauge: [LANE_X0 + LANE_W - 30, gy, 18, gh], progress: [LANE_X0 + LANE_W + 52, gy, 12, gh], flip: false,
+    };
+  }
+
+  /** ループ線を引く横の範囲と、描く縦の範囲。 */
+  _loopSpan() {
+    return { x: LANE_X0, w: LANE_W, y0: LANE_Y0 - 10, y1: LANE_Y1 + 10 };
   }
 
   // ---- 演出(本番の draw と下敷きの _drawWarm が同じ関数で描く) ----
@@ -336,6 +406,13 @@ export class Renderer {
 
   /** 判定文字とずれ(クラシックアニメ 300ms)。t は判定からの経過(ms)。 */
   _drawJudge(g, lane, judge, t, auto, lagMs, showLag) {
+    this._drawJudgeAt(g, columnCenterX(LANE_TO_COLUMN[lane]), JUDGE_Y - 150, judge, t, auto, lagMs, showLag);
+  }
+
+  /**
+   * 判定文字を中心 (cx, cy) に描く。k は文字の倍率、label は判定の名前の代わりに出す文字(ギター / ベースの BAD)。
+   */
+  _drawJudgeAt(g, cx, cy, judge, t, auto, lagMs, showLag, k = 1, label = '') {
     if (t < 0 || t > 300) return;
     const bad = judge === JUDGE.OK || judge === JUDGE.MISS;
     let sx = 1;
@@ -350,55 +427,48 @@ export class Renderer {
     sx = Math.max(0, sx);
     sy = Math.max(0, sy);
     if (sx <= 0 || sy <= 0) return;
-    const cx = columnCenterX(LANE_TO_COLUMN[lane]);
-    const cy = JUDGE_Y - 150;
     g.save();
     g.translate(cx, cy);
     g.scale(sx, sy);
-    g.font = `italic bold 30px ${FONT}`;
+    g.font = `italic bold ${30 * k}px ${FONT}`;
     g.textAlign = 'center';
     g.textBaseline = 'middle';
-    g.lineWidth = 4;
+    g.lineWidth = 4 * k;
     g.strokeStyle = 'rgba(0,0,0,0.85)';
     g.fillStyle = JUDGE_COLOR[judge];
-    const text = auto ? 'AUTO' : JUDGE_TEXT[judge];
+    const text = label || (auto ? 'AUTO' : JUDGE_TEXT[judge]);
     g.strokeText(text, 0, 0);
     g.fillText(text, 0, 0);
     g.restore();
     if (showLag && !auto && judge !== JUDGE.MISS) {
       const lag = Math.max(-999, Math.min(999, Math.round(lagMs)));
-      g.font = `bold 20px ${FONT}`;
+      g.font = `bold ${20 * k}px ${FONT}`;
       g.textAlign = 'center';
       g.textBaseline = 'middle';
       g.fillStyle = lag < 0 ? 'rgb(120,180,255)' : 'rgb(255,140,120)';
       g.strokeStyle = 'rgba(0,0,0,0.85)';
-      g.lineWidth = 3;
+      g.lineWidth = 3 * k;
       const s = (lag > 0 ? '+' : '') + lag;
-      g.strokeText(s, cx, cy + 28);
-      g.fillText(s, cx, cy + 28);
+      g.strokeText(s, cx, cy + 28 * k);
+      g.fillText(s, cx, cy + 28 * k);
     }
   }
 
-  /**
-   * コンボ。横画面はハイウェイ左の空き列(スコアと同じ縦線上)に置き、チップに重ねない。
-   * 縦画面はハイウェイ両脇に 80px しか余白が無いので、従来どおり中央上部に置く。
-   */
+  /** コンボ。置き場所は _comboCenter。 */
   _drawCombo(g, combo, jump) {
-    const cx = this.mode === 'portrait'
-      ? LANE_X0 + LANE_W / 2
-      : PANELS.scoreDetailed.x + PANELS.scoreDetailed.w / 2;
+    const { x: cx, y } = this._comboCenter();
     g.textAlign = 'center';
     g.textBaseline = 'middle';
     g.lineWidth = 6;
     g.strokeStyle = 'rgba(0,0,0,0.8)';
     g.fillStyle = 'rgb(255,240,160)';
     g.font = `bold 86px ${FONT}`;
-    g.strokeText(String(combo), cx, 330 + jump);
-    g.fillText(String(combo), cx, 330 + jump);
+    g.strokeText(String(combo), cx, y + jump);
+    g.fillText(String(combo), cx, y + jump);
     g.font = `bold 28px ${FONT}`;
     g.fillStyle = 'rgb(255,255,255)';
-    g.strokeText('COMBO', cx, 390 + jump);
-    g.fillText('COMBO', cx, 390 + jump);
+    g.strokeText('COMBO', cx, y + 60 + jump);
+    g.fillText('COMBO', cx, y + 60 + jump);
   }
 
   /** 演出の下敷きを 1 フレームぶん描く(WARM_AGES の注記)。失敗しても演奏は止めない。 */
@@ -408,34 +478,7 @@ export class Renderer {
     g.save();
     try {
       this._setTransform(g);
-      for (let lane = 0; lane < 10; lane++) {
-        const t = age + lane * 21;
-        this._drawLaneFlash(g, lane, 120 - (t % 120));
-        this._drawPadLit(g, lane, t % 130);
-        this._drawJudge(g, lane, lane % 5, t % 300, lane >= 5 && lane % 2 === 1, lane * 7 - 30, true);
-      }
-      g.save();
-      try {
-        g.globalCompositeOperation = 'lighter';
-        for (let lane = 0; lane < 10; lane++) this._drawFire(g, lane, (age + lane * 21) % 210);
-      } finally {
-        g.restore();
-      }
-      this._drawCombo(g, 1234567890, 0);
-      this._drawLoopLine(g, JUDGE_Y - 300, 'rgba(102,255,128,0.85)', 'Begin loop');
-      // ハイウェイのクリップの下端にかかる小節番号とチップ(初めて切られるフレームで止まっていた)
-      g.save();
-      try {
-        this._clipHighway(g);
-        g.font = `20px ${FONT}`;
-        g.textBaseline = 'middle';
-        g.textAlign = 'left';
-        g.fillStyle = 'rgb(220,220,220)';
-        g.fillText('000', LANE_X0 + LANE_W + 6, LANE_Y1 - 3);
-        for (let lane = 0; lane < 10; lane++) this._drawChip(g, lane, LANE_Y1 - 3, lane === 0);
-      } finally {
-        g.restore();
-      }
+      this._warmEffects(g, age);
     } catch (e) {
       this._warm = 0;
       console.warn('演出の下敷きに失敗:', e);
@@ -448,15 +491,48 @@ export class Renderer {
     }
   }
 
+  /** 下敷きの中身: 演奏中に出る演出を、年齢 age(ms)を元にずらして全部描く(呼ぶ側で変換を掛け、失敗を拾う)。 */
+  _warmEffects(g, age) {
+    for (let lane = 0; lane < 10; lane++) {
+      const t = age + lane * 21;
+      this._drawLaneFlash(g, lane, 120 - (t % 120));
+      this._drawPadLit(g, lane, t % 130);
+      this._drawJudge(g, lane, lane % 5, t % 300, lane >= 5 && lane % 2 === 1, lane * 7 - 30, true);
+    }
+    g.save();
+    try {
+      g.globalCompositeOperation = 'lighter';
+      for (let lane = 0; lane < 10; lane++) this._drawFire(g, lane, (age + lane * 21) % 210);
+    } finally {
+      g.restore();
+    }
+    this._drawCombo(g, 1234567890, 0);
+    this._drawLoopLine(g, JUDGE_Y - 300, 'rgba(102,255,128,0.85)', 'Begin loop');
+    // ハイウェイのクリップの下端にかかる小節番号とチップ(初めて切られるフレームで止まっていた)
+    g.save();
+    try {
+      this._clipHighway(g);
+      g.font = `20px ${FONT}`;
+      g.textBaseline = 'middle';
+      g.textAlign = 'left';
+      g.fillStyle = 'rgb(220,220,220)';
+      g.fillText('000', LANE_X0 + LANE_W + 6, LANE_Y1 - 3);
+      for (let lane = 0; lane < 10; lane++) this._drawChip(g, lane, LANE_Y1 - 3, lane === 0);
+    } finally {
+      g.restore();
+    }
+  }
+
   _drawLoopLine(g, y, color, label) {
-    if (y < LANE_Y0 - 10 || y > LANE_Y1 + 10) return;
+    const s = this._loopSpan();
+    if (y < s.y0 || y > s.y1) return;
     g.fillStyle = color;
-    g.fillRect(LANE_X0, Math.round(y) - 1, LANE_W, 3);
-    g.fillRect(LANE_X0, Math.round(y) + 5, LANE_W, 3);
+    g.fillRect(s.x, Math.round(y) - 1, s.w, 3);
+    g.fillRect(s.x, Math.round(y) + 5, s.w, 3);
     g.font = `bold 18px ${FONT}`;
     g.textAlign = 'right';
     g.textBaseline = 'bottom';
-    g.fillText(label, LANE_X0 + LANE_W - 6, y - 4); // ハイウェイ内に収める(縦画面でも切れない)
+    g.fillText(label, s.x + s.w - 6, y - 4); // ハイウェイ内に収める(縦画面でも切れない)
   }
 
   /** 横画面: score_detailed / song_info / スコア / ゲージ。 */
@@ -500,10 +576,9 @@ export class Renderer {
     if (p.ratio !== 1) g.fillText('PLAY ' + this._playSpeedText(), sd.x, sd.y + sd.h + 70);
 
     // ゲージ(ハイウェイ左)と、その隣の曲進捗バー
-    const gy = LANE_Y0 + 140;
-    const gh = JUDGE_Y - LANE_Y0 - 200;
-    this._drawGauge(g, LANE_X0 - 42, gy, 22, gh);
-    this._drawProgress(g, LANE_X0 - 78, gy, 14, gh);
+    const bars = this._sideBars();
+    this._drawGauge(g, ...bars.gauge);
+    this._drawProgress(g, ...bars.progress, bars.flip);
 
     // song_info
     const si = PANELS.songInfo;
@@ -536,8 +611,9 @@ export class Renderer {
     g.lineWidth = 4;
     g.strokeStyle = 'rgba(0,0,0,0.85)';
     g.fillStyle = 'rgb(255,255,255)';
-    const x = LANE_X0 + 8;
-    let y = 16;
+    const L = this._compactLayout();
+    const x = L.x;
+    let y = L.y;
     const line = (text, color = 'rgb(255,255,255)') => {
       g.fillStyle = color;
       g.strokeText(text, x, y);
@@ -548,25 +624,30 @@ export class Renderer {
     g.font = `20px ${FONT}`;
     line(`P ${st.counts[0]}  G ${st.counts[1]}  Gd ${st.counts[2]}  Ok ${st.counts[3]}  Miss ${st.counts[4]}  Max ${st.maxCombo}`, 'rgb(230,230,230)');
     const speed = 'SPEED ' + this._hiSpeedText() + (p.ratio !== 1 ? '  PLAY ' + this._playSpeedText() : '');
-    line(t('play.achievement') + ' ' + this._achievement().toFixed(2) + '%   BPM ' + this._bpmText() + '   ' + speed, 'rgb(200,220,255)');
-    fitText(g, this.songInfo.title, x, y, LANE_W - 20);
-    // 縦画面はハイウェイ内右端にゲージ、その右の余白に進捗バー
-    // (小節番号を LANE_X0 + LANE_W + 6 から左詰めで描くので、3 桁ぶん空けた先に置く)
-    const gy = LANE_Y0 + 140;
-    const gh = JUDGE_Y - LANE_Y0 - 200;
-    this._drawGauge(g, LANE_X0 + LANE_W - 30, gy, 18, gh);
-    this._drawProgress(g, LANE_X0 + LANE_W + 52, gy, 12, gh);
+    const rate = t('play.achievement') + ' ' + this._achievement().toFixed(2) + '%   BPM ' + this._bpmText();
+    // 切り出しの狭い画面(ギター / ベースの縦画面)は速さをいつも次の行へ(幅で決めると演奏中に行数が変わって表示が跳ねる)
+    if (L.splitSpeed) {
+      line(rate, 'rgb(200,220,255)');
+      line(speed, 'rgb(200,220,255)');
+    } else {
+      line(rate + '   ' + speed, 'rgb(200,220,255)');
+    }
+    fitText(g, this.songInfo.title, x, y, L.w);
+    this._drawGauge(g, ...L.gauge);
+    this._drawProgress(g, ...L.progress, L.flip);
   }
 
   /**
    * 曲の進捗バー(縦。ゲージと同じく下から上へ伸びる = 下が曲頭・上が曲末)。
    * チップが上から降ってくるのと向きが揃うので、まだ叩いていない部分が常に上側になる。
+   * flip なら上から下へ伸ばす(ギター / ベースの既定の向きはチップが下から上がってくるので、それに揃える)。
    * ループが有効なときは区間を帯で塗り、開始 / 終了位置をハイウェイのループ線と同じ色の線で引く。
    */
-  _drawProgress(g, x, y, w, h) {
+  _drawProgress(g, x, y, w, h, flip = false) {
     const p = this.player;
     const dur = Math.max(1, p.chart.durationMs);
-    const yOf = (ms) => y + h * (1 - Math.max(0, Math.min(1, ms / dur)));
+    const frac = (ms) => Math.max(0, Math.min(1, ms / dur));
+    const yOf = flip ? (ms) => y + h * frac(ms) : (ms) => y + h * (1 - frac(ms));
     g.fillStyle = 'rgba(0,0,0,0.6)';
     g.fillRect(x - 3, y - 3, w + 6, h + 6);
     g.fillStyle = 'rgba(255,255,255,0.12)';
@@ -574,15 +655,17 @@ export class Renderer {
 
     const hasLoop = p.loopEndMs >= 0 && p.loopEndMs > p.loopBeginMs;
     if (hasLoop) {
-      const e = yOf(p.loopEndMs);
+      const lo = Math.max(0, p.loopBeginMs);
+      const e = yOf(flip ? lo : p.loopEndMs);
       g.fillStyle = 'rgba(102,217,255,0.28)';
-      g.fillRect(x, e, w, Math.max(1, yOf(Math.max(0, p.loopBeginMs)) - e));
+      g.fillRect(x, e, w, Math.max(1, yOf(flip ? p.loopEndMs : lo) - e));
     }
 
-    // 経過(曲頭 = 下端から現在位置まで)
+    // 経過(曲頭 = 下端(flip なら上端)から現在位置まで)
     const now = yOf(p.songMs);
     g.fillStyle = 'rgba(255,217,102,0.85)';
-    g.fillRect(x, now, w, Math.max(0, y + h - now));
+    if (flip) g.fillRect(x, y, w, Math.max(0, now - y));
+    else g.fillRect(x, now, w, Math.max(0, y + h - now));
 
     if (hasLoop) {
       // ハイウェイのループ線と同じ配色(緑 = 開始、赤 = 終了)
@@ -654,7 +737,7 @@ function panelMapper(src, rect) {
 }
 
 /** timeMs >= t となる最初の添字(時刻順の配列)。 */
-function lowerBound(list, t) {
+export function lowerBound(list, t) {
   let lo = 0;
   let hi = list.length;
   while (lo < hi) {

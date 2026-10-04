@@ -1,4 +1,4 @@
-"""既定のスキン skins/default/ の画像(chips.png / pads.png / score_panel.png / song_panel.png)を作る。
+"""既定のスキン skins/default/ の画像(chips.png / pads.png / score_panel.png / song_panel.png / gb_chips.png / gb_neck.png)を作る。
 
 絵は tools/skinart/ の Canvas の描画で、tools/skinart/render.html をヘッドレスの Chrome(か Edge)で開いて画像にする。
 アプリはこのコードを読まず、出来上がった画像だけを使う。絵を変えたら実行し直して、画像もコミットする。
@@ -27,7 +27,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "skins", "default")
-NAMES = ["chips.png", "pads.png", "score_panel.png", "song_panel.png"]
+NAMES = ["chips.png", "pads.png", "score_panel.png", "song_panel.png", "gb_chips.png", "gb_neck.png"]
 
 BROWSERS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",

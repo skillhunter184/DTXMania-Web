@@ -48,3 +48,36 @@ test('integration: smooooch.zip (loose .dtx files without set.def)', async () =>
   const chart = await pkg.loadChart(s.charts[0].path);
   assert(chart.notes.length > 500, 'notes: ' + chart.notes.length);
 });
+
+// 楽器別のファイルに分かれた GITADORA 形式のパック(dm_* / gt_* / ba_* と set.def の 3 ブロック)。
+// 「完全感覚Dreamer Taka.zip」を tests/fixtures/local/dreamer.zip としてコピーしたとき走る
+test('integration: dreamer.zip (split drum / guitar / bass files merged into one song)', async () => {
+  const blob = await fetchLocal('dreamer.zip');
+  if (!blob) { console.warn('skip: dreamer.zip not present'); return; }
+  const pkg = await SongPackage.fromZip(blob, 'dreamer.zip');
+  assertEq(pkg.songs.length, 1, 'the three set.def blocks are one song');
+  const song = pkg.songs[0];
+  assertEq(song.title, '完全感覚Dreamer');
+  assertEq(song.charts.length, 12);
+  const of = (name) => song.charts.find((c) => c.path.endsWith(name));
+  assertEq(of('gt_mst.dtx').header.noteMask, 2);
+  assertEq(of('ba_mst.dtx').header.noteMask, 4);
+  assertEq(of('dm_mst.dtx').header.noteMask, 1);
+  assertEq(of('gt_mst.dtx').header.levels[1], 74);
+  const gt = await pkg.loadChart(of('gt_mst.dtx').path);
+  assertEq(gt.guitar.notes.length, 537);
+  assertEq(gt.guitar.notes.filter((n) => n.lnEndMs >= 0).length, 6);
+  assertEq(gt.guitar.notes.filter((n) => n.open).length, 39);
+  assertEq(gt.guitar.wailing.length, 4);
+  assertEq(gt.guitar.hasYP, true);
+  const ba = await pkg.loadChart(of('ba_mst.dtx').path);
+  assertEq(ba.bass.notes.length, 501);
+  assertEq(ba.bass.notes.filter((n) => n.lnEndMs >= 0).length, 13);
+  const bsc = await pkg.loadChart(of('ba_bsc.dtx').path);
+  assertEq(bsc.bass.notes.filter((n) => n.lnEndMs >= 0).length, 12, 'stray LN control chips (no note at their position) are skipped');
+  // ギターの譜面の音(チップ・BGM)がすべてパック内で解決できる
+  const ids = requiredWavIds(gt);
+  let resolved = 0;
+  for (const id of ids) if (pkg.resolve(gt.dir, gt.wavDefs.get(id))) resolved++;
+  assertEq(resolved, ids.length, `resolved ${resolved}/${ids.length}`);
+});

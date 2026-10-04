@@ -66,7 +66,7 @@ build.bat
 - 演奏中にアプリが消費するキー(矢印 / Enter / NumpadEnter / Esc / F1)はレーンに割り当てられない
   (`js/ui/keybind.js` の `RESERVED_CODES`)。増やすときは両方を合わせる。
 - 時計は「譜面時刻を不変にして時計の進み方を変える」モデル。詳細は `docs/architecture.md`。
-- 絵はスキンの画像(4 枚の組。`skins/README.md`)で描く。既定のスキン `skins/default/` は `tools/skinart/` の描画から
+- 絵はスキンの画像(6 枚の組。ドラムの 4 枚とギター / ベースの 2 枚。`skins/README.md`)で描く。既定のスキン `skins/default/` は `tools/skinart/` の描画から
   `python tools/make_skin.py` で作る画像で、絵を変えたら画像も作り直してコミットする。アプリは描画コードを読まない。
   画像の決まり(名前・配置・数を重ねる位置)を変えるときは `js/ui/skin.js` の `SKIN_PARTS`・`skins/README.md`・
   `tools/skinart/` を揃える。

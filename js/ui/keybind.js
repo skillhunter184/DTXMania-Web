@@ -47,9 +47,9 @@ export function isAssignableCode(code) {
   return RESERVED_CODES.indexOf(code) < 0;
 }
 
-/** 既定の割り当て(10 レーン分の新しい配列)。 */
-export function defaultBindings() {
-  return LANE_KEY_DEFAULTS.map((a) => a.slice());
+/** 既定の割り当ての新しい配列(defaults を省くとドラムの 10 レーン。ギター / ベースは js/ui/gbinput.js の既定を渡す)。 */
+export function defaultBindings(defaults = LANE_KEY_DEFAULTS) {
+  return defaults.map((a) => a.slice());
 }
 
 /** code を持っているレーンと位置。無ければ null。 */
@@ -62,7 +62,7 @@ export function findCode(bindings, code) {
 }
 
 /**
- * 保存済み config(壊れている / 古い形式かもしれない)を 10 レーン × 重複無しの形に整える。
+ * 保存済み config(壊れている / 古い形式かもしれない)を defaults のレーン数(ドラムは 10)× 重複無しの形に整える。
  * レーン単位で直すので、1 レーンが壊れていても他 9 レーンの設定は捨てない。
  *
  * 「壊れたレーン」= 配列ですらない、または中身はあったのに全部落ちた(旧版が保存できてしまった
@@ -73,11 +73,12 @@ export function findCode(bindings, code) {
  *
  * @returns {{bindings:string[][], repaired:number[]}}
  */
-export function normalizeBindings(raw) {
+export function normalizeBindings(raw, defaults = LANE_KEY_DEFAULTS) {
+  const laneCount = defaults.length;
   const src = Array.isArray(raw) ? raw : [];
   const cleaned = [];
   const broken = [];
-  for (let lane = 0; lane < LANE_COUNT; lane++) {
+  for (let lane = 0; lane < laneCount; lane++) {
     const given = Array.isArray(src[lane]);
     const list = given ? src[lane] : [];
     const clean = [];
@@ -98,13 +99,13 @@ export function normalizeBindings(raw) {
     owner.add(code);
     return true;
   };
-  const bindings = new Array(LANE_COUNT);
+  const bindings = new Array(laneCount);
   // 生きているレーンを先に確定させる(壊れたレーンの修復で、正しく設定されたレーンを空にしない)
-  for (let lane = 0; lane < LANE_COUNT; lane++) if (!broken[lane]) bindings[lane] = cleaned[lane].filter(take);
+  for (let lane = 0; lane < laneCount; lane++) if (!broken[lane]) bindings[lane] = cleaned[lane].filter(take);
   const repaired = [];
-  for (let lane = 0; lane < LANE_COUNT; lane++) {
+  for (let lane = 0; lane < laneCount; lane++) {
     if (!broken[lane]) continue;
-    bindings[lane] = LANE_KEY_DEFAULTS[lane].filter(take);
+    bindings[lane] = defaults[lane].filter(take);
     repaired.push(lane);
   }
   return { bindings, repaired };
@@ -178,11 +179,11 @@ export function clearLane(bindings, lane) {
  * @returns {{bindings:string[][], ok:boolean, stolenFrom:number[], stolenEmptied:number[]}}
  *          stolenEmptied は取り上げた結果、空(= 未割り当て)になったレーン
  */
-export function resetLane(bindings, lane) {
+export function resetLane(bindings, lane, defaults = LANE_KEY_DEFAULTS) {
   const next = copyBindings(bindings);
   next[lane] = [];
   const stolenFrom = [];
-  for (const code of LANE_KEY_DEFAULTS[lane]) {
+  for (const code of defaults[lane]) {
     const at = findCode(next, code);
     if (at) {
       next[at.lane].splice(at.index, 1);

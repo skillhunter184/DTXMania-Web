@@ -22,16 +22,18 @@ export const DEFAULT_LANG = 'ja';
 export const STRINGS = {
   // ---- index.html: ホーム ----
   'home.tagline': [
-    'DTX 譜面をブラウザで練習する。ZIP を選ぶだけ。キーボードでもタッチでも叩ける。',
-    'Practice DTX drum charts in your browser. Just pick a ZIP. Play with a keyboard or by touch.',
+    'DTX 譜面(ドラム・ギター・ベース)をブラウザで練習する。ZIP を選ぶだけ。キーボードでもタッチでも演奏できる。',
+    'Practice DTX drum, guitar and bass charts in your browser. Just pick a ZIP. Play with a keyboard or by touch.',
   ],
   'home.drop': ['曲フォルダを ZIP にしたファイルをここにドロップ、または', 'Drop a ZIP of a song folder here, or'],
   'home.pickZip': ['ZIP を選ぶ', 'Choose ZIP'],
   'home.pickFolder': ['フォルダを選ぶ', 'Choose Folder'],
   'home.lastZip': ['前回の ZIP を開く({name})', 'Open Last ZIP ({name})'],
   'home.dropNote': [
-    'set.def があれば難易度ごとに、無ければ .dtx ごとに一覧します。音源は wav / ogg / mp3 / xa に対応。動画は再生しません。',
-    'Charts are listed per difficulty when set.def exists, otherwise per .dtx file. Audio: wav / ogg / mp3 / xa. Videos are not played.',
+    'set.def があれば難易度ごとに、無ければ .dtx ごとに一覧します。ドラム・ギター・ベースの譜面は楽器ごとの行に並び、'
+      + '楽器別のファイルに分かれた同じ曲は 1 つにまとめます。音源は wav / ogg / mp3 / xa に対応。動画は再生しません。',
+    'Charts are listed per difficulty when set.def exists, otherwise per .dtx file. Drum, guitar and bass charts are shown in a row '
+      + 'per instrument, and a song split into per-instrument files is shown once. Audio: wav / ogg / mp3 / xa. Videos are not played.',
   ],
   'home.footer': [
     'レイアウトは vid2dtx の譜面プレビュー、練習機能は DTXManiaAI のトレーニングモードを基にしています。'
@@ -44,8 +46,8 @@ export const STRINGS = {
 
   // ---- index.html: 設定 ----
   'settings.summary': [
-    '設定(キー割り当て・電子ドラム・音量・遅延補正・打ち分け)',
-    'Settings (key bindings, e-drums, volume, latency, lane grouping)',
+    '設定(キー割り当て・電子ドラム・ギター / ベース・音量・遅延補正・打ち分け)',
+    'Settings (key bindings, e-drums, guitar / bass, volume, latency, lane grouping)',
   ],
   'settings.keys': ['キー割り当て', 'Key Bindings'],
   'settings.keyNote': [
@@ -61,6 +63,21 @@ export const STRINGS = {
       + '↑↓←→ / Enter / Esc / Tab / F1 are used for menu control and cannot be assigned.',
   ],
   'settings.resetAll': ['全レーンを既定に戻す', 'Reset All Lanes'],
+  'settings.gbKeys': ['ギター / ベースのキー割り当て', 'Guitar / Bass Key Bindings'],
+  'settings.gbKeyNote': [
+    '<b>R G B Y P</b>(ネック)は押している間だけ押さえた扱いで、<b>PICK</b> を押した瞬間に押さえ方とチップを照合します。'
+      + '押さえ方はチップとちょうど同じにします(OPEN は何も押さえない)。<b>WAIL</b> はピックが当たった直後のウェイリング。'
+      + 'ギターとベースで同じ割り当てを使い、ドラムの割り当てとは別です。操作は上のドラムのキー割り当てと同じです。',
+    '<b>R G B Y P</b> (the neck) count as held while pressed, and pressing <b>PICK</b> checks the held buttons against the chip. '
+      + 'Hold exactly the chip\'s buttons (nothing for OPEN). <b>WAIL</b> is the wailing right after a successful pick. '
+      + 'Guitar and bass share these bindings, separate from the drum bindings. They work like the drum key bindings above.',
+  ],
+  'settings.resetAllButtons': ['全ボタンを既定に戻す', 'Reset All Buttons'],
+  'settings.gbBad': ['空ピックでコンボを切る(BAD)', 'Break the combo on a wrong pick (BAD)'],
+  'settings.gbBadNote': [
+    '押さえ方の違うピックやチップの無いところのピックで、コンボを切りゲージを減らします(DTXMania の Light を OFF にしたのと同じ。既定はしない)。',
+    'A pick with the wrong buttons, or where there is no chip, breaks the combo and lowers the gauge (the same as turning Light OFF in DTXMania; off by default).',
+  ],
   'settings.midi': ['電子ドラム(MIDI)', 'Electronic Drums (MIDI)'],
   'settings.midiNote': [
     'USB や MIDI インターフェースでつないだ電子ドラムで叩けます(PC の Chrome / Edge / Firefox。iPhone / iPad は Web MIDI 付きのブラウザアプリで)。'
@@ -84,9 +101,10 @@ export const STRINGS = {
   'settings.masterVolume': ['マスター音量', 'Master Volume'],
   'settings.drumVolume': ['ドラム音量', 'Drum Volume'],
   'settings.bgmVolume': ['BGM 音量', 'BGM Volume'],
+  'settings.gbVolume': ['ギター / ベース音量', 'Guitar / Bass Volume'],
   'settings.volumeNote': [
-    'ドラム音量と BGM 音量は演奏中でもトレーニングメニューから変えられます。',
-    'Drum and BGM volume can also be changed from the training menu while playing.',
+    '楽器の音量と BGM 音量は演奏中でもトレーニングメニューから変えられます。BGM 音量は弾いていない楽器(伴奏)の音にも効きます。',
+    'Instrument and BGM volume can also be changed from the training menu while playing. BGM volume also applies to the instruments you are not playing (accompaniment).',
   ],
   'settings.latency': ['遅延補正(ms)', 'Latency Offset (ms)'],
   'settings.latencyNote': ['音が遅れて聞こえるなら + 方向', 'Use + if the sound seems late'],
@@ -103,9 +121,11 @@ export const STRINGS = {
   'settings.skinPath': ['フォルダ', 'Folder'],
   'settings.skinPick': ['画像 / ZIP を選ぶ', 'Choose Images / ZIP'],
   'settings.skinNote': [
-    'スキンは chips.png / pads.png / score_panel.png / song_panel.png の 4 枚の画像です(作り方は skins/README.md)。'
+    'スキンは chips.png / pads.png / score_panel.png / song_panel.png / gb_chips.png / gb_neck.png の 6 枚の画像です'
+      + '(作り方は skins/README.md。gb_ の 2 枚はギター / ベースの画面)。'
       + 'フォルダは index.html からの相対パスで指定します。足りない画像は既定のスキンで補います。',
-    'A skin is a set of 4 images: chips.png / pads.png / score_panel.png / song_panel.png (see skins/README.md). '
+    'A skin is a set of 6 images: chips.png / pads.png / score_panel.png / song_panel.png / gb_chips.png / gb_neck.png '
+      + '(see skins/README.md; the two gb_ images are for the guitar / bass screen). '
       + 'Give the folder as a path relative to index.html. Missing images fall back to the default skin.',
   ],
   'settings.groups': ['打ち分け(NX と同じ)', 'Lane Grouping (same as NX)'],
@@ -130,6 +150,21 @@ export const STRINGS = {
   // ---- index.html: 操作方法 ----
   'help.summary': ['操作方法', 'How to Play'],
   'help.drums': ['ドラム', 'Drums'],
+  'help.guitar': ['ギター / ベース', 'Guitar / Bass'],
+  'help.guitarNote': [
+    '(曲の一覧でギター・ベースの行から選ぶ。ネックのボタンを押さえて PICK で弾く)',
+    '(choose from the Guitar / Bass rows of the song list; hold the neck buttons and press PICK)',
+  ],
+  'help.guitarPlay': [
+    '<b>ギター / ベースの演奏</b>: チップは下から上へ流れ、画面上の判定ラインで弾きます(メニューの「リバース」で上から下へ)。'
+      + '和音は全部のボタンを押さえてから 1 回ピック。少しずれて押さえても、ピックの直後なら間に合います。'
+      + '帯の付いたチップ(ロングノート)は押さえ続けると加点。ピックが当たった直後に WAIL でウェイリングの加点。'
+      + 'タッチではレーンを押すとそのボタンを押さえて弾き、レーンの外を押すと OPEN。弾いていないパートとドラムは自動で鳴ります。',
+    '<b>Playing guitar / bass</b>: chips rise from the bottom and are played at the judge line at the top (Reverse in the menu makes them fall). '
+      + 'For a chord, hold all its buttons and pick once; a button pressed just after the pick still counts. '
+      + 'Keep holding a chip with a tail (long note) for bonus points. Press WAIL right after a successful pick for the wailing bonus. '
+      + 'By touch, pressing a lane holds that button and picks; pressing outside the lanes picks OPEN. The other part and the drums play automatically.',
+  ],
   'help.drumsNote': [
     '(設定のキー割り当てで変更。1 レーンに複数キーを割り当てられます)',
     '(change them in Settings → Key Bindings; each lane can have several keys)',
@@ -145,10 +180,12 @@ export const STRINGS = {
     '<b>Training menu</b>: ↑↓ item / ←→ change (Ctrl: 10 steps) / Enter select / Esc back · exit / F1 toggle AUTO',
   ],
   'help.seek': [
-    '<b>譜面の確認</b>: 停止中・一時停止中は画面上部のシークバーで前後に送れます。バーをドラッグ(離すと小節頭に吸着)、'
+    '<b>譜面の確認</b>: 停止中・一時停止中は画面上部(ギター / ベースの横画面は判定ラインが上にあるので画面下部。リバースでは上部)のシークバーで前後に送れます。'
+      + 'バーをドラッグ(離すと小節頭に吸着)、'
       + '◀ ▶ で 1 つ送り、◀◀ ▶▶ で 10 送り、バーの上でホイール。メニューの「現在位置」でも ←→ で送れます(Ctrl で 10 段)。'
       + '送った位置から「演奏開始」で始まります(「リスタート」は曲頭・ループ開始位置から)。',
-    '<b>Browsing the chart</b>: While stopped or paused, move back and forth with the seek bar at the top. Drag it (it snaps to the nearest measure on release), '
+    '<b>Browsing the chart</b>: While stopped or paused, move back and forth with the seek bar at the top (at the bottom for guitar / bass '
+      + 'in landscape, whose judge line is at the top; at the top with Reverse). Drag it (it snaps to the nearest measure on release), '
       + '◀ ▶ step by 1, ◀◀ ▶▶ step by 10, or use the mouse wheel over it. "Position" in the menu also moves with ←→ (Ctrl: 10 steps). '
       + '"Start" begins from that position ("Restart" begins from the top of the song or the loop start).',
   ],
@@ -157,12 +194,12 @@ export const STRINGS = {
     '<b>Touch</b>: Tap a lane column to hit it. Open the menu with "☰". Change values with ◀ ▶; tap an action row to run it.',
   ],
   'help.items': [
-    '<b>メニュー項目</b>: 自動演奏 / 自動演奏詳細(レーン別 AUTO) / ノーツ表示調整 / 判定タイミング調整 / ハイスピード / 演奏速度 / '
-      + '開始待ち時間 / ドラム音量 / BGM 音量 / ループ演奏 / ループ位置単位 / ループ終了位置 / ループ開始位置 / 現在位置 / '
-      + '演奏開始・停止 / リスタート / 一時停止 / トレーニング終了',
-    '<b>Menu items</b>: Auto Play / Auto Lanes (per-lane AUTO) / Visual Offset / Judge Offset / Hi-Speed / Play Speed / '
-      + 'Start Delay / Drum Volume / BGM Volume / Loop / Loop Unit / Loop End / Loop Start / Position / '
-      + 'Start · Stop / Restart / Pause / Exit Training',
+    '<b>メニュー項目</b>: 自動演奏 / 自動演奏詳細(レーン別・ボタン別 AUTO) / ノーツ表示調整 / 判定タイミング調整 / ハイスピード / 演奏速度 / '
+      + '開始待ち時間 / ドラム音量(ギター / ベース音量) / BGM 音量 / リバース(ギター / ベースのみ) / ループ演奏 / ループ位置単位 / '
+      + 'ループ終了位置 / ループ開始位置 / 現在位置 / 演奏開始・停止 / リスタート / 一時停止 / トレーニング終了',
+    '<b>Menu items</b>: Auto Play / Auto Lanes (per-lane / per-button AUTO) / Visual Offset / Judge Offset / Hi-Speed / Play Speed / '
+      + 'Start Delay / Drum Volume (Guitar / Bass Volume) / BGM Volume / Reverse (guitar / bass only) / Loop / Loop Unit / '
+      + 'Loop End / Loop Start / Position / Start · Stop / Restart / Pause / Exit Training',
   ],
   'help.misc': [
     '待機中に叩くと音だけ鳴ります(ウォーミングアップ)。ループ区間の折り返しごとに開始待ち時間を置きます。成績はどこにも保存しません。',
@@ -205,6 +242,13 @@ export const STRINGS = {
   'load.chart': ['譜面を読み込み中…', 'Loading chart…'],
   'load.sounds': ['音源を読み込み中… {done} / {total}', 'Loading sounds… {done} / {total}'],
   'load.soundsFailed': ['音源 {n} 個が読めません(合成音で代用)', '{n} {n|sound|sounds} could not be read (synthesized sounds used instead)'],
+  'load.noPart': ['この譜面には{inst}のチップがありません', 'This chart has no {inst} chips'],
+
+  // ---- 曲の一覧 ----
+  'song.drums': ['ドラム', 'Drums'],
+  'song.guitar': ['ギター', 'Guitar'],
+  'song.bass': ['ベース', 'Bass'],
+  'song.playLabel': ['{inst}の {label} を演奏', 'Play {label} on {inst}'],
   'zip.fileMissing': ['ZIP 内にファイルがありません: {path}', 'File not found in the ZIP: {path}'],
   'zip.chartMissing': ['譜面が見つかりません: {path}', 'Chart not found: {path}'],
   'zip.notZip': ['ZIP ファイルではありません(EOCD が見つかりません)', 'Not a ZIP file (EOCD not found)'],
@@ -402,8 +446,8 @@ export const STRINGS = {
 
   // ---- スキン(js/main.js) ----
   'skin.noneFound': [
-    'スキンの画像(chips.png / pads.png / score_panel.png / song_panel.png)が見つかりませんでした。',
-    'No skin images (chips.png / pads.png / score_panel.png / song_panel.png) were found.',
+    'スキンの画像(chips.png / pads.png / score_panel.png / song_panel.png / gb_chips.png / gb_neck.png)が見つかりませんでした。',
+    'No skin images (chips.png / pads.png / score_panel.png / song_panel.png / gb_chips.png / gb_neck.png) were found.',
   ],
   'skin.notStored': [
     '画像をブラウザに保存できなかったので、リロードすると読み込み直しになります。',
@@ -440,6 +484,9 @@ export const STRINGS = {
   'menu.startWait': ['開始待ち時間', 'Start Delay'],
   'menu.drumVolume': ['ドラム音量', 'Drum Volume'],
   'menu.bgmVolume': ['BGM 音量', 'BGM Volume'],
+  'menu.guitarVolume': ['ギター音量', 'Guitar Volume'],
+  'menu.bassVolume': ['ベース音量', 'Bass Volume'],
+  'menu.reverse': ['リバース', 'Reverse'],
   'menu.loop': ['ループ演奏', 'Loop'],
   'menu.loopUnit': ['ループ位置単位', 'Loop Unit'],
   'menu.loopEnd': ['ループ終了位置', 'Loop End'],
@@ -456,6 +503,7 @@ export const STRINGS = {
   'menu.none': ['なし', 'None'],
   'menu.manual': ['手動', 'Manual'],
   'menu.lanes': ['{n} レーン', '{n} {n|lane|lanes}'],
+  'menu.buttons': ['{n} ボタン', '{n} {n|button|buttons}'],
   'menu.loopInvalid': ['ON (無効)', 'ON (invalid)'],
   'menu.unitMeasure': ['小節', 'Measure'],
   'menu.unitSecond': ['秒', 'Second'],
