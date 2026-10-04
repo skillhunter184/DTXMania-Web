@@ -25,6 +25,21 @@ export const GB_KEY_DEFAULTS = [
   ['KeyL'], // WAIL
 ];
 
+/**
+ * 左利き用の並び(本アプリの追加。設定の「左利き用の並びにする」)。既定をキーボードの中央(G と H の間)で鏡に映したもの:
+ * 右手でネックを ; L K J H(LEFT で右端に描かれる R が右端のキー)、左手で F / D を交互に押してピック、S でウェイリング。
+ * LEFT はボタンを描く列を入れ替えるだけでキーは変えない(NX と同じ)ので、左手でピックするときはこの並びにする。
+ */
+export const GB_KEY_LEFTY = [
+  ['Semicolon'], // R
+  ['KeyL'], // G
+  ['KeyK'], // B
+  ['KeyJ'], // Y
+  ['KeyH'], // P
+  ['KeyF', 'KeyD'], // PICK
+  ['KeyS'], // WAIL
+];
+
 /** タッチのヒット判定の結果: レーンの外(ハイウェイの中)= 何も押さえずにピック。 */
 export const GB_TOUCH_OPEN = -2;
 
@@ -106,15 +121,37 @@ export class GuitarInput {
     return this._holders[lane].size > 0;
   }
 
-  /** 全部離す(フォーカスを失ったときなど。keyup が来ないまま押しっぱなしにならないように)。 */
+  /**
+   * キーとタッチの押さえを全部離す(フォーカスを失ったときなど。keyup / pointerup が来ないまま押しっぱなしにならないように)。
+   * ギターコントローラの押さえは残す(js/ui/gamepad.js が読み続けて離したことを必ず届ける。消すと、押したままのボタンが
+   * 押し直すまで離した扱いになる)。レーンが空いたときだけ知らせる。
+   */
   releaseAll(timeStampMs) {
+    for (let lane = 0; lane < this._holders.length; lane++) {
+      const h = this._holders[lane];
+      if (!h.size) continue;
+      for (const code of this._down) h.delete(code);
+      for (const id of this._pointers.keys()) h.delete('p' + id);
+      if (!h.size) this.onFret(lane, false, timeStampMs, 'release');
+    }
     this._down.clear();
     this._pointers.clear();
-    for (let lane = 0; lane < this._holders.length; lane++) {
-      const was = this._holders[lane].size > 0;
-      this._holders[lane].clear();
-      if (was) this.onFret(lane, false, timeStampMs, 'release');
+  }
+
+  /**
+   * ギターコントローラ(js/ui/gamepad.js)の入力。holder は入力ごとの名前で、キーやタッチと同じく押さえている数を数える
+   * (ネックは押している間、PICK / WAIL は押した瞬間)。
+   */
+  padInput(button, down, ts, holder) {
+    if (!this.enabled) return;
+    if (button < 5) {
+      if (down) this._hold(button, holder, ts, 'pad');
+      else this._unhold(button, holder, ts, 'pad');
+      return;
     }
+    if (!down) return;
+    if (button === GB_BUTTON.PICK) this.onPick(ts, 'pad');
+    else if (button === GB_BUTTON.WAIL) this.onWail(ts, 'pad');
   }
 
   _hold(lane, holder, ts, source) {

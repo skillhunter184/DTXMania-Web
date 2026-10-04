@@ -794,3 +794,78 @@ test('gb player: a touch chord groups fingers from the first finger; a late fing
   });
   player.dispose();
 });
+
+test('gb player: the metronome and a live Light change work on guitar too', async () => {
+  const { audio, player } = await makeGb(GB_CHART, INSTRUMENT.GUITAR, (s) => { s.metronomeVolume = 30; });
+  const clicks = [];
+  audio.clickBuffer = (accent) => ({ accent });
+  audio.playBuffer = (buf, opts) => { if (buf && 'accent' in buf) clicks.push({ accent: buf.accent, ...opts }); return { src: null }; };
+  await withClock(audio, async (perf) => {
+    player.command('startStop');
+    player.update(perf(), null);
+    audio.advance(2000);
+    player.update(perf(), null);
+    assertDeepEq(clicks.map((c) => (c.accent ? 'A' : '') + Math.round(c.when * 1000)), ['A0', '500', '1000', '1500', 'A2000']);
+    assert(clicks.every((c) => Math.abs(c.volume - (c.accent ? 0.3 : 0.12)) < 1e-9), 'bar 0.3 / beat 0.12');
+    // 空ピックは Light ON(既定)なら BAD にしない。演奏中に OFF にすると(メニューの「空ピックで BAD」)次のピックから BAD
+    player.fret(0, true, perf());
+    player.pick(perf());
+    assertEq(player.stats.combo, 1);
+    player.fret(1, true, perf()); // R + G → R のチップは当たったあと。次のピックは空
+    player.pick(perf());
+    audio.advance(PICK_SETTLE_MS.key + 1);
+    player.update(perf(), null);
+    assertEq(player.stats.combo, 1, 'Light ON: an empty pick only sounds');
+    assertEq(player.gbJudge.bad, false);
+    player.config.light = false;
+    player.pick(perf());
+    audio.advance(PICK_SETTLE_MS.key + 1);
+    player.update(perf(), null);
+    assertEq(player.stats.combo, 0, 'Light OFF from the next pick: BAD breaks the combo');
+    assertEq(player.gbJudge.bad, true);
+  });
+  player.dispose();
+});
+
+test('gb player: the guitar / bass judge offset is its own (the drum offset does not move the pick)', async () => {
+  const run = async (setup) => {
+    const { audio, player } = await makeGb(GB_CHART, INSTRUMENT.GUITAR, setup);
+    let lag = null;
+    await withClock(audio, async (perf) => {
+      player.command('startStop');
+      player.update(perf(), null);
+      audio.advance(2000); // R(2000) ちょうどにピック
+      player.update(perf(), null);
+      player.fret(0, true, perf());
+      player.pick(perf());
+      lag = player.stats.lastLagMs;
+    });
+    player.dispose();
+    return { lag, player };
+  };
+  const base = await run();
+  assertNear(base.lag, 0, 1.5, 'no offset');
+  const gb = await run((s) => { s.gbJudgeOffsetMs = 40; });
+  assertNear(gb.lag, 40, 1.5, 'gbJudgeOffsetMs shifts the pick (+ = the input counts as later)');
+  assertEq(gb.player.judgeOffsetMs, 40);
+  const drum = await run((s) => { s.judgeOffsetMs = 40; });
+  assertNear(drum.lag, 0, 1.5, 'the drum offset does not apply to guitar / bass');
+});
+
+test('gb player: LEFT is read from the settings and does not change judging', async () => {
+  const { audio, player } = await makeGb(GB_CHART, INSTRUMENT.GUITAR, (s) => { s.gbLeft = true; });
+  assertEq(player.left, true);
+  await withClock(audio, async (perf) => {
+    player.command('startStop');
+    player.update(perf(), null);
+    audio.advance(2000);
+    player.update(perf(), null);
+    player.fret(0, true, perf()); // R のボタンは LEFT でも R のチップ(右端に描かれる)を弾く
+    player.pick(perf());
+    assertEq(player.stats.counts[0], 1, 'perfect');
+  });
+  player.settings.gbLeft = false;
+  player.applySettings();
+  assertEq(player.left, false);
+  player.dispose();
+});

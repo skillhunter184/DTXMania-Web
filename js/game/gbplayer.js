@@ -55,6 +55,7 @@ export class GuitarPlayer extends Player {
     this.scoreRev = 1; // スコアの AUTO 補正
     this.achievementRevise = 1; // 達成率の AUTO 補正
     this.reverse = false;
+    this.left = false; // LEFT(描く列の左右反転。判定には関わらない)
 
     // 入力の状態
     this.fretHeld = new Array(GB_LANE_COUNT).fill(false);
@@ -100,6 +101,11 @@ export class GuitarPlayer extends Player {
 
   _afterSoundsLoaded() {} // 音源の無いチップは鳴らさない(ドラムの合成音は使わない)
 
+  /** 判定タイミング調整はドラムと別(NX InputAdjustTimeGuitar / Bass。ギターとベースは 1 つを共有)。 */
+  get judgeOffsetSetting() {
+    return this.settings.gbJudgeOffsetMs;
+  }
+
   get hiSpeedSetting() {
     return this.settings.gbHiSpeedRatio;
   }
@@ -131,6 +137,7 @@ export class GuitarPlayer extends Player {
     this.scoreRev = gbScoreRevise(this.gbAuto, this.config.autoAddGage);
     this.achievementRevise = gbAchievementRevise(this.gbAuto);
     this.reverse = !!s.gbReverse;
+    this.left = !!s.gbLeft;
   }
 
   // ---- 位置 ----

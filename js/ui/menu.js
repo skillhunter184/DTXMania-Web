@@ -6,45 +6,79 @@
 
 import {
   TrainingSettings, LOOP_UNIT, NOTE_OFFSET_MIN, NOTE_OFFSET_MAX, JUDGE_OFFSET_MIN, JUDGE_OFFSET_MAX,
-  START_WAIT_MIN, START_WAIT_MAX, START_WAIT_STEP, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX,
-  stepLoopBegin, stepLoopEnd, stepLoopTime, formatLoopTime, formatSignedMs, buildMeasureTimes,
+  START_WAIT_MIN, START_WAIT_MAX, START_WAIT_STEP, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX, METRONOME_STEP, METRONOME_MAX,
+  GB_AUTO_COUNT, GB_AUTO_PICK, GB_AUTO_WAIL, stepLoopBegin, stepLoopEnd, stepLoopTime, formatLoopTime, formatSignedMs, buildMeasureTimes,
 } from '../game/training.js';
 import { LANE_COUNT, LANE_NAMES, INSTRUMENT } from '../core/dtx.js';
 import { t } from '../i18n.js';
 
 export const MENU_COMMAND = { NONE: 'none', START_STOP: 'startStop', RESTART: 'restart', PAUSE_RESUME: 'pauseResume', QUIT: 'quit' };
 
-// 「ドラム音量」「BGM 音量」「現在位置」は本アプリの追加項目(元実装には無い)。
-// 音量は演奏中でも耳で合わせられるように、位置は停止中に譜面を前後に送って確認するために置いている。
-// ギター / ベースの演奏では「ドラム音量」が弾くパートの音量になり、「リバース」(NX GuitarReverse / BassReverse)が加わる
-// (元実装はギター / ベースのトレーニングを持たない。項目の並びはドラムに合わせ、リバースは音量の後ろに置いた)。
-const ITEM = {
+// 「ドラム音量」「BGM 音量」「メトロノーム」「現在位置」は本アプリの追加項目(元実装のトレーニングメニューには無い。
+// メトロノームは元実装では Config の ON/OFF)。音量とメトロノームは演奏中でも耳で合わせられるように、位置は停止中に
+// 譜面を前後に送って確認するために置いている。
+// ギター / ベースの演奏では「ドラム音量」が弾くパートの音量になり、「判定タイミング調整」「ハイスピード」はドラムと別の値を
+// 動かし(NX も楽器ごと)、「AUTO プリセット」(NX のクイック設定の Auto Mode)・「リバース」(NX GuitarReverse / BassReverse)・
+// 「LEFT」(NX GuitarLeft / BassLeft)・「空ピックで BAD」(NX GuitarLight / BassLight の裏返し)が加わる
+// (元実装はギター / ベースのトレーニングを持たない。項目の並びはドラムに合わせ、プリセットは自動演奏詳細の前、
+// リバース・LEFT・空ピックは音量の後ろに置いた)。
+export const ITEM = {
   AUTO: 0, AUTO_DETAIL: 1, NOTE_OFFSET: 2, JUDGE_OFFSET: 3, HI_SPEED: 4, PLAY_SPEED: 5, START_WAIT: 6,
   DRUM_VOLUME: 7, BGM_VOLUME: 8,
   LOOP: 9, LOOP_UNIT: 10, LOOP_END: 11, LOOP_BEGIN: 12, POSITION: 13,
   START_STOP: 14, RESTART: 15, PAUSE: 16, QUIT: 17,
-  REVERSE: 18,
+  REVERSE: 18, AUTO_PRESET: 19, METRONOME: 20, GB_BAD: 21, LEFT: 22,
 };
 // 項目名の文言のキー(js/i18n.js。ITEM の番号の順)。演奏開始 / 一時停止は状態で、音量は楽器で変わるので itemName で選ぶ
 const ITEM_NAMES = [
   'menu.autoPlay', 'menu.autoDetail', 'menu.noteOffset', 'menu.judgeOffset', 'menu.hiSpeed',
   'menu.playSpeed', 'menu.startWait', 'menu.drumVolume', 'menu.bgmVolume', 'menu.loop', 'menu.loopUnit',
   'menu.loopEnd', 'menu.loopBegin', 'menu.position', 'menu.start', 'menu.restart', 'menu.pause', 'menu.quit',
-  'menu.reverse',
+  'menu.reverse', 'menu.autoPreset', 'menu.metronome', 'menu.gbBad', 'menu.left',
 ];
-/** メイン画面の項目の並び(ドラムは元実装の順のまま)。 */
+/** メイン画面の項目の並び(ドラムは元実装の順に、追加項目を挟む)。 */
 const DRUM_ITEMS = [
   ITEM.AUTO, ITEM.AUTO_DETAIL, ITEM.NOTE_OFFSET, ITEM.JUDGE_OFFSET, ITEM.HI_SPEED, ITEM.PLAY_SPEED, ITEM.START_WAIT,
-  ITEM.DRUM_VOLUME, ITEM.BGM_VOLUME, ITEM.LOOP, ITEM.LOOP_UNIT, ITEM.LOOP_END, ITEM.LOOP_BEGIN, ITEM.POSITION,
+  ITEM.DRUM_VOLUME, ITEM.BGM_VOLUME, ITEM.METRONOME, ITEM.LOOP, ITEM.LOOP_UNIT, ITEM.LOOP_END, ITEM.LOOP_BEGIN, ITEM.POSITION,
   ITEM.START_STOP, ITEM.RESTART, ITEM.PAUSE, ITEM.QUIT,
 ];
 const GB_ITEMS = [
-  ITEM.AUTO, ITEM.AUTO_DETAIL, ITEM.NOTE_OFFSET, ITEM.JUDGE_OFFSET, ITEM.HI_SPEED, ITEM.PLAY_SPEED, ITEM.START_WAIT,
-  ITEM.DRUM_VOLUME, ITEM.BGM_VOLUME, ITEM.REVERSE, ITEM.LOOP, ITEM.LOOP_UNIT, ITEM.LOOP_END, ITEM.LOOP_BEGIN, ITEM.POSITION,
+  ITEM.AUTO, ITEM.AUTO_PRESET, ITEM.AUTO_DETAIL, ITEM.NOTE_OFFSET, ITEM.JUDGE_OFFSET, ITEM.HI_SPEED, ITEM.PLAY_SPEED,
+  ITEM.START_WAIT, ITEM.DRUM_VOLUME, ITEM.BGM_VOLUME, ITEM.METRONOME, ITEM.REVERSE, ITEM.LEFT, ITEM.GB_BAD,
+  ITEM.LOOP, ITEM.LOOP_UNIT, ITEM.LOOP_END, ITEM.LOOP_BEGIN, ITEM.POSITION,
   ITEM.START_STOP, ITEM.RESTART, ITEM.PAUSE, ITEM.QUIT,
 ];
 /** 自動演奏詳細のボタン名(ギター / ベース。js/game/training.js の gbAutoLanes の並び)。 */
 const GB_AUTO_NAMES = ['R', 'G', 'B', 'Y', 'P', 'PICK', 'WAIL'];
+
+/**
+ * ギター / ベースの AUTO プリセット(NX CActSelectQuickConfig の Auto Mode。ボタンは R G B Y P PICK WAIL の順)。
+ * ←→ は OFF → ネック → ピック → すべて → (カスタム)の順に回す。NX の並びは All Auto / Auto Neck / Auto Pick /
+ * Custom / OFF だが、練習では OFF から順に AUTO を増やす方が分かりやすいので並べ替えた。
+ * カスタム(どのプリセットにも当たらない組み合わせ)からプリセットへ移ったときはその組み合わせを覚えておき、
+ * 回して戻れば元に戻す(覚えるのはこのメニューの間だけ。NX の Custom は設定の組み合わせを指す)。
+ */
+export const GB_PRESET = { OFF: 0, NECK: 1, PICK: 2, ALL: 3, CUSTOM: 4 };
+const GB_PRESET_FLAGS = ['0000000', '1111100', '0000010', '1111111'];
+const GB_PRESET_NAMES = ['OFF', 'menu.presetNeck', 'menu.presetPick', 'menu.all', 'menu.presetCustom'];
+
+/**
+ * ボタン別 AUTO の組み合わせがどのプリセットか(NX QuickConfig の判定。docs/spec/gb-config.md §2.3)。
+ * すべて・ネック・ピックは WAIL を見ない(NX の「すべて」も bAllGuitarsAreAutoPlay で、R〜PICK だけを見る)。
+ * OFF は WAIL も含めて全部手動のとき。ほかはカスタム。NX はギターの OFF で G を、ベースで G・Y・P を見落としているが、
+ * ここでは全部見る。
+ */
+export function gbAutoPresetOf(flags) {
+  let neckOn = 0;
+  for (let i = 0; i < GB_AUTO_PICK; i++) if (flags[i]) neckOn++;
+  const pick = !!flags[GB_AUTO_PICK];
+  const wail = !!flags[GB_AUTO_WAIL];
+  if (neckOn === GB_AUTO_PICK && pick) return GB_PRESET.ALL;
+  if (neckOn === GB_AUTO_PICK && !pick) return GB_PRESET.NECK;
+  if (neckOn === 0 && pick) return GB_PRESET.PICK;
+  if (neckOn === 0 && !pick && !wail) return GB_PRESET.OFF;
+  return GB_PRESET.CUSTOM;
+}
 
 /** 音量の刻み(%)。←→ で 5、Ctrl 併用で 50。 */
 const VOLUME_STEP = 5;
@@ -78,6 +112,7 @@ class RepeatKey {
 }
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+const flagsToString = (flags) => flags.map((b) => (b ? '1' : '0')).join('');
 
 // refresh は描画のたびに呼ばれる(演奏中は毎フレーム、停止中は 60 fps 前後)ので、DOM へは値が変わったときだけ書く。同じ文字列でも textContent を
 // 代入するとテキストノードが作り直され、同じ値の hidden の代入も属性の変更になるので、メニュー全体の
@@ -117,6 +152,11 @@ export class TrainingMenu {
     this.getVolume = hooks.getVolume || null;
     /** 音量を step % ぶん動かす。変わったら true。 */
     this.onVolumeStep = hooks.onVolumeStep || null;
+    /** 空ピックで BAD にするか(ギター / ベース。アプリ設定の gbLight の裏返し)を返す / 切り替える。 */
+    this.getGbBad = hooks.getGbBad || null;
+    this.onGbBadToggle = hooks.onGbBadToggle || null;
+    /** AUTO プリセットで上書きする前のカスタムの組み合わせ(GB_AUTO_COUNT 桁の '0' / '1')。 */
+    this._gbCustom = null;
     this.page = 'main';
     this.cursor = 0;
     this.chart = null;
@@ -132,6 +172,7 @@ export class TrainingMenu {
     this._pendingCommand = MENU_COMMAND.NONE;
     this._lastCursorSound = -Infinity;
     this._holdStops = [];
+    this._scrolledTo = '';
   }
 
   get durationMs() {
@@ -379,7 +420,10 @@ export class TrainingMenu {
       case ITEM.AUTO: s.autoPlay = !s.autoPlay; break;
       case ITEM.AUTO_DETAIL: return; // サブメニューは Enter でのみ開く(←→ のリピートで LC を連打しないため)
       case ITEM.NOTE_OFFSET: s.noteOffsetMs = clamp(s.noteOffsetMs + delta, NOTE_OFFSET_MIN, NOTE_OFFSET_MAX); break;
-      case ITEM.JUDGE_OFFSET: s.judgeOffsetMs = clamp(s.judgeOffsetMs + delta, JUDGE_OFFSET_MIN, JUDGE_OFFSET_MAX); break;
+      case ITEM.JUDGE_OFFSET: // ギター / ベースはドラムと別に持つ
+        if (this.gb) s.gbJudgeOffsetMs = clamp(s.gbJudgeOffsetMs + delta, JUDGE_OFFSET_MIN, JUDGE_OFFSET_MAX);
+        else s.judgeOffsetMs = clamp(s.judgeOffsetMs + delta, JUDGE_OFFSET_MIN, JUDGE_OFFSET_MAX);
+        break;
       case ITEM.HI_SPEED: // 0.1 刻み(Ctrl で 1.0)。ギター / ベースは別に持つ
         if (this.gb) s.gbScrollSpeedTenth = clamp(s.gbScrollSpeedTenth + delta, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX);
         else s.scrollSpeedTenth = clamp(s.scrollSpeedTenth + delta, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX);
@@ -396,7 +440,22 @@ export class TrainingMenu {
         this.refresh();
         return;
       }
+      case ITEM.METRONOME: {
+        const v = clamp(s.metronomeVolume + delta * METRONOME_STEP, 0, METRONOME_MAX);
+        if (v === s.metronomeVolume) return;
+        s.metronomeVolume = v;
+        break;
+      }
+      case ITEM.AUTO_PRESET: this._stepAutoPreset(delta); break;
       case ITEM.REVERSE: s.gbReverse = !s.gbReverse; break;
+      case ITEM.LEFT: s.gbLeft = !s.gbLeft; break;
+      case ITEM.GB_BAD:
+        // アプリ設定(設定画面の「空ピックでコンボを切る」と同じ値)なので、training.save() を呼ぶ _changed() は通さない
+        if (!this.onGbBadToggle) return;
+        this.onGbBadToggle();
+        this._playCursor();
+        this.refresh();
+        return;
       case ITEM.LOOP: s.loop = !s.loop; break;
       case ITEM.LOOP_UNIT: s.loopUnit = s.loopUnit === LOOP_UNIT.MEASURE ? LOOP_UNIT.SECOND : LOOP_UNIT.MEASURE; break;
       case ITEM.LOOP_END: {
@@ -424,6 +483,17 @@ export class TrainingMenu {
       default: return;
     }
     this._changed();
+  }
+
+  /** AUTO プリセットを 1 つ回す(delta の向きだけ見る。Ctrl でも 1 つ)。 */
+  _stepAutoPreset(delta) {
+    const flags = this.s.gbAutoLanes;
+    const cur = gbAutoPresetOf(flags);
+    if (cur === GB_PRESET.CUSTOM) this._gbCustom = flagsToString(flags);
+    const count = this._gbCustom ? GB_PRESET.CUSTOM + 1 : GB_PRESET.CUSTOM;
+    const next = (cur + (delta > 0 ? 1 : -1) + count) % count;
+    const pattern = next === GB_PRESET.CUSTOM ? this._gbCustom : GB_PRESET_FLAGS[next];
+    for (let i = 0; i < GB_AUTO_COUNT; i++) flags[i] = pattern[i] === '1';
   }
 
   _changed() {
@@ -460,6 +530,11 @@ export class TrainingMenu {
     return Math.max(this.durationMs, lastMeasure);
   }
 
+  /** メイン画面の行 i の項目(ITEM の番号。自動演奏詳細では -1)。 */
+  itemAt(i) {
+    return this.page === 'main' ? this._item(i) : -1;
+  }
+
   hasValueButtons(i) {
     if (this.page === 'auto') return i !== this._autoBack;
     return !this.isAction(i) && this._item(i) !== ITEM.AUTO_DETAIL;
@@ -488,13 +563,20 @@ export class TrainingMenu {
       case ITEM.AUTO: return s.autoPlay ? 'ON' : 'OFF';
       case ITEM.AUTO_DETAIL: return this.autoLaneSummary();
       case ITEM.NOTE_OFFSET: return formatSignedMs(s.noteOffsetMs);
-      case ITEM.JUDGE_OFFSET: return formatSignedMs(s.judgeOffsetMs);
+      case ITEM.JUDGE_OFFSET: return formatSignedMs(this.gb ? s.gbJudgeOffsetMs : s.judgeOffsetMs);
       case ITEM.HI_SPEED: return 'x' + (this.gb ? s.gbHiSpeedRatio : s.hiSpeedRatio).toFixed(1);
       case ITEM.PLAY_SPEED: return 'x' + s.playSpeedRatio.toFixed(2);
       case ITEM.START_WAIT: return (s.startWaitMs / 1000).toFixed(1) + ' s';
       case ITEM.DRUM_VOLUME: return (this.getVolume ? this.getVolume('chip') : 0) + ' %';
       case ITEM.BGM_VOLUME: return (this.getVolume ? this.getVolume('bgm') : 0) + ' %';
+      case ITEM.METRONOME: return s.metronomeVolume > 0 ? s.metronomeVolume + ' %' : 'OFF';
+      case ITEM.AUTO_PRESET: {
+        const key = GB_PRESET_NAMES[gbAutoPresetOf(s.gbAutoLanes)];
+        return key === 'OFF' ? key : t(key);
+      }
       case ITEM.REVERSE: return s.gbReverse ? 'ON' : 'OFF';
+      case ITEM.LEFT: return s.gbLeft ? 'ON' : 'OFF';
+      case ITEM.GB_BAD: return this.getGbBad && this.getGbBad() ? 'ON' : 'OFF';
       case ITEM.LOOP: return !s.loop ? 'OFF' : s.loopRangeValid ? 'ON' : t('menu.loopInvalid');
       case ITEM.LOOP_UNIT: return t(s.loopUnit === LOOP_UNIT.MEASURE ? 'menu.unitMeasure' : 'menu.unitSecond');
       case ITEM.LOOP_END: return formatLoopTime(s.loopEndMs, s.loopUnit, this.measureTimes);
@@ -534,5 +616,36 @@ export class TrainingMenu {
       setHidden(row.left, !btns);
       setHidden(row.right, !btns);
     }
+    this._keepCursorVisible();
+  }
+
+  /**
+   * 次の refresh で、カーソルの行が見えているかを測り直させる。隠れている間(測れない)にカーソルが動いたあと表示したとき・
+   * 枠の大きさが変わったときに呼ぶ(main.js の toggleMenu / _layoutMenu)。
+   */
+  invalidateScroll() {
+    this._scrolledTo = '';
+  }
+
+  /**
+   * 選んでいる行がメニューの枠からはみ出していたら、枠をスクロールして見せる(行が多いギター / ベースや
+   * 小さい画面では枠に収まらない)。カーソルかページが変わったときだけ測る(毎フレームのレイアウトを避ける)。
+   */
+  _keepCursorVisible() {
+    const at = this.page + ':' + this.cursor;
+    if (at === this._scrolledTo) return;
+    this._scrolledTo = at;
+    const root = this.root;
+    const row = this.rows[this.cursor];
+    if (!row || root.scrollHeight <= root.clientHeight) return;
+    if (this.cursor === 0) {
+      root.scrollTop = 0; // 先頭の行なら見出しまで見せる
+      return;
+    }
+    // .tmenu は position: absolute / fixed なので、行の offsetTop は枠の内側から測った位置
+    const top = row.li.offsetTop;
+    const bottom = top + row.li.offsetHeight;
+    if (top < root.scrollTop) root.scrollTop = top;
+    else if (bottom > root.scrollTop + root.clientHeight) root.scrollTop = bottom - root.clientHeight;
   }
 }

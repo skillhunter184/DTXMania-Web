@@ -46,8 +46,8 @@ export const STRINGS = {
 
   // ---- index.html: 設定 ----
   'settings.summary': [
-    '設定(キー割り当て・電子ドラム・ギター / ベース・音量・遅延補正・打ち分け)',
-    'Settings (key bindings, e-drums, guitar / bass, volume, latency, lane grouping)',
+    '設定(キー割り当て・電子ドラム・ギター / ベース・ギターコントローラ・音量・遅延補正・打ち分け)',
+    'Settings (key bindings, e-drums, guitar / bass, guitar controller, volume, latency, lane grouping)',
   ],
   'settings.keys': ['キー割り当て', 'Key Bindings'],
   'settings.keyNote': [
@@ -67,12 +67,22 @@ export const STRINGS = {
   'settings.gbKeyNote': [
     '<b>R G B Y P</b>(ネック)は押している間だけ押さえた扱いで、<b>PICK</b> を押した瞬間に押さえ方とチップを照合します。'
       + '押さえ方はチップとちょうど同じにします(OPEN は何も押さえない)。<b>WAIL</b> はピックが当たった直後のウェイリング。'
-      + 'ギターとベースで同じ割り当てを使い、ドラムの割り当てとは別です。操作は上のドラムのキー割り当てと同じです。',
+      + 'ギターとベースで同じ割り当てを使い、ドラムの割り当てとは別です。操作は上のドラムのキー割り当てと同じです。'
+      + 'メニューの「LEFT(左利き)」はボタンの並びを左右反転して描くだけで、キーはボタンに付いたままです。'
+      + '左手でピックするなら「左利き用の並びにする」(R〜P = ; L K J H、PICK = F・D、WAIL = S)。',
     '<b>R G B Y P</b> (the neck) count as held while pressed, and pressing <b>PICK</b> checks the held buttons against the chip. '
       + 'Hold exactly the chip\'s buttons (nothing for OPEN). <b>WAIL</b> is the wailing right after a successful pick. '
-      + 'Guitar and bass share these bindings, separate from the drum bindings. They work like the drum key bindings above.',
+      + 'Guitar and bass share these bindings, separate from the drum bindings. They work like the drum key bindings above. '
+      + 'Left (Lefty) in the menu only draws the buttons in mirrored order; keys stay with their buttons. '
+      + 'To pick with your left hand, use Lefty Layout (R–P = ; L K J H, PICK = F / D, WAIL = S).',
   ],
   'settings.resetAllButtons': ['全ボタンを既定に戻す', 'Reset All Buttons'],
+  'settings.gbLeftyKeys': ['左利き用の並びにする', 'Lefty Layout'],
+  'settings.gbPad': ['ギターコントローラ(ゲームパッド)', 'Guitar Controller (Gamepad)'],
+  'settings.gbPadNote': [
+    'ギターコントローラやゲームパッドのボタン・スティック・十字キー(ストラムバー)を <b>R G B Y P / PICK / WAIL</b> と <b>START</b>(演奏開始・停止)に割り当てます。キーボードと同時に使えます。既定は Xbox 360 の Guitar Hero / Rock Band ギターの配置です(フレットの緑・赤・黄・青・オレンジを R G B Y P、ストラムの上下を PICK、チルトとスターパワーを WAIL)。ほかのコントローラは「＋ 追加」を押してから、ボタンを押すかスティック・ストラムバーを倒すと入ります(押したままのボタンは数えません)。ストラムの上下どちらでも弾くには、両方を PICK に入れます。ブラウザはボタンを押すまでゲームパッドを見せません。',
+    'Assign the buttons, sticks and D-pad (strum bar) of a guitar controller or gamepad to <b>R G B Y P / PICK / WAIL</b> and <b>START</b> (start / stop). It works together with the keyboard. The default matches Xbox 360 Guitar Hero / Rock Band guitars (green, red, yellow, blue and orange frets to R G B Y P, strum up / down to PICK, tilt and Star Power to WAIL). For other controllers, press "＋ Add" and then press a button or move a stick / the strum bar (buttons that stay held are ignored). To pick with both strum directions, put both on PICK. Browsers show a gamepad only after you press one of its buttons.',
+  ],
   'settings.gbBad': ['空ピックでコンボを切る(BAD)', 'Break the combo on a wrong pick (BAD)'],
   'settings.gbBadNote': [
     '押さえ方の違うピックやチップの無いところのピックで、コンボを切りゲージを減らします(DTXMania の Light を OFF にしたのと同じ。既定はしない)。',
@@ -155,12 +165,19 @@ export const STRINGS = {
     '(曲の一覧でギター・ベースの行から選ぶ。ネックのボタンを押さえて PICK で弾く)',
     '(choose from the Guitar / Bass rows of the song list; hold the neck buttons and press PICK)',
   ],
+  'help.gbPadTitle': ['ギターコントローラ', 'Guitar controller'],
+  'help.gbPadNote': [
+    '(設定の「ギターコントローラ(ゲームパッド)」で割り当て。START で演奏開始・停止)',
+    '(assign them under Guitar Controller (Gamepad) in the settings; START starts / stops)',
+  ],
   'help.guitarPlay': [
-    '<b>ギター / ベースの演奏</b>: チップは下から上へ流れ、画面上の判定ラインで弾きます(メニューの「リバース」で上から下へ)。'
+    '<b>ギター / ベースの演奏</b>: チップは下から上へ流れ、画面上の判定ラインで弾きます(メニューの「リバース」で上から下へ、'
+      + '「LEFT(左利き)」でボタンの並びを左右反転)。'
       + '和音は全部のボタンを押さえてから 1 回ピック。少しずれて押さえても、ピックの直後なら間に合います。'
       + '帯の付いたチップ(ロングノート)は押さえ続けると加点。ピックが当たった直後に WAIL でウェイリングの加点。'
       + 'タッチではレーンを押すとそのボタンを押さえて弾き、レーンの外を押すと OPEN。弾いていないパートとドラムは自動で鳴ります。',
-    '<b>Playing guitar / bass</b>: chips rise from the bottom and are played at the judge line at the top (Reverse in the menu makes them fall). '
+    '<b>Playing guitar / bass</b>: chips rise from the bottom and are played at the judge line at the top (Reverse in the menu makes them fall, '
+      + 'and Left (Lefty) mirrors the button order). '
       + 'For a chord, hold all its buttons and pick once; a button pressed just after the pick still counts. '
       + 'Keep holding a chip with a tail (long note) for bonus points. Press WAIL right after a successful pick for the wailing bonus. '
       + 'By touch, pressing a lane holds that button and picks; pressing outside the lanes picks OPEN. The other part and the drums play automatically.',
@@ -194,11 +211,13 @@ export const STRINGS = {
     '<b>Touch</b>: Tap a lane column to hit it. Open the menu with "☰". Change values with ◀ ▶; tap an action row to run it.',
   ],
   'help.items': [
-    '<b>メニュー項目</b>: 自動演奏 / 自動演奏詳細(レーン別・ボタン別 AUTO) / ノーツ表示調整 / 判定タイミング調整 / ハイスピード / 演奏速度 / '
-      + '開始待ち時間 / ドラム音量(ギター / ベース音量) / BGM 音量 / リバース(ギター / ベースのみ) / ループ演奏 / ループ位置単位 / '
+    '<b>メニュー項目</b>: 自動演奏 / AUTO プリセット(ギター / ベースのみ) / 自動演奏詳細(レーン別・ボタン別 AUTO) / ノーツ表示調整 / '
+      + '判定タイミング調整 / ハイスピード / 演奏速度 / 開始待ち時間 / ドラム音量(ギター / ベース音量) / BGM 音量 / メトロノーム / '
+      + 'リバース・LEFT(左利き)・空ピックで BAD(ギター / ベースのみ) / ループ演奏 / ループ位置単位 / '
       + 'ループ終了位置 / ループ開始位置 / 現在位置 / 演奏開始・停止 / リスタート / 一時停止 / トレーニング終了',
-    '<b>Menu items</b>: Auto Play / Auto Lanes (per-lane / per-button AUTO) / Visual Offset / Judge Offset / Hi-Speed / Play Speed / '
-      + 'Start Delay / Drum Volume (Guitar / Bass Volume) / BGM Volume / Reverse (guitar / bass only) / Loop / Loop Unit / '
+    '<b>Menu items</b>: Auto Play / Auto Preset (guitar / bass only) / Auto Lanes (per-lane / per-button AUTO) / Visual Offset / '
+      + 'Judge Offset / Hi-Speed / Play Speed / Start Delay / Drum Volume (Guitar / Bass Volume) / BGM Volume / Metronome / '
+      + 'Reverse · Left (Lefty) · Wrong Pick = BAD (guitar / bass only) / Loop / Loop Unit / '
       + 'Loop End / Loop Start / Position / Start · Stop / Restart / Pause / Exit Training',
   ],
   'help.misc': [
@@ -280,6 +299,7 @@ export const STRINGS = {
   'keys.fullLabel': ['{lane} は上限の {max} キーです', '{lane} already has the maximum of {max} keys'],
   'keys.clearLabel': ['{lane} のキーをすべて外す', 'Remove all keys from {lane}'],
   'keys.resetAllDone': ['全レーンを既定に戻しました', 'Reset all lanes to the default'],
+  'keys.leftyDone': ['左利き用の並び(R〜P = ; L K J H、PICK = F・D、WAIL = S)にしました', 'Switched to the lefty layout (R–P = ; L K J H, PICK = F / D, WAIL = S)'],
   'keys.repaired': [
     '{lanes} の設定が使えないキーだったので、割り当て直しました。確認してください。',
     'The saved keys for {lanes} could not be used, so they were reassigned. Please check them.',
@@ -323,6 +343,50 @@ export const STRINGS = {
   'midi.repaired': [
     '{lanes} の MIDI 設定が読めなかったので、既定に戻しました。確認してください。',
     'The saved MIDI settings for {lanes} could not be read, so they were reset to the default. Please check them.',
+  ],
+  'pad.labelButton': ['B{n}', 'B{n}'],
+  'pad.labelAxis': ['軸{n}{dir}', 'Axis{n}{dir}'],
+  'pad.labelHat': ['ハット{n}{dir}', 'Hat{n}{dir}'],
+  'pad.unsupported': ['このブラウザはゲームパッドを読めません(Chrome / Edge / Firefox で開いてください)', 'This browser cannot read gamepads (use Chrome, Edge or Firefox)'],
+  'pad.none': ['ゲームパッドが見つかりません。つないでボタンを押すと見つかります。', 'No gamepad found. Connect one and press a button.'],
+  'pad.devices': ['接続中: {list}', 'Connected: {list}'],
+  'pad.nonStandard': [
+    '(標準でない配置のものは、既定の割り当てが合わないので「＋ 追加」で割り当ててください)',
+    ' (devices without the standard layout do not match the default; assign them with "＋ Add")',
+  ],
+  'pad.monitorEmpty': ['ボタンを押すと、ここに入力と行き先が出ます', 'Press a button to see the input and where it goes'],
+  'pad.monitor': ['最後の入力: {code} → {lane}(#{index})', 'Last input: {code} → {lane} (#{index})'],
+  'pad.monitorUnbound': ['最後の入力: {code}(割り当てなし。#{index})', 'Last input: {code} (not assigned, #{index})'],
+  'pad.connectedToast': ['ゲームパッド: {names} をつなぎました', 'Gamepad: {names} connected'],
+  'pad.disconnectedToast': ['ゲームパッド: {names} が外れました', 'Gamepad: {names} disconnected'],
+  'pad.rowLabel': ['{lane} のゲームパッドの割り当て', 'Gamepad bindings for {lane}'],
+  'pad.chipCapturing': ['{lane} の {key} を差し替え中。割り当てる入力を押してください', 'Replacing {key} on {lane}. Press the input to assign'],
+  'pad.waiting': ['… 入力待ち', '… Press a button'],
+  'pad.addLabel': ['{lane} に入力を追加 ({n}/{max})', 'Add an input to {lane} ({n}/{max})'],
+  'pad.fullLabel': ['{lane} は上限の {max} 個です', '{lane} already has the maximum of {max} inputs'],
+  'pad.clearLabel': ['{lane} の入力をすべて外す', 'Remove all inputs from {lane}'],
+  'pad.fullHint': [
+    '{lane} は上限の {max} 個です。× でどれか外すか、入力の名前を押して差し替えてください。',
+    '{lane} already has the maximum of {max} inputs. Remove one with × or press an input name to replace it.',
+  ],
+  'pad.promptAdd': [
+    '{lane} に入力を追加します。コントローラのボタンを押すか、スティック・ストラムバーを倒してください(Esc で中止)',
+    'Adding an input to {lane}. Press a button or move a stick / the strum bar on the controller (Esc to cancel)',
+  ],
+  'pad.promptReplace': [
+    '{lane} の {key} を差し替えます。新しい入力を押してください(Esc で中止)',
+    'Replacing {key} on {lane}. Press the new input (Esc to cancel)',
+  ],
+  'pad.already': ['{key} は {lane} に登録済みです。別の入力を押してください。', '{key} is already on {lane}. Press another input.'],
+  'pad.full': ['{lane} は上限の {max} 個です。', '{lane} already has the maximum of {max} inputs.'],
+  'pad.removedEmpty': [
+    '{lane} から {key} を外しました。{lane} は割り当てなしです(既定には戻りません)。',
+    'Removed {key} from {lane}. {lane} now has no inputs (it does not go back to the default).',
+  ],
+  'pad.cleared': ['{lane} の入力をすべて外しました(既定には戻りません)', 'Removed all inputs from {lane} (it does not go back to the default)'],
+  'pad.repaired': [
+    'ギターコントローラの {lanes} の設定が読めなかったので、既定に戻しました。確認してください。',
+    'The saved gamepad inputs for {lanes} could not be read, so they were reset to the default. Please check them.',
   ],
   'midi.connectedToast': ['MIDI: {names} をつなぎました', 'MIDI: {names} connected'],
   'midi.disconnectedToast': ['MIDI: {names} が外れました', 'MIDI: {names} disconnected'],
@@ -487,6 +551,13 @@ export const STRINGS = {
   'menu.guitarVolume': ['ギター音量', 'Guitar Volume'],
   'menu.bassVolume': ['ベース音量', 'Bass Volume'],
   'menu.reverse': ['リバース', 'Reverse'],
+  'menu.left': ['LEFT(左利き)', 'Left (Lefty)'],
+  'menu.autoPreset': ['AUTO プリセット', 'Auto Preset'],
+  'menu.presetNeck': ['ネック', 'Neck'],
+  'menu.presetPick': ['ピック', 'Pick'],
+  'menu.presetCustom': ['カスタム', 'Custom'],
+  'menu.metronome': ['メトロノーム', 'Metronome'],
+  'menu.gbBad': ['空ピックで BAD', 'Wrong Pick = BAD'],
   'menu.loop': ['ループ演奏', 'Loop'],
   'menu.loopUnit': ['ループ位置単位', 'Loop Unit'],
   'menu.loopEnd': ['ループ終了位置', 'Loop End'],

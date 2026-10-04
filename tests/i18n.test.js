@@ -9,7 +9,7 @@ import { parseDTX } from '../js/core/dtx.js';
 // t() を使うファイル。キーの書き間違いと、使われていないキーを探す。t() を使うファイルを足したらここにも足す
 const SOURCES = [
   '../index.html', '../js/main.js', '../js/ui/menu.js', '../js/ui/midipanel.js', '../js/ui/keybind.js', '../js/ui/keypanel.js',
-  '../js/ui/midibind.js', '../js/ui/renderer.js', '../js/game/player.js', '../js/game/training.js',
+  '../js/ui/midibind.js', '../js/ui/gamepad.js', '../js/ui/renderer.js', '../js/game/player.js', '../js/game/training.js',
   '../js/core/zip.js', '../js/core/song.js',
 ];
 
@@ -147,17 +147,18 @@ test('i18n: the training menu and value texts in English', async () => {
     const m = new TrainingMenu(s, {});
     m.setChart(parseDTX('#BPM: 120\n#00013: 01\n#00313: 01\n'));
     assertEq(m.itemName(0), 'Auto Play');
-    assertEq(m.itemName(14), 'Start');
+    assertEq(m.itemName(15), 'Start');
     m.playing = true;
-    assertEq(m.itemName(14), 'Stop');
+    assertEq(m.itemName(15), 'Stop');
+    assertEq(m.itemName(9), 'Metronome');
     assertEq(m.itemValue(1), 'None');
     s.autoLanes[0] = true;
     assertEq(m.itemValue(1), '1 lane');
     s.autoLanes[1] = true;
     assertEq(m.itemValue(1), '2 lanes');
-    assertEq(m.itemValue(10), 'Measure');
+    assertEq(m.itemValue(11), 'Measure');
     s.loopUnit = LOOP_UNIT.SECOND;
-    assertEq(m.itemValue(10), 'Second');
+    assertEq(m.itemValue(11), 'Second');
     assertEq(formatLoopTime(2500, LOOP_UNIT.MEASURE, [0, 2000, 4000]), 'Measure 001');
     assertEq(laneKeysText([]), 'none');
     assertEq(laneNotesText([]), 'none');

@@ -15,9 +15,10 @@ import { GuitarRenderer } from './ui/gbrenderer.js';
 import { FramePacer, IDLE_DRAW_FPS } from './ui/framepace.js';
 import { TrainingMenu, MENU_COMMAND } from './ui/menu.js';
 import { DrumInput, LANE_KEY_DEFAULTS } from './ui/input.js';
-import { GuitarInput, GB_KEY_DEFAULTS, GB_BUTTON_NAMES } from './ui/gbinput.js';
+import { GuitarInput, GB_KEY_DEFAULTS, GB_KEY_LEFTY, GB_BUTTON_NAMES } from './ui/gbinput.js';
 import { defaultBindings, normalizeBindings, laneKeysText } from './ui/keybind.js';
 import { KeyBindPanel } from './ui/keypanel.js';
+import { GamepadInput, GB_PAD_DEFAULTS, PAD_BUTTON_NAMES, PAD_START, isPadCode, padCodeLabel, padDevice } from './ui/gamepad.js';
 import { MidiInput } from './ui/midi.js';
 import { defaultMidiNotes, defaultVelocityMin, normalizeMidiNotes, normalizeVelocityMin } from './ui/midibind.js';
 import { MidiPanel } from './ui/midipanel.js';
@@ -35,6 +36,8 @@ const DEFAULT_CONFIG = {
   gbBindings: defaultBindings(GB_KEY_DEFAULTS),
   gbVolume: 100, // 弾いているギター / ベースの音量(ドラムの chipVolume と同じく 'chip' のバス)
   gbLight: true, // 空ピック(押さえ方の違うピック)を BAD にしない(NX GuitarLight / BassLight。既定 ON)
+  // ギターコントローラ(ゲームパッド)の割り当て(R G B Y P / PICK / WAIL / START。キーとは別。js/ui/gamepad.js)
+  gbPadBindings: defaultBindings(GB_PAD_DEFAULTS),
   // 電子ドラム(MIDI)。キーボードの bindings とは別に持つ(js/ui/midibind.js の冒頭)
   midiNotes: defaultMidiNotes(),
   midiVelocityMin: defaultVelocityMin(),
@@ -89,6 +92,17 @@ class App {
     this.config.gbBindings = gbNorm.bindings;
     this._gbKeysRepaired = gbNorm.repaired;
     this.config.gbLight = this.config.gbLight !== false;
+    const padNorm = normalizeBindings(this.config.gbPadBindings, GB_PAD_DEFAULTS, isPadCode);
+    this.config.gbPadBindings = padNorm.bindings;
+    this._gbPadRepaired = padNorm.repaired;
+    // ギターコントローラも曲をまたいで 1 つ(設定の監視・押して追加と演奏の両方で使う)
+    this.gamepad = new GamepadInput({
+      onButton: (button, down, ts, holder) => this.onPadButton(button, down, ts, holder),
+      onInput: (info) => this.onPadInput(info),
+      onDevices: (change) => this.onPadDevices(change),
+    });
+    this.gamepad.setBindings(this.config.gbPadBindings);
+    this._padMonitor = null; // 設定の監視に出している最後の入力
     const midiNorm = normalizeMidiNotes(this.config.midiNotes);
     this.config.midiNotes = midiNorm.notes;
     this.config.midiVelocityMin = normalizeVelocityMin(this.config.midiVelocityMin);
@@ -120,6 +134,7 @@ class App {
     this._loadGen = 0;
     this.keyPanel = null; // 設定の「キー割り当て」(js/ui/keypanel.js)
     this.gbKeyPanel = null; // 同じくギター / ベース
+    this.gbPadPanel = null; // 同じくギターコントローラ
     this._seek = null; // 停止中のシークバー
     this._wakeLock = null;
     this._status = null; // ホームの状態表示 {msg, error}(言語の切り替えで作り直す)
@@ -204,6 +219,8 @@ class App {
     if (this._lastZip) this.showLastButton(this._lastZip.blob, this._lastZip.name);
     if (this.keyPanel) this.keyPanel.relocalize();
     if (this.gbKeyPanel) this.gbKeyPanel.relocalize();
+    if (this.gbPadPanel) this.gbPadPanel.relocalize();
+    this.renderPadState();
     this.updateHelpKeys();
     if (this.pkg) this.renderSongList();
     if (this.midiPanel) this.midiPanel.relocalize();
@@ -381,12 +398,13 @@ class App {
   cancelAssign(reason) {
     if (this.keyPanel) this.keyPanel.cancelAssign(reason);
     if (this.gbKeyPanel) this.gbKeyPanel.cancelAssign(reason);
+    if (this.gbPadPanel) this.gbPadPanel.cancelAssign(reason);
   }
 
   buildKeyUi() {
     // ドラムとギター / ベースの欄・電子ドラムの「叩いて追加」は同時には待たない(待ち受けを始めたらほかを畳む)
     const others = (self) => () => {
-      for (const p of [this.keyPanel, this.gbKeyPanel]) if (p && p !== self) p.cancelAssign(msg('common.canceled'));
+      for (const p of [this.keyPanel, this.gbKeyPanel, this.gbPadPanel]) if (p && p !== self) p.cancelAssign(msg('common.canceled'));
       if (this.midiPanel) this.midiPanel.cancelCapture(msg('common.canceled'));
     };
     this.keyPanel = new KeyBindPanel({
@@ -411,10 +429,25 @@ class App {
       getBindings: () => this.config.gbBindings,
       setBindings: (next) => { this.config.gbBindings = next; this.saveConfig(); },
       onChange: () => this.updateHelpKeys(),
+      presets: [{ button: $('btn-gb-keys-lefty'), bindings: GB_KEY_LEFTY, done: 'keys.leftyDone' }],
     });
     this.gbKeyPanel.beforeAssign = others(this.gbKeyPanel);
+    this.gbPadPanel = new KeyBindPanel({
+      list: $('gbpad-list'),
+      statusText: $('gbpad-status-text'),
+      undoButton: $('gbpad-undo'),
+      resetAllButton: $('btn-gbpad-default'),
+      names: PAD_BUTTON_NAMES,
+      defaults: GB_PAD_DEFAULTS,
+      getBindings: () => this.config.gbPadBindings,
+      setBindings: (next) => { this.config.gbPadBindings = next; this.gamepad.setBindings(next); this.saveConfig(); },
+      onChange: () => this.updateHelpKeys(),
+      device: padDevice(this.gamepad),
+    });
+    this.gbPadPanel.beforeAssign = others(this.gbPadPanel);
     this.keyPanel.build(this._keysRepaired || []);
     this.gbKeyPanel.build(this._gbKeysRepaired || []);
+    this.gbPadPanel.build(this._gbPadRepaired || []);
     this.updateHelpKeys();
   }
 
@@ -424,6 +457,77 @@ class App {
     if (el) el.textContent = this.config.bindings.map((codes, lane) => `${LANE_NAMES[lane]}=${laneKeysText(codes)}`).join('  ');
     const gb = $('help-gb-keys');
     if (gb) gb.textContent = this.config.gbBindings.map((codes, b) => `${GB_BUTTON_NAMES[b]}=${laneKeysText(codes)}`).join('  ');
+    const pad = $('help-gb-pad');
+    if (pad) pad.textContent = this.config.gbPadBindings.map((codes, b) => `${PAD_BUTTON_NAMES[b]}=${laneKeysText(codes, padCodeLabel)}`).join('  ');
+  }
+
+  // ---- ギターコントローラ(ゲームパッド) ----
+
+  /** 割り当てた入力が押された / 離された(演奏中のギター / ベースだけに届ける)。 */
+  onPadButton(button, down, ts, holder) {
+    const input = this.input;
+    if (!this.player || !(input instanceof GuitarInput)) return;
+    if (button === PAD_START) {
+      // 演奏開始・停止(本アプリの追加。画面の ▶ と同じ)
+      if (down) { this.player.command(MENU_COMMAND.START_STOP); this.pacer.forceNext(); }
+      return;
+    }
+    input.padInput(button, down, ts, holder);
+    this.pacer.forceNext();
+  }
+
+  /** 設定の監視: 最後に動いた入力と、その行き先の行を出す。 */
+  onPadInput(info) {
+    if (!info.down || !this.gamepad.watchAll) return;
+    this._padMonitor = info;
+    this.renderPadMonitor();
+    if (info.button >= 0 && this.gbPadPanel) this.gbPadPanel.hitLane(info.button);
+  }
+
+  onPadDevices(change) {
+    this.renderPadState();
+    // 演奏中の抜き差しは画面に出す(弾いても鳴らない理由が分かるように)
+    if (this.player && this.input instanceof GuitarInput && change) {
+      if (change.added.length) this.player.showStatus(t('pad.connectedToast', { names: change.added.join(', ') }), 2500);
+      if (change.removed.length) this.player.showStatus(t('pad.disconnectedToast', { names: change.removed.join(', ') }), 4000);
+    }
+  }
+
+  /** 設定の「ギターコントローラ」のつながっている機器。 */
+  renderPadState() {
+    const el = $('gbpad-state');
+    if (!el) return;
+    const g = this.gamepad;
+    if (!g.supported) el.textContent = t('pad.unsupported');
+    else if (!g.devices.length) el.textContent = t('pad.none');
+    else {
+      el.textContent = t('pad.devices', { list: g.devices.map((d) => `[${d.index}] ${d.id}`).join(' / ') })
+        + (g.devices.some((d) => d.mapping !== 'standard') ? t('pad.nonStandard') : '');
+    }
+    this.renderPadMonitor();
+  }
+
+  renderPadMonitor() {
+    const el = $('gbpad-monitor');
+    if (!el) return;
+    const m = this._padMonitor;
+    if (!m) el.textContent = t('pad.monitorEmpty');
+    else if (m.button >= 0) el.textContent = t('pad.monitor', { code: padCodeLabel(m.code), lane: PAD_BUTTON_NAMES[m.button], index: m.index });
+    else el.textContent = t('pad.monitorUnbound', { code: padCodeLabel(m.code), index: m.index });
+  }
+
+  /** 設定を開いている間は、割り当てていない入力も見る(監視・押して追加)。閉じたら止める。 */
+  syncPadWatch() {
+    const on = !$('screen-home').hidden && $('settings-panel').open;
+    this.gamepad.watchAll = on;
+    if (on) {
+      this.gamepad.activate('settings');
+      this.gamepad.poll(); // 開いたときの状態を基準にする
+      this.renderPadState();
+    } else {
+      this.gamepad.deactivate('settings');
+      if (this.gbPadPanel) this.gbPadPanel.cancelAssign();
+    }
   }
 
   // ---- 電子ドラム(MIDI) ----
@@ -475,7 +579,11 @@ class App {
       visible: () => !$('screen-home').hidden && $('settings-panel').open,
     });
     this.midiPanel.build();
-    $('settings-panel').addEventListener('toggle', () => this.midiPanel.refresh());
+    $('settings-panel').addEventListener('toggle', () => {
+      this.midiPanel.refresh();
+      this.syncPadWatch();
+    });
+    this.renderPadState();
     const badMidi = (this._midiRepaired || []).map((l) => LANE_NAMES[l]);
     if (badMidi.length) this.midiPanel.setStatus(msg('midi.repaired', { lanes: badMidi.join(' / ') }));
 
@@ -492,7 +600,7 @@ class App {
     bindRange('cfg-gb', 'gbVolume', () => this.applyVolumes());
     const bad = $('cfg-gb-bad');
     bad.checked = !c.gbLight;
-    bad.onchange = () => { c.gbLight = !bad.checked; this.saveConfig(); };
+    bad.onchange = () => this.setGbLight(!bad.checked);
     const lat = $('cfg-latency');
     lat.value = c.latencyMs;
     lat.onchange = () => { c.latencyMs = Number(lat.value) || 0; this.audio.userLatencyMs = c.latencyMs; this.saveConfig(); };
@@ -646,6 +754,18 @@ class App {
     return this.config[this._volumeKey(kind)] || 0;
   }
 
+  /**
+   * 空ピックを BAD にしない(Light)を切り替えて保存する(設定パネルとトレーニングメニューの共通入口)。
+   * 演奏中のギター / ベースにもすぐ効かせる(次のピックから)。
+   */
+  setGbLight(light) {
+    this.config.gbLight = !!light;
+    this.saveConfig();
+    const bad = $('cfg-gb-bad');
+    if (bad) bad.checked = !this.config.gbLight;
+    if (this.player && this.playInst !== INSTRUMENT.DRUMS) this.player.config.light = this.config.gbLight;
+  }
+
   saveConfig() {
     saveJSON('config', this.config);
   }
@@ -661,6 +781,7 @@ class App {
     this.playInst = inst;
     this.applyVolumes();
     $('screen-home').hidden = true;
+    this.syncPadWatch(); // ホームを隠したので設定の監視(すべての入力を 4 ms ごと)は止める。読み込みに失敗しても
     $('screen-play').hidden = false;
     $('loading').hidden = false;
     $('loading-text').textContent = t('load.chart');
@@ -742,6 +863,8 @@ class App {
       onSeek: (ms) => !!this.player && this.player.seekTo(ms),
       getVolume: (kind) => this.volumeOf(kind),
       onVolumeStep: (kind, step) => this.stepVolume(kind, step),
+      getGbBad: () => !this.config.gbLight,
+      onGbBadToggle: () => this.setGbLight(!this.config.gbLight),
     });
     this.menu.setChart(player.chart);
     this.menu.build(overlay);
@@ -767,6 +890,9 @@ class App {
         onKey,
       });
       this.input.setBindings(this.config.gbBindings);
+      // ギターコントローラは演奏の間だけ 4 ms ごとに読む(ゲームパッドが無ければ 250 ms ごとに確かめるだけ)
+      this.gamepad.setBindings(this.config.gbPadBindings);
+      this.gamepad.activate('play');
     }
     this.input.hitTest = (x, y) => this.renderer.hitTestLane(x, y);
     this.input.attach($('canvas'));
@@ -787,6 +913,8 @@ class App {
     const loop = (now) => {
       if (!this.player) return;
       this.pacer.tick(now);
+      // ギターコントローラは 4 ms ごとにも読むが、フレームの頭でも読んで、そのフレームの判定に間に合わせる
+      if (this.input instanceof GuitarInput) this.gamepad.poll();
       // 判定・指示・キーリピートは描くかどうかに関わらず毎 rAF 回す(リピートの間隔と開始の遅れを変えない)
       this.menu.update(now);
       this.player.update(now, this.menu);
@@ -832,6 +960,7 @@ class App {
     if (!this.menu || !this.menu.root) return;
     if (document.body.classList.contains('portrait')) this.menu.root.classList.toggle('open');
     else this.menu.root.hidden = !this.menu.root.hidden;
+    this.menu.invalidateScroll(); // 隠れている間に動いたカーソルの行を、出したときに見せる
   }
 
   toggleFullscreen() {
@@ -892,6 +1021,7 @@ class App {
         m.style.maxHeight = Math.max(200, h - top - 8 - below) + 'px';
         m.style.fontSize = font + 'px';
       }
+      this.menu.invalidateScroll(); // 枠の大きさが変わったので、カーソルの行が見えているか測り直す
     }
   }
 
@@ -1069,6 +1199,7 @@ class App {
     if (this._seek) this._seek.shown = false;
     this.releaseWakeLock();
     if (this.input) { this.input.detach(); this.input = null; }
+    this.gamepad.deactivate('play');
     if (this.menu) { this.menu.destroy(); this.menu = null; }
     if (this.player) { this.player.dispose(); this.player = null; }
     if (this.renderer) this.renderer._releaseBase(); // キャンバスと同じ大きさの作り置きをすぐ手放す
@@ -1081,6 +1212,7 @@ class App {
     $('screen-play').hidden = true;
     $('screen-home').hidden = false;
     if (this.midiPanel) this.midiPanel.refresh(); // 演奏中に溜まった打鍵数などを出す
+    this.syncPadWatch(); // 設定を開いたままなら監視に戻る
   }
 
   /** メニュー操作音(短い合成音)。 */

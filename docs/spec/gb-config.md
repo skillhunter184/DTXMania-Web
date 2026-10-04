@@ -118,6 +118,28 @@ The raw string is at CI:4196-4248 and is parsed through `tReadFromString` (CI:42
 
 ---
 
+### 1.5 Joystick / guitar-controller input **[ADD]**
+
+Paths: CJ = FDK/Code/02.Input/CInputJoystick.cs, CIM = FDK/Code/02.Input/CInputManager.cs, CPad = DTXMania/Code/App/CPad.cs,
+KA = DTXMania/Code/Stage/04.Config/CActConfigKeyAssign.cs, PCS = CStagePerfCommonScreen.cs, APP = DTXMania/Code/App/CDTXMania.cs.
+
+**NX**
+- SharpDX.DirectInput. Every `DeviceClass.GameControl` device attached at startup becomes a `CInputJoystick` (CIM:70-101). No hot-plug; a device whose poll throws is removed (CIM:176-196). Cooperative level Foreground | Exclusive, BufferSize 32 (CJ:21-23).
+- Axes: Range ±1000, DeadZone 5000 ("50%"), and a direction counts as pressed when `|v| > 500` on its side (CJ:37-45, 698; polled CJ:310-500). No hysteresis. Crossing to the other side releases the opposite direction (CJ:698-721). Only X, Y, Z are read (Rx/Ry/Rz and sliders ignored).
+- POV: `n = (deg + 2250) / 4500 mod 8` (0 = up, 45° clockwise steps); centred (−1) releases (CJ:264-294). Buffered mode can leave a sector stuck when moving between sectors without passing the centre (CJ:271-290).
+- Codes: 0..5 = X−, X+, Y−, Y+, Z−, Z+; 6+i = button i (0..127); 134..141 = POV n. UI labels Left / Right / Up / Down / Forward / Back / Button{code−5} (1-based) / POV {n·45} (KA:363-408).
+- Two input modes, `BufferedInput` (default ON): buffered DirectInput data with DirectInput timestamps mapped to the sound timer (CJ:119-300; FDK/Code/03.Sound/CSoundTimer.cs:44-66), or the polled state stamped with the poll time (CJ:301-633).
+- Pick and Wail are **press edges** from `CPad.GetEvents` with each event's own timestamp (PCS:5421-5432, 5515-5533). The neck is the **held level** `CPad.bPressing`, sampled when processing (PCS:5308-5315). A press and release inside one poll is invisible to the neck.
+- No strum-pair handling: picking with both strum directions needs both codes bound to Pick. A wail bound to an axis fires once per crossing.
+- Device identity: `[GUID] JoystickID=n,GUID`; IDs are given at startup to unknown GUIDs, n = 0..9 reloaded (APP:2447-2473; CI:4078-4093). Bindings carry the device ID (`J<id36><code>`).
+- Capture (CONFIG > Key Assign): every joystick, codes 0..141, the first press edge wins, no exclusions (KA:434-455).
+- Joystick defaults exist only for Guitar G (`J012`), Guitar Pick (`J06`), Bass G (`J013`), Bass Pick (`J08`) (CI:4215-4231).
+
+**DTXManiaAI**
+- Unity Input System `Gamepad.current` only (one device, no index/GUID). Only 16 named `GamepadButton`s can be bound (`Pad:South`); no stick directions, no hats as such, no generic Joystick class (Input/InputManager.cs:47-77; Input/DrumBinding.cs:59-77).
+- Guitar/bass tokens can be typed into `GuitarKeys=` / `BassKeys=`; there is no GB capture UI and no gamepad defaults (Config/ConfigIni.cs:151-172; Stages/ConfigStage.cs:1286).
+- Judged at frame time, one pick per frame (docs/20_guitar-bass-mode.md:119). Not verified on hardware (docs/18_nx-parity-stage5-drums.md:285-287).
+
 ## 2. AutoPlay
 
 ### 2.1 Flags, ini keys and defaults

@@ -15,6 +15,9 @@ export const LOOP_SECOND_STEP_MS = 500;
 // (docs/spec/nx-docs.md:346「ハイスピード (x0.5 steps)」)だが、0.5 では粗すぎるので細かくした。
 export const SCROLL_SPEED_MIN = 1, SCROLL_SPEED_MAX = 2000; // x0.1 〜 x200.0
 export const PLAY_SPEED_MIN = 5, PLAY_SPEED_MAX = 40;
+// メトロノームの音量(%。0 = OFF)。元実装は Config の Metronome(ON/OFF。DTXManiaAI ConfigIni、NX Metronome=)で、
+// 練習中に耳で合わせられるようトレーニングメニューの音量にした
+export const METRONOME_STEP = 10, METRONOME_MAX = 100;
 export const AUTO_LANE_COUNT = 11; // 0-9 がレーン、10 が LBD(NX 互換で 11 桁保つ)
 export const AUTO_LANE_LBD = 10;
 // ギター / ベースのボタン別 AUTO(R G B Y P / ピック / ウェイリング。NX [AutoPlay] の GuitarR〜GuitarWailing と同じ並び)。
@@ -58,6 +61,15 @@ export class TrainingSettings {
     this.gbScrollSpeedTenth = 20;
     /** リバース(判定ラインを画面下に置き、チップを上から下へ流す。NX GuitarReverse / BassReverse)。 */
     this.gbReverse = false;
+    /** LEFT(ボタンを描く列の左右反転。R G B Y P → P Y B G R。NX GuitarLeft / BassLeft)。 */
+    this.gbLeft = false;
+    /**
+     * 判定タイミング調整(±ms)。ドラムの judgeOffsetMs とは別(NX も楽器ごと)。保存に無ければ judgeOffsetMs を引き継ぐ
+     * (ドラムと共有していた頃の値のまま始める)。
+     */
+    this.gbJudgeOffsetMs = 0;
+    /** メトロノームの音量(0〜100 %、0 で鳴らさない)。拍線の時刻に鳴らし、小節の頭は高い音。ドラムとギター / ベースで共通。 */
+    this.metronomeVolume = 0;
   }
 
   get loopRangeValid() {
@@ -79,6 +91,9 @@ export class TrainingSettings {
     this.scrollSpeedTenth = clamp(this.scrollSpeedTenth | 0, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX);
     this.gbScrollSpeedTenth = clamp(this.gbScrollSpeedTenth | 0, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX);
     this.gbReverse = !!this.gbReverse;
+    this.gbLeft = !!this.gbLeft;
+    this.gbJudgeOffsetMs = clamp(this.gbJudgeOffsetMs | 0, JUDGE_OFFSET_MIN, JUDGE_OFFSET_MAX);
+    this.metronomeVolume = clamp(Math.round((this.metronomeVolume | 0) / METRONOME_STEP) * METRONOME_STEP, 0, METRONOME_MAX);
     this.playSpeed = clamp(this.playSpeed | 0, PLAY_SPEED_MIN, PLAY_SPEED_MAX);
     this.startWaitMs = clamp(this.startWaitMs | 0, START_WAIT_MIN, START_WAIT_MAX);
     this.startWaitMs = Math.floor(this.startWaitMs / START_WAIT_STEP) * START_WAIT_STEP;
@@ -121,6 +136,9 @@ export class TrainingSettings {
       gbAutoLanes: this.gbAutoLanes.map((b) => (b ? '1' : '0')).join(''),
       gbScrollSpeedTenth: this.gbScrollSpeedTenth,
       gbReverse: this.gbReverse,
+      gbLeft: this.gbLeft,
+      gbJudgeOffsetMs: this.gbJudgeOffsetMs,
+      metronomeVolume: this.metronomeVolume,
     };
   }
 
@@ -129,13 +147,17 @@ export class TrainingSettings {
     if (obj && typeof obj === 'object') {
       if ('autoPlay' in obj) s.autoPlay = !!obj.autoPlay;
       if (typeof obj.autoLanes === 'string') s.autoLanesFromString(obj.autoLanes);
-      for (const k of ['noteOffsetMs', 'judgeOffsetMs', 'scrollSpeedTenth', 'playSpeed', 'startWaitMs', 'loopUnit', 'gbScrollSpeedTenth']) {
+      for (const k of ['noteOffsetMs', 'judgeOffsetMs', 'scrollSpeedTenth', 'playSpeed', 'startWaitMs', 'loopUnit', 'gbScrollSpeedTenth',
+        'gbJudgeOffsetMs', 'metronomeVolume']) {
         if (Number.isFinite(obj[k])) s[k] = obj[k];
       }
+      // ドラムと共有していた頃の保存: ギター / ベースも同じ値で始める
+      if (!Number.isFinite(obj.gbJudgeOffsetMs) && Number.isFinite(obj.judgeOffsetMs)) s.gbJudgeOffsetMs = obj.judgeOffsetMs;
       if (typeof obj.gbAutoLanes === 'string') {
         for (let i = 0; i < s.gbAutoLanes.length && i < obj.gbAutoLanes.length; i++) s.gbAutoLanes[i] = obj.gbAutoLanes[i] !== '0';
       }
       if ('gbReverse' in obj) s.gbReverse = !!obj.gbReverse;
+      if ('gbLeft' in obj) s.gbLeft = !!obj.gbLeft;
       // 0.5 刻みで保存されていた頃の設定を引き継ぐ(x0.5 の整数 → 0.1 刻み = ×5)
       if (!Number.isFinite(obj.scrollSpeedTenth) && Number.isFinite(obj.scrollSpeed)) {
         s.scrollSpeedTenth = obj.scrollSpeed * 5;

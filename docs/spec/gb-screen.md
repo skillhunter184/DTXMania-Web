@@ -145,7 +145,9 @@ Notes:
   - the string x values; B stays at 164 (LF:91-127)
   - the fire centres (CF:30-33)
   - the top frame, which switches to its LEFT row (RGB:129,176)
-  - OPEN, wailing and the bar line are not mirrored.
+  - the bass strings too (957..1112 swapped, B stays at 1034; LF:111-127)
+  - OPEN, wailing and the bar line are not mirrored. **[ADD]** Neither are the lane panel (so the wailing column stays at the right, next to R), the hit-bar, the bottom frame, the shutters and the judge string.
+  - **[ADD]** Drawing only: input, judging, AUTO and key assignment never read bLeft (PCS:5308-5455). The option is `GuitarLeft` / `BassLeft` in [PlayOption] (CI:2027-2049), CONFIG "Left" (CL:1266-1269, 1476-1479).
   - **[NX-only]** DTXManiaAI fixes `Left=false` (GPS:439).
 
 ### 1.2 3-lane vs 5-lane charts

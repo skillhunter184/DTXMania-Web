@@ -5,7 +5,8 @@
 //   ・同じキーが 2 レーンに同時に載ることはない(nx-docs.md:251)
 //   ・空レーンは「意図的な未割り当て」で、既定キーで勝手に復活させない(nx-docs.md:250 の None)
 // MIDI / ゲームパッドのトークン(`Midi:38` など)は ini 用の文法なので Web 版には持ち込まない。
-// 電子ドラム(MIDI)は js/ui/midibind.js で別に持つ(config.midiNotes)。ゲームパッドは未対応。
+// 電子ドラム(MIDI)は js/ui/midibind.js で別に持つ(config.midiNotes)。ギターコントローラ(ゲームパッド)は同じ規則で
+// 別に持つ(config.gbPadBindings。符号は js/ui/gamepad.js の 'b3' / 'a3-' / 'h9u'。normalizeBindings に検査を渡す)。
 // 保存形式は config.bindings: string[][](レーン → KeyboardEvent.code)のまま。
 
 import { LANE_KEY_DEFAULTS, keyLabel } from './input.js';
@@ -73,7 +74,7 @@ export function findCode(bindings, code) {
  *
  * @returns {{bindings:string[][], repaired:number[]}}
  */
-export function normalizeBindings(raw, defaults = LANE_KEY_DEFAULTS) {
+export function normalizeBindings(raw, defaults = LANE_KEY_DEFAULTS, isValid = isAssignableCode) {
   const laneCount = defaults.length;
   const src = Array.isArray(raw) ? raw : [];
   const cleaned = [];
@@ -84,7 +85,7 @@ export function normalizeBindings(raw, defaults = LANE_KEY_DEFAULTS) {
     const clean = [];
     for (const v of list) {
       const code = typeof v === 'string' ? v : '';
-      if (!isAssignableCode(code)) continue; // 予約キーが紛れ込んでいたら落とす(叩いても鳴らないため)
+      if (!isValid(code)) continue; // 予約キーが紛れ込んでいたら落とす(叩いても鳴らないため)
       if (clean.indexOf(code) >= 0) continue;
       if (clean.length >= MAX_KEYS_PER_LANE) break;
       clean.push(code);
@@ -197,6 +198,6 @@ export function resetLane(bindings, lane, defaults = LANE_KEY_DEFAULTS) {
 }
 
 /** レーンの割り当てを 1 行で表す("A / Q"、空なら "なし")。 */
-export function laneKeysText(codes) {
-  return codes && codes.length ? codes.map(keyLabel).join(' / ') : t('common.none');
+export function laneKeysText(codes, label = keyLabel) {
+  return codes && codes.length ? codes.map((c) => label(c)).join(' / ') : t('common.none');
 }

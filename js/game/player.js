@@ -34,12 +34,13 @@ export const PLAYER_STATE = { STANDBY: 'standby', START_IN: 'startin', PLAYING: 
 
 const FINISH_TAIL_MS = 2000;
 const SCHEDULE_AHEAD_MS = 200; // 自動発音の先読み量(実時間)
+const METRO_BEAT_VOLUME = 0.4; // メトロノームの拍線の音量(小節線に対して。DTXManiaAI PS:2000-2011、NX は 40/127)
 const PEDAL_CHANNELS = new Set([0x13, 0x1b, 0x1c]);
 
 export class Player {
   /**
    * @param {{audio: AudioEngine, settings: import('./training.js').TrainingSettings, config: object}} deps
-   *   config: { hhGroup, ftGroup, cyGroup, bdGroup, hitRanges, pedalHitRanges, chipVolume, autoChipVolume, damageLevel, autoAddGage, metronome }
+   *   config: { hhGroup, ftGroup, cyGroup, bdGroup, hitRanges, pedalHitRanges, chipVolume, autoChipVolume, damageLevel, autoAddGage }
    * chipVolume / autoChipVolume は元実装どおりの相対音量(手動・全体 AUTO は前者、レーン別 AUTO は後者。
    * docs/spec/dtx-audio.md:458)。ユーザーが動かす「ドラム音量」「BGM 音量」は AudioEngine のバス側。
    */
@@ -99,6 +100,12 @@ export class Player {
     this.accomp = []; // {timeMs, wavId, mono}(時刻順。mono が同じものは前の音を止めてから鳴らす)
     this._accompIndex = 0;
     this._accompLast = new Map(); // mono → voice
+    // メトロノーム(元実装の Config の Metronome を、トレーニングメニューの音量にしたもの。違いは docs/architecture.md)。
+    // 拍線の時刻 {timeMs, accent}(accent = 小節の頭)
+    this.metro = [];
+    this._metroIndex = 0;
+    this._metroVoices = new Set(); // 鳴らしたクリック(ループの折り返しでは止めない。_stopChartVoices で止める)
+    this._lastMetroMs = -1; // 最後に鳴らしたクリックの譜面時刻
 
     // 演出(実時間 ms、performance.now)
     this.laneFlashUntil = new Array(LANE_COUNT).fill(0);
@@ -127,6 +134,7 @@ export class Player {
     this.pkg = pkg;
     this.chart = chart;
     this._prepareChart(chart);
+    this.metro = buildMetronome(chart);
     this.measureTimes = buildMeasureTimes(chart);
     await this.audio.loadChartSounds(pkg, chart, onProgress);
     this._afterSoundsLoaded();
@@ -169,6 +177,11 @@ export class Player {
   /** ハイスピードの設定値(倍率)。ギター / ベースは別に持つ(js/game/gbplayer.js)。 */
   get hiSpeedSetting() {
     return this.settings.hiSpeedRatio;
+  }
+
+  /** 判定タイミング調整の設定値(ms)。ギター / ベースは別に持つ(js/game/gbplayer.js)。 */
+  get judgeOffsetSetting() {
+    return this.settings.judgeOffsetMs;
   }
 
   // ---- 時計 ----
@@ -280,7 +293,7 @@ export class Player {
   applySettings() {
     const s = this.settings;
     this.auto = s.autoPlay;
-    this.judgeOffsetMs = s.judgeOffsetMs;
+    this.judgeOffsetMs = this.judgeOffsetSetting;
     this.noteDrawOffsetMs = s.noteOffsetMs;
     this.scrollRatioSetting = this.hiSpeedSetting;
     let all = true;
@@ -526,6 +539,8 @@ export class Player {
     this._seIndex = countBefore(this.chart.seEvents, target);
     this._autoSoundIndex = countBefore(this.notes, target);
     this._accompIndex = countBefore(this.accomp, target);
+    this._metroIndex = countBefore(this.metro, target);
+    this._lastMetroMs = -1;
     this._seLast.clear();
     this._accompLast.clear();
     if (this.state === PLAYER_STATE.PLAYING) {
@@ -546,6 +561,8 @@ export class Player {
     this._seIndex = countBefore(this.chart.seEvents, songMs);
     this._autoSoundIndex = countBefore(this.notes, songMs);
     this._accompIndex = countBefore(this.accomp, songMs);
+    this._metroIndex = countBefore(this.metro, songMs); // 鳴りかけのクリックは鳴らし直さない(短いので)
+    this._lastMetroMs = -1;
     // 未判定のチップは手動ヒット時に音を出せるよう、判定済みのものだけ発音済み扱いにする
     for (let i = 0; i < this.notes.length; i++) this.notes[i].soundScheduled = this.judged[i];
     // 開始時刻は songMs の実時刻(過去なら playBuffer が遅れたぶんだけ頭を飛ばす)
@@ -599,6 +616,8 @@ export class Player {
   _stopChartVoices() {
     for (const v of this._chartVoices) this.audio.stopVoice(v);
     this._chartVoices.clear();
+    for (const v of this._metroVoices) this.audio.stopVoice(v);
+    this._metroVoices.clear();
     this._seLast.clear();
     this._accompLast.clear();
   }
@@ -631,13 +650,23 @@ export class Player {
     // ループ折り返し
     if (this.loopEndMs !== -1 && songMs > this.loopEndMs) {
       const begin = this.loopBeginMs === -1 ? 0 : this.loopBeginMs;
+      // 終端までに鳴らしたメトロノームのクリックは止めない(終端の拍線のクリックがそのまま継ぎ目の拍。短い音なので、
+      // 止めると頭だけ鳴って、開始位置で鳴らし直す同じ拍と二度鳴りに聞こえる)
+      const clicks = this._metroVoices;
+      this._metroVoices = new Set();
+      const seamClick = this._lastMetroMs === this.loopEndMs;
       this.jumpTo(begin, true);
       this.stats.resetForLoop();
       songMs = begin;
       if (this.settings.startWaitMs > 0) {
-        this.beginStartWait(begin);
+        this.beginStartWait(begin); // 待ったあとは開始位置の拍から鳴らす(beginPlaying が位置を合わせ直す)
+        for (const v of clicks) this._metroVoices.add(v);
         return;
       }
+      for (const v of clicks) this._metroVoices.add(v);
+      // 終端の拍が鳴ったなら、開始位置の同じ拍は鳴らさない(小節単位のループでは終端と開始はどちらも小節線)
+      const next = this.metro[this._metroIndex];
+      if (seamClick && next && next.timeMs === begin) this._metroIndex++;
     }
 
     this.scheduleAutoSounds(songMs, realNow);
@@ -736,6 +765,24 @@ export class Player {
       }
       const v = this._playAccomp(ev, when);
       if (v && ev.mono) this._accompLast.set(ev.mono, v);
+    }
+    // メトロノーム。音量 0 でも位置は進める(途中で上げたら次の拍から鳴る)。演奏速度を変えても音の高さは変えず(rate 1)、
+    // BGM の音量に左右されないよう master へ出す。拍線は元実装と同じく小節線の 0.4 倍の音量。
+    // ループ中は終端より後ろの拍を予約しない(折り返しでクリックを止めないので、予約すると終端の後ろの拍が鳴ってしまう)
+    const metroVolume = (this.settings.metronomeVolume || 0) / 100;
+    const metroEnd = this.loopEndMs === -1 ? Infinity : this.loopEndMs;
+    while (this._metroIndex < this.metro.length && this.metro[this._metroIndex].timeMs <= limit) {
+      const ev = this.metro[this._metroIndex];
+      if (ev.timeMs > metroEnd) break;
+      this._metroIndex++;
+      if (metroVolume <= 0) continue;
+      const volume = metroVolume * (ev.accent ? 1 : METRO_BEAT_VOLUME);
+      const v = this.audio.playBuffer(this.audio.clickBuffer(ev.accent), { when: this.ctxTimeAt(ev.timeMs), volume });
+      if (v) {
+        this._lastMetroMs = ev.timeMs;
+        this._metroVoices.add(v);
+        if (v.src && v.src.addEventListener) v.src.addEventListener('ended', () => this._metroVoices.delete(v));
+      }
     }
     this._scheduleNoteSounds(limit);
   }
@@ -1013,6 +1060,25 @@ export class Player {
     this.chart = null;
     this.audio.stopAll();
   }
+}
+
+/**
+ * メトロノームの拍(DTXManiaAI ProcessBarLines と同じく小節線・拍線の時刻)。同じ時刻の線は 1 つにまとめ(元実装は線ごとに
+ * 鳴らす。重なると大きく聞こえるだけなので 1 つにした)、小節線を含めば accent(小節の頭)。拍線は譜面の小節の長さ(#xxx02)
+ * と拍線のずらし(0xC1)に沿って作られている(js/core/dtx.js)。0xC2 で隠した線も鳴らす(元実装と同じ)。曲頭のリードインの
+ * 1 小節も刻むので、曲頭から始めればカウントになる。
+ */
+export function buildMetronome(chart) {
+  const out = [];
+  for (const b of chart.barLines) {
+    const last = out[out.length - 1];
+    if (last && last.timeMs === b.timeMs) {
+      if (!b.isBeat) last.accent = true;
+      continue;
+    }
+    out.push({ timeMs: b.timeMs, accent: !b.isBeat });
+  }
+  return out;
 }
 
 /**

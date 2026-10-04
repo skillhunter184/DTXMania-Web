@@ -119,4 +119,24 @@ export function buildSynthLanes() {
   ];
 }
 
+/**
+ * メトロノームの音(モノラル 44.1kHz Float32Array)。元実装はスキンの Metronome.ogg 1 つを小節線 1.0 / 拍線 0.4 の音量で鳴らすが、
+ * 本アプリは第三者の音を同梱しないので合成する。短いサイン波の減衰音で、小節の頭(accent)は高い音にもする(音量が小さくても
+ * 小節の頭が分かるように)。音量の比は鳴らす側(js/game/player.js)で元実装と同じ 0.4 を掛ける。
+ * 立ち上がりを 1 ms かけてプチッという音を消す。
+ */
+export function buildClick(accent) {
+  const freq = accent ? 1600 : 1000;
+  const amp = 0.6;
+  const n = Math.floor(SAMPLE_RATE * 0.05);
+  const attack = Math.floor(SAMPLE_RATE * 0.001);
+  const d = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = i / SAMPLE_RATE;
+    const env = (i < attack ? i / attack : 1) * Math.exp(-90 * t);
+    d[i] = Math.sin(2 * Math.PI * freq * t) * env * amp;
+  }
+  return d;
+}
+
 export const SYNTH_SAMPLE_RATE = SAMPLE_RATE;

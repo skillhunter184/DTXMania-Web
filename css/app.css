@@ -73,7 +73,7 @@ summary { cursor: pointer; font-weight: 700; }
 .settings-grid input.skin-path { width: min(18em, 100%); background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .settings-grid .skin-files { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
 /* ---- キー割り当て(1 レーン = 1 行のチップ列) ---- */
-#key-list, #gb-key-list { margin: 6px 0; }
+#key-list, #gb-key-list, #gbpad-list { margin: 6px 0; }
 .key-row { display: flex; align-items: flex-start; gap: 8px; padding: 2px 4px; border-radius: 6px; }
 .key-row .key-lane { flex: none; width: 3em; font-weight: 700; line-height: 2; }
 .key-row .chips { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 5px; }
@@ -98,7 +98,7 @@ summary { cursor: pointer; font-weight: 700; }
 .key-row.row-changed { animation: key-row-flash 1s ease-out; }
 @keyframes key-row-flash { from { background: #5a4a10; } to { background: transparent; } }
 @media (prefers-reduced-motion: reduce) { .key-row.row-changed { animation: none; } }
-#key-status, #gb-key-status { min-height: 1.7em; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#key-status, #gb-key-status, #gbpad-status { min-height: 1.7em; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 body.desktop .key-note-touch, body.touch .key-note-kbd { display: none; }
 /* ---- 電子ドラム(MIDI)。行とチップはキー割り当てと同じ見た目を使う ---- */
 .midi-connect { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0; }

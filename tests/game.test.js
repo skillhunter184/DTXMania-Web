@@ -3,7 +3,9 @@ import { scoreDelta, PlayStats, achievementRate, rankOf, GAUGE_INITIAL, autoLane
 import { HitRanges, searchLanes, tieHitsAll, applyChartDowngrade, JUDGE } from '../js/game/hitranges.js';
 import { TrainingSettings, stepLoopTime, stepLoopBegin, stepLoopEnd, formatLoopTime, LOOP_UNIT } from '../js/game/training.js';
 import { parseDTX } from '../js/core/dtx.js';
-import { Player, PLAYER_STATE, SCROLL_BASE_PX_PER_MS } from '../js/game/player.js';
+import { Player, PLAYER_STATE, SCROLL_BASE_PX_PER_MS, buildMetronome } from '../js/game/player.js';
+import { AudioEngine } from '../js/core/audio.js';
+import { buildClick } from '../js/core/synth.js';
 
 // ---- hit ranges / groups ----
 test('hitranges: judge windows and search window', () => {
@@ -692,4 +694,176 @@ test('player: x1.0 scroll speed matches DTXmaniaNX', async () => {
   assertNear(player.pixelsPerMs, 0.268125 * (2 - 0.03), 1e-9, 'なめらかに動く');
   player.updateScrollSpeed(2000); // 目標まで届くだけ進める
   assertNear(player.pixelsPerMs, 0.268125 * 0.5, 1e-9, 'x0.5 は半分');
+});
+
+test('metronome: one click per bar / beat line time, accent on bar lines, follows the bar length', () => {
+  const lines = [
+    { timeMs: 0, isBeat: false }, { timeMs: 0, isBeat: true }, { timeMs: 500, isBeat: true }, { timeMs: 500, isBeat: true },
+    { timeMs: 1000, isBeat: true }, { timeMs: 1000, isBeat: false },
+  ];
+  assertDeepEq(buildMetronome({ barLines: lines }), [{ timeMs: 0, accent: true }, { timeMs: 500, accent: false }, { timeMs: 1000, accent: true }],
+    'same-time lines are merged; a bar line among them makes it an accent');
+  // BPM 120: リードイン(0〜2000)と小節 0 は 4 拍、小節 1 は 3/4(4000〜5500)
+  const metro = buildMetronome(parseDTX('#BPM: 120\n#00102: 0.75\n#00212: 01\n'));
+  assertDeepEq(metro.filter((c) => c.timeMs <= 5500).map((c) => (c.accent ? 'A' : '') + c.timeMs),
+    ['A0', '500', '1000', '1500', 'A2000', '2500', '3000', '3500', 'A4000', '4500', '5000', 'A5500']);
+});
+
+test('player: the metronome clicks on the beats while playing, at its own volume and pitch, none at 0 %', async () => {
+  const { audio, player, chart, settings } = makePlayer('#BPM: 120\n#00012: 01\n');
+  const clicks = [];
+  audio.clickBuffer = (accent) => ({ accent });
+  audio.playBuffer = (buf, opts) => { if (buf && 'accent' in buf) clicks.push({ accent: buf.accent, ...opts }); return { src: null }; };
+  settings.metronomeVolume = 50;
+  await player.load({ resolve() { return null; }, readBytes() {} }, chart);
+  const perf = () => audio.ctx.currentTime * 1000;
+  const origPerfNow = performance.now;
+  performance.now = perf;
+  try {
+    player.update(perf(), null);
+    assertEq(clicks.length, 0, 'no clicks on standby');
+    player.command('startStop');
+    player.update(perf(), null);
+    assertEq(player.state, PLAYER_STATE.PLAYING);
+    audio.advance(2100);
+    player.update(perf(), null); // 2300 ms まで予約
+    assertDeepEq(clicks.map((c) => c.accent), [true, false, false, false, true]);
+    assertDeepEq(clicks.map((c) => Math.round(c.when * 1000)), [0, 500, 1000, 1500, 2000], 'scheduled at the beat times');
+    // 小節線は設定の音量、拍線はその 0.4 倍(元実装と同じ比)。演奏速度で音の高さを変えず、master へ
+    assert(clicks.every((c) => Math.abs(c.volume - (c.accent ? 0.5 : 0.2)) < 1e-9 && c.rate === undefined && c.bus === undefined),
+      'bar 0.5 / beat 0.2, no pitch change, master bus');
+    // 0 % の間の拍は鳴らさず、上げたら次の拍から
+    settings.metronomeVolume = 0;
+    audio.advance(1000);
+    player.update(perf(), null); // 〜3300
+    assertEq(clicks.length, 5, 'silent at 0 %');
+    settings.metronomeVolume = 100;
+    audio.advance(500);
+    player.update(perf(), null); // 〜3800
+    assertDeepEq(clicks.slice(5).map((c) => [Math.round(c.when * 1000), c.volume]), [[3500, 0.4]]);
+    // シークで戻ると、その位置から刻み直す
+    player.jumpTo(1000, true);
+    player.update(perf(), null);
+    assertEq(clicks.length, 7, 'the beat at 1000 again (1500 is beyond the 200 ms look-ahead)');
+    assertEq(clicks[6].accent, false);
+    assertNear(clicks[6].when * 1000, perf(), 1, 'played now (the song clock is at 1000)');
+    audio.advance(400);
+    player.update(perf(), null);
+    assertEq(clicks.length, 8, 'then 1500');
+  } finally {
+    performance.now = origPerfNow;
+  }
+});
+
+test('player: at a measure loop wrap the metronome keeps the loop-end click and does not repeat the same beat', async () => {
+  const { audio, player, chart, settings } = makePlayer('#BPM: 120\n#00012: 01\n#00312: 01\n');
+  const clicks = [];
+  const stopped = [];
+  audio.clickBuffer = (accent) => ({ accent });
+  audio.playBuffer = (buf, opts) => {
+    const v = { src: null, ...opts };
+    if (buf && 'accent' in buf) clicks.push({ accent: buf.accent, v });
+    return v;
+  };
+  audio.stopVoice = (v) => stopped.push(v);
+  settings.metronomeVolume = 100;
+  await player.load({ resolve() { return null; }, readBytes() {} }, chart);
+  settings.loop = true;
+  settings.loopBeginMs = 2000; // 小節 0 の頭
+  settings.loopEndMs = 4000; // 小節 1 の頭
+  const perf = () => audio.ctx.currentTime * 1000;
+  const origPerfNow = performance.now;
+  performance.now = perf;
+  const times = () => clicks.map((c) => (c.accent ? 'A' : '') + Math.round(player.songAt(c.v.when * 1000)));
+  try {
+    player.update(perf(), null); // 待機位置をループ開始へ
+    player.command('startStop');
+    player.update(perf(), null);
+    assertEq(player.state, PLAYER_STATE.PLAYING);
+    assertNear(player.songMs, 2000, 1);
+    audio.advance(1890);
+    player.update(perf(), null); // 〜4090 まで予約: 終端(4000)の拍まで、その後ろ(4500)は予約しない
+    assertDeepEq(times(), ['A2000', '2500', '3000', '3500', 'A4000']);
+    const endClick = clicks[4].v;
+    audio.advance(120);
+    player.update(perf(), null); // 4010 → 折り返し
+    assertNear(player.songMs, 2000, 1, 'wrapped');
+    assertEq(clicks.length, 5, 'the loop-begin beat is not played again (the loop-end click is that beat)');
+    assertEq(stopped.includes(endClick), false, 'the loop-end click is not cut off');
+    audio.advance(400);
+    player.update(perf(), null);
+    assertEq(clicks.length, 6);
+    assertEq(clicks[5].accent, false, 'next is the beat after the loop begin');
+    assertNear(player.songAt(clicks[5].v.when * 1000), 2500, 1);
+    // 一時停止では止める
+    player.command('pauseResume');
+    assert(stopped.includes(clicks[5].v), 'pause stops the clicks');
+  } finally {
+    performance.now = origPerfNow;
+  }
+});
+
+test('metronome: the click sounds are synthesized once (the bar click is higher, both start silent and decay)', () => {
+  const a = buildClick(true);
+  const b = buildClick(false);
+  assertEq(a.length, 2205, '50 ms at 44.1 kHz');
+  assertEq(a[0], 0, 'starts at 0 (no pop)');
+  assert(Math.abs(a[a.length - 1]) < 0.01 && Math.abs(b[b.length - 1]) < 0.01, 'decayed by the end');
+  const peak = (d) => d.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+  assert(peak(a) > 0.45 && peak(a) <= 0.6, 'peak ' + peak(a));
+  assertNear(peak(a), peak(b), 0.05, 'same level (the 0.4 for beats is applied when played)');
+  const crossings = (d) => { let n = 0; for (let i = 1; i < d.length; i++) if ((d[i - 1] < 0) !== (d[i] < 0)) n++; return n; };
+  assert(crossings(a) > crossings(b) * 1.4, 'the bar click is higher');
+  const eng = new AudioEngine();
+  assertEq(eng.clickBuffer(true), null, 'no audio context yet');
+  eng.ctx = new OfflineAudioContext(1, 1, 44100);
+  const ca = eng.clickBuffer(true);
+  assertEq(ca.length, 2205);
+  assertEq(ca.sampleRate, 44100);
+  assertEq(eng.clickBuffer(true), ca, 'cached');
+  assert(eng.clickBuffer(false) !== ca, 'two sounds');
+});
+
+test('player: with a start wait, the loop wrap keeps the loop-end click and starts again from the loop-begin beat', async () => {
+  const { audio, player, chart, settings } = makePlayer('#BPM: 120\n#00012: 01\n#00312: 01\n');
+  const clicks = [];
+  const stopped = [];
+  audio.clickBuffer = (accent) => ({ accent });
+  audio.playBuffer = (buf, opts) => {
+    const v = { src: null, ...opts };
+    if (buf && 'accent' in buf) clicks.push({ accent: buf.accent, v });
+    return v;
+  };
+  audio.stopVoice = (v) => stopped.push(v);
+  settings.metronomeVolume = 100;
+  await player.load({ resolve() { return null; }, readBytes() {} }, chart);
+  settings.loop = true;
+  settings.loopBeginMs = 2000;
+  settings.loopEndMs = 4000;
+  settings.startWaitMs = 500;
+  const perf = () => audio.ctx.currentTime * 1000;
+  const origPerfNow = performance.now;
+  performance.now = perf;
+  try {
+    player.update(perf(), null);
+    player.command('startStop');
+    audio.advance(500);
+    player.update(perf(), null); // 開始待ちの後で演奏へ
+    assertEq(player.state, PLAYER_STATE.PLAYING);
+    audio.advance(1890);
+    player.update(perf(), null);
+    assertEq(clicks.length, 5, 'up to the loop-end click');
+    const endClick = clicks[4].v;
+    audio.advance(120);
+    player.update(perf(), null); // 折り返し → 開始待ち
+    assertEq(player.state, PLAYER_STATE.START_IN);
+    assertEq(stopped.includes(endClick), false, 'the loop-end click is not cut off by the start wait');
+    audio.advance(500);
+    player.update(perf(), null); // 待ち終わり → 開始位置から
+    assertEq(player.state, PLAYER_STATE.PLAYING);
+    assertEq(clicks.length, 6, 'the loop-begin beat sounds again after the wait');
+    assertEq(clicks[5].accent, true);
+  } finally {
+    performance.now = origPerfNow;
+  }
 });

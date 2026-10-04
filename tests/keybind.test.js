@@ -4,7 +4,9 @@ import {
   defaultBindings, normalizeBindings, isAssignableCode, isModifierCode, findCode, laneKeysText,
 } from '../js/ui/keybind.js';
 import { DrumInput, LANE_KEY_DEFAULTS } from '../js/ui/input.js';
-import { GB_KEY_DEFAULTS } from '../js/ui/gbinput.js';
+import { GB_KEY_DEFAULTS, GB_KEY_LEFTY, GB_BUTTON_NAMES } from '../js/ui/gbinput.js';
+import { KeyBindPanel } from '../js/ui/keypanel.js';
+import { t } from '../js/i18n.js';
 
 // レーン: 0 LC / 1 HH / 2 LP / 3 SD / 4 HT / 5 BD / 6 LT / 7 FT / 8 CY / 9 RD
 
@@ -254,4 +256,54 @@ test('keybind: guitar / bass bindings use their own defaults (7 buttons)', () =>
   assertDeepEq(back.bindings[6], ['KeyL']);
   assertDeepEq(back.stolenFrom, [0]);
   assertEq(laneKeysText(b[5]), 'J / K');
+});
+
+test('keybind: the lefty layout mirrors the guitar defaults across the keyboard centre', () => {
+  const mirror = { KeyA: 'Semicolon', KeyS: 'KeyL', KeyD: 'KeyK', KeyF: 'KeyJ', KeyG: 'KeyH', KeyJ: 'KeyF', KeyK: 'KeyD', KeyL: 'KeyS' };
+  assertEq(GB_KEY_LEFTY.length, 7);
+  for (let i = 0; i < 7; i++) assertDeepEq(GB_KEY_LEFTY[i], GB_KEY_DEFAULTS[i].map((c) => mirror[c]), GB_BUTTON_NAMES[i]);
+  for (const codes of GB_KEY_LEFTY) for (const code of codes) assertEq(isAssignableCode(code), true, code + ' must be assignable');
+  const all = GB_KEY_LEFTY.flat();
+  assertEq(new Set(all).size, all.length, 'no key on two buttons');
+  assertEq(normalizeBindings(GB_KEY_LEFTY, GB_KEY_DEFAULTS).repaired.length, 0, 'a valid saved layout');
+});
+
+test('keybind: a preset button replaces all bindings and can be undone', () => {
+  const host = document.createElement('div');
+  host.innerHTML = '<div class="list"></div><span class="status"></span><button class="undo" hidden></button><button class="reset"></button><button class="lefty"></button>';
+  document.body.appendChild(host);
+  let bindings = defaultBindings(GB_KEY_DEFAULTS);
+  let changes = 0;
+  const panel = new KeyBindPanel({
+    list: host.querySelector('.list'),
+    statusText: host.querySelector('.status'),
+    undoButton: host.querySelector('.undo'),
+    resetAllButton: host.querySelector('.reset'),
+    names: GB_BUTTON_NAMES,
+    defaults: GB_KEY_DEFAULTS,
+    getBindings: () => bindings,
+    setBindings: (next) => { bindings = next; },
+    onChange: () => changes++,
+    presets: [{ button: host.querySelector('.lefty'), bindings: GB_KEY_LEFTY, done: 'keys.leftyDone' }],
+  });
+  try {
+    panel.build();
+    host.querySelector('.lefty').click();
+    assertDeepEq(bindings, GB_KEY_LEFTY);
+    assert(bindings[5] !== GB_KEY_LEFTY[5], 'a copy (editing the bindings does not change the preset)');
+    assertEq(host.querySelector('.status').textContent, t('keys.leftyDone'));
+    assertEq(host.querySelector('.undo').hidden, false, 'undo offered');
+    assert(changes > 0, 'onChange called (help keys refresh)');
+    assert(host.querySelector('.list').textContent.includes(';'), 'rows re-rendered with the new keys');
+    host.querySelector('.undo').focus();
+    host.querySelector('.undo').click();
+    assertDeepEq(bindings, defaultBindings(GB_KEY_DEFAULTS), 'undo restores the previous bindings');
+    assertEq(document.activeElement, host.querySelector('.lefty'), 'focus goes back to the preset button, not reset all');
+    host.querySelector('.lefty').click();
+    host.querySelector('.reset').click();
+    assertDeepEq(bindings, defaultBindings(GB_KEY_DEFAULTS), 'reset all goes back to the defaults');
+  } finally {
+    panel.cancelAssign();
+    host.remove();
+  }
 });

@@ -2,6 +2,10 @@
 // 配置は js/ui/skin.js の GB_*(NX の座標 × 1.5 をドラムのレーン帯の中央に寄せたもの)。描き方(描画順・チップ・ロングノート・
 // レーンフラッシュ・チップファイア・ウェイリングの柱・+100・判定文字)の出どころは docs/spec/gb-screen.md(§6 がこの画面の案)。
 // 既定の向きは NX と同じく判定ラインが上で、チップが下から上がってくる。REVERSE(player.reverse)で判定ラインが下・チップが降る。
+// LEFT(player.left。NX bLeft)はボタンを描く列を左右反転する(チップ・ロングノート・レーンフラッシュ・弦・チップファイア・
+// 上のボタン列。色はボタンのまま)。OPEN・ウェイリング・小節線・パネル・判定ライン・判定文字はそのまま(NX と同じ)。
+// 下の枠はポールピースの所だけ入れ替える(ピックで光るポールピースがボタンの色なので。NX は下の枠を光らせない)。
+// タッチは見えている列のボタンを押す。キーはボタンに付いたまま(NX と同じ)。
 // 成績のパネル・ゲージ・進捗バー・コンボ・状態表示はドラムと共通(置き場所だけ変える)。
 //
 // 元実装に無い追加: 押さえているボタンを上のボタン列で点ける(NX は押した状態を描かない)、ピックで下の枠のピックの絵を光らせる、
@@ -10,7 +14,7 @@
 import { Renderer, FONT, lowerBound } from './renderer.js';
 import {
   CANVAS_H, PANELS, GB_PANEL, GB_LANE_X, GB_LANE_PITCH, GB_CHIP_W, GB_CHIP_H, GB_OPEN, GB_BAR, GB_WAIL_COL, GB_WAIL_CHIP, GB_JUDGE_Y,
-  GB_JUDGE_Y_REVERSE, GB_VIEW_Y0, GB_VIEW_Y1, GB_LANE_RGB, GB_WAIL_RGB, gbChipX, gbLaneCenterX, gbLaneAtX,
+  GB_JUDGE_Y_REVERSE, GB_VIEW_Y0, GB_VIEW_Y1, GB_LANE_RGB, GB_WAIL_RGB, gbChipX, gbLaneCenterX, gbLaneAtX, gbSlot,
 } from './skin.js';
 import { GB_LANE_BITS, GB_LANE_COUNT, GB_BITS_MASK } from '../core/dtx.js';
 import { GB_TOUCH_OPEN } from './gbinput.js';
@@ -64,6 +68,11 @@ export class GuitarRenderer extends Renderer {
     return !!this.player.reverse;
   }
 
+  /** LEFT(ボタンの列を左右反転)。 */
+  _left() {
+    return !!this.player.left;
+  }
+
   /** 判定位置(NX JL)。 */
   _judgeY() {
     return this._rev() ? GB_JUDGE_Y_REVERSE : GB_JUDGE_Y;
@@ -79,26 +88,29 @@ export class GuitarRenderer extends Renderer {
     return this._rev() ? GB_JUDGE_Y_REVERSE : GB_JUDGE_Y + 1.5;
   }
 
-  /** タッチのヒット判定: レーンの列(パネルの高さ全部)→ 0..4、ハイウェイの高さのそれ以外 → GB_TOUCH_OPEN、範囲外 → -1。 */
+  /**
+   * タッチのヒット判定: レーンの列(パネルの高さ全部)→ その列に描いているボタン 0..4(LEFT なら列の左右が逆)、
+   * ハイウェイの高さのそれ以外 → GB_TOUCH_OPEN、範囲外 → -1。
+   */
   hitTestLane(clientX, clientY) {
     const { x, y } = this.toLogical(clientX, clientY);
     if (y < GB_PANEL.y - 20 || y > CANVAS_H + 20) return -1;
-    const lane = gbLaneAtX(x);
-    return lane >= 0 ? lane : GB_TOUCH_OPEN;
+    const slot = gbLaneAtX(x);
+    return slot >= 0 ? gbSlot(slot, this._left()) : GB_TOUCH_OPEN;
   }
 
   // ---- 静止部分・置き場所(Renderer の差し替え) ----
 
   _baseKeyExtra() {
-    return this._rev() ? 'reverse' : 'normal';
+    return (this._rev() ? 'reverse' : 'normal') + (this._left() ? '|left' : '');
   }
 
   _drawStatic(g) {
     const ds = this.scale * this.dpr;
     const skin = this.skin;
     skin.drawGbPanel(g);
-    skin.drawGbTop(g, ds);
-    skin.drawGbBottom(g, false, ds);
+    skin.drawGbTop(g, ds, this._left());
+    skin.drawGbBottom(g, false, ds, this._left());
     skin.drawGbHitBar(g, this._hitBarTop(), ds);
     skin.drawScorePanel(g);
     skin.drawSongPanel(g);
@@ -208,13 +220,14 @@ export class GuitarRenderer extends Renderer {
     g.restore();
 
     // 押さえているボタンを点ける(元実装に無い追加)・ピックの絵・判定ライン(チップの上)
+    const left = this._left();
     for (let i = 0; i < GB_LANE_COUNT; i++) {
       if (lit[i] < 0) continue;
       g.globalAlpha = 1 - lit[i] / FLUSH_MS;
-      skin.drawGbKnobLit(g, i, ds);
+      skin.drawGbKnobLit(g, i, ds, left);
     }
     g.globalAlpha = 1;
-    this._drawPickFlash(g, perfNow - p.pickAt, ds);
+    this._drawPickFlash(g, perfNow - p.pickAt, ds, left);
     skin.drawGbHitBar(g, this._hitBarTop(), ds);
 
     // 判定文字(1 パート 1 つ。新しい判定・BAD が前のものを置き換える)
@@ -297,6 +310,7 @@ export class GuitarRenderer extends Renderer {
   _drawChips(g, p, dist, yBar, tLo, tHi, JL, rev, ds) {
     const skin = this.skin;
     const notes = p.notes;
+    const left = this._left();
     for (let i = lowerBound(notes, tLo - this._lnMax(notes)); i < notes.length; i++) {
       const n = notes[i];
       if (n.timeMs > tHi) break;
@@ -307,7 +321,7 @@ export class GuitarRenderer extends Renderer {
         if (n.open) skin.drawGbOpen(g, yc + GB_OPEN.top, ds);
         else {
           for (let lane = 0; lane < GB_LANE_COUNT; lane++) {
-            if (n.bits & GB_LANE_BITS[lane]) skin.drawGbChip(g, lane, gbChipX(lane), yc - GB_CHIP_H / 2, ds);
+            if (n.bits & GB_LANE_BITS[lane]) skin.drawGbChip(g, lane, gbChipX(gbSlot(lane, left)), yc - GB_CHIP_H / 2, ds);
           }
         }
         continue;
@@ -328,7 +342,7 @@ export class GuitarRenderer extends Renderer {
       const alpha = judged && !held ? 64 / 255 : 128 / 255;
       for (let lane = 0; lane < GB_LANE_COUNT; lane++) {
         if (!(n.bits & GB_LANE_BITS[lane])) continue;
-        const x = gbChipX(lane);
+        const x = gbChipX(gbSlot(lane, left));
         if (!judged) skin.drawGbChip(g, lane, x, yc - GB_CHIP_H / 2, ds);
         g.globalAlpha = alpha;
         skin.drawGbBody(g, lane, x, rev ? yc - len : yc, len, ds);
@@ -366,10 +380,11 @@ export class GuitarRenderer extends Renderer {
   /**
    * レーンフラッシュと弦。ct は数え(0..70 ms)。フラッシュは判定ラインの側が濃く遠い側へ消える縦長の帯で、離すと
    * 幅が縮みながらレーンの中央へ寄る(NX: x + 28.5·ct/70、幅 55.5·(70−ct)/70、y 150 / REVERSE 621、高さ 384)。
-   * 弦はレーンの中央の光る縦線で、数えている間は薄れずに出る(NX 7_guitar line)。
+   * 弦はレーンの中央の光る縦線で、数えている間は薄れずに出る(NX 7_guitar line)。LEFT では両方ともボタンの列へ動く。
    */
   _drawFlush(g, lane, ct, rev) {
     const [r, gg, b] = GB_LANE_RGB[lane];
+    const slot = gbSlot(lane, this._left());
     const k = (FLUSH_MS - ct) / FLUSH_MS;
     if (k > 0) {
       const y0 = rev ? 621 : 150;
@@ -378,9 +393,9 @@ export class GuitarRenderer extends Renderer {
       grad.addColorStop(0, `rgba(${r},${gg},${b},${FLUSH_ALPHA})`);
       grad.addColorStop(1, `rgba(${r},${gg},${b},0)`);
       g.fillStyle = grad;
-      g.fillRect(gbChipX(lane) + (28.5 * ct) / FLUSH_MS, y0, GB_CHIP_W * k, h);
+      g.fillRect(gbChipX(slot) + (28.5 * ct) / FLUSH_MS, y0, GB_CHIP_W * k, h);
     }
-    const cx = gbLaneCenterX(lane);
+    const cx = gbLaneCenterX(slot);
     const hw = 9.75; // 弦の半幅(NX 13 px)
     const s = g.createLinearGradient(cx - hw, 0, cx + hw, 0);
     const lr = Math.round(r + (255 - r) * 0.6);
@@ -445,10 +460,10 @@ export class GuitarRenderer extends Renderer {
   }
 
   /** ピックの絵を光らせる(t はピックからの経過 ms。元実装に無い追加)。 */
-  _drawPickFlash(g, t, ds) {
+  _drawPickFlash(g, t, ds, left) {
     if (!(t >= 0 && t < PICK_FLASH_MS)) return;
     g.globalAlpha = 1 - t / PICK_FLASH_MS;
-    this.skin.drawGbBottom(g, true, ds);
+    this.skin.drawGbBottom(g, true, ds, left);
     g.globalAlpha = 1;
   }
 
@@ -464,7 +479,7 @@ export class GuitarRenderer extends Renderer {
   /**
    * チップファイア(t は発火からの経過 ms)。NX の曲線: v = 28 + t/8(28..56)、大きさ 3·sin(πv/112)(2.12 → 3)、
    * 濃さ 1 − sin(π(v−28)/56)(1 → 0)、元の絵 80 px(720p)。'lighter' の合成は呼ぶ側で掛ける。
-   * ロングノートを押さえている間は毎フレーム発火し直すので、最初の形のまま光り続ける(NX と同じ)。
+   * ロングノートを押さえている間は毎フレーム発火し直すので、最初の形のまま光り続ける(NX と同じ)。LEFT ではボタンの列で光る。
    */
   _drawGbFire(g, lane, t) {
     if (!(t >= 0 && t < FIRE_MS)) return;
@@ -473,7 +488,7 @@ export class GuitarRenderer extends Renderer {
     const a = 1 - Math.sin((Math.PI * (v - 28)) / 56);
     if (a <= 0.004) return;
     const rad = 60 * s;
-    const cx = gbLaneCenterX(lane);
+    const cx = gbLaneCenterX(gbSlot(lane, this._left()));
     const cy = this._fireY();
     const [r, gg, b] = GB_LANE_RGB[lane];
     const grad = g.createRadialGradient(cx, cy, 0, cx, cy, rad);
@@ -529,12 +544,13 @@ export class GuitarRenderer extends Renderer {
     } finally {
       g.restore();
     }
+    // ボタンの点灯版は両方の並び(LEFT は演奏中にメニューで切り替えられる)を作っておく
     for (let i = 0; i < GB_LANE_COUNT; i++) {
       g.globalAlpha = 1 - ((age + i * 21) % FLUSH_MS) / FLUSH_MS;
-      skin.drawGbKnobLit(g, i, ds);
+      skin.drawGbKnobLit(g, i, ds, i % 2 === 1);
     }
     g.globalAlpha = 1;
-    this._drawPickFlash(g, age % PICK_FLASH_MS, ds);
+    this._drawPickFlash(g, age % PICK_FLASH_MS, ds, age % 2 === 1); // 両方の並びを作っておく
     skin.drawGbHitBar(g, this._hitBarTop(), ds);
     for (let k = 0; k < 7; k++) {
       // Perfect..Miss・AUTO・BAD(ずれの数字あり)

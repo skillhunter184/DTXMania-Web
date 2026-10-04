@@ -127,6 +127,14 @@ export function gbLaneAtX(x) {
   return i >= 0 && i < 5 ? i : -1;
 }
 
+/**
+ * ボタン lane(0..4 = R..P)を描く列(左から何本目)。LEFT(NX bLeft)なら左右を入れ替え、R G B Y P → P Y B G R。
+ * 入れ替えは自分自身の逆なので、列 → ボタンにも使う。gbChipX / gbLaneCenterX / gbLaneAtX は列で数える。
+ */
+export function gbSlot(lane, left) {
+  return left ? 4 - lane : lane;
+}
+
 // ---- スキンの画像の決まり(skins/README.md) ----
 // 部品ごとに、探す名前と、その名前の画像の配置を持つ。配置の数は「基準の幅 w の画像」の画素で、実際の画像が
 // k 倍の幅なら全部を k 倍して使う(高解像度の画像をそのまま置ける)。名前は前から順に探し、見つかった名前の配置で読む。
@@ -530,7 +538,7 @@ export class Skin {
    * 高品質で縮め、無ければ fallback(g, w, h)(論理 px で描く)の単色の図形にする。大きさが変わったときだけ作り直す
    * (チップの _chipSprite と同じ理由: 毎フレーム画像から縮めると細い線がちらつき、重い)。
    */
-  _gbSprite(key, part, pick, w, h, devScale, fallback) {
+  _gbSprite(key, part, pick, w, h, devScale, fallback, mirror = null) {
     const s = this.gbSprites[key];
     if (s && s.w === w && s.h === h && s.devScale === devScale) return s.canvas;
     if (s) s.canvas.width = s.canvas.height = 0; // 古い画素はすぐ手放す
@@ -540,7 +548,13 @@ export class Skin {
     if (img) {
       const [sx, sy, sw, sh] = pick(this.layouts[part]);
       g.imageSmoothingQuality = 'high';
-      g.drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
+      if (mirror) {
+        const src = mirror(img, sx, sy, sw, sh);
+        g.drawImage(src, 0, 0, src.width, src.height, 0, 0, c.width, c.height);
+        src.width = src.height = 0;
+      } else {
+        g.drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
+      }
     } else {
       g.scale(c.width / w, c.height / h);
       fallback(g, w, h);
@@ -608,40 +622,53 @@ export class Skin {
     for (let i = 0; i <= 5; i++) g.fillRect(GB_LANE_X + GB_LANE_PITCH * i, P.y, 3, P.h);
   }
 
-  /** 上のボタン列(消灯)。 */
-  drawGbTop(g, devScale = 1) {
-    g.drawImage(this._gbTopRow(false, devScale), GB_PANEL.x, GB_TOP.y, GB_PANEL.w, GB_TOP.h);
+  /** 上のボタン列(消灯)。left なら LEFT の並び(P Y B G R)。 */
+  drawGbTop(g, devScale = 1, left = false) {
+    g.drawImage(this._gbTopRow(false, devScale, left), GB_PANEL.x, GB_TOP.y, GB_PANEL.w, GB_TOP.h);
   }
 
-  /** 上のボタン列のレーン lane のボタンを点灯させる(点灯版をレーンの列の幅で切って重ねる。透明度は呼ぶ側)。 */
-  drawGbKnobLit(g, lane, devScale = 1) {
-    const lit = this._gbTopRow(true, devScale);
+  /**
+   * 上のボタン列のボタン lane を点灯させる(点灯版をそのボタンの列の幅で切って重ねる。透明度は呼ぶ側)。
+   * LEFT では LEFT の並びの点灯版から、ボタンの描かれている列を切る(消灯版と同じ作り方なので、重ねてもずれない)。
+   */
+  drawGbKnobLit(g, lane, devScale = 1, left = false) {
+    const lit = this._gbTopRow(true, devScale, left);
     const kx = lit.width / GB_PANEL.w;
-    const x0 = GB_LANE_X + GB_LANE_PITCH * lane;
+    const x0 = GB_LANE_X + GB_LANE_PITCH * gbSlot(lane, left);
     g.drawImage(lit, (x0 - GB_PANEL.x) * kx, 0, GB_LANE_PITCH * kx, lit.height, x0, GB_TOP.y, GB_LANE_PITCH, GB_TOP.h);
   }
 
-  _gbTopRow(lit, devScale) {
-    const key = lit ? 'topLit' : 'top';
-    return this._gbSprite(key, 'gbNeck', (L) => L[key], GB_PANEL.w, GB_TOP.h, devScale, (sg, w, h) => {
+  /**
+   * ボタン列の絵。LEFT の並びは、スキンに LEFT 用の行が無い(NX の絵には別の行がある)ので、画像のレーン 5 列を入れ替えて作る
+   * (swapLaneColumns。文字や光の向きまで鏡に映さないよう、裏返さずに列ごと並べ替える)。
+   */
+  _gbTopRow(lit, devScale, left = false) {
+    const row = lit ? 'topLit' : 'top';
+    const key = row + (left ? 'L' : '');
+    return this._gbSprite(key, 'gbNeck', (L) => L[row], GB_PANEL.w, GB_TOP.h, devScale, (sg, w, h) => {
       sg.fillStyle = 'rgb(34,37,44)';
       sg.fillRect(0, 0, w, h);
       for (let i = 0; i < 5; i++) {
         sg.beginPath();
-        sg.arc(gbLaneCenterX(i) - GB_PANEL.x, h * 0.55, 19, 0, Math.PI * 2);
+        sg.arc(gbLaneCenterX(gbSlot(i, left)) - GB_PANEL.x, h * 0.55, 19, 0, Math.PI * 2);
         sg.fillStyle = lit ? rgb(GB_LANE_RGB[i]) : 'rgb(70,74,84)';
         sg.fill();
         sg.lineWidth = 3;
         sg.strokeStyle = rgb(GB_LANE_RGB[i]);
         sg.stroke();
       }
-    });
+    }, left ? swapLaneColumns : null);
   }
 
-  /** 下の枠(lit ならピックが光った版。透明度は呼ぶ側)。 */
-  drawGbBottom(g, lit = false, devScale = 1) {
-    const key = lit ? 'bottomLit' : 'bottom';
-    const c = this._gbSprite(key, 'gbNeck', (L) => L[key], GB_PANEL.w, GB_BOTTOM.h, devScale, (sg, w, h) => {
+  /**
+   * 下の枠(lit ならピックが光った版。透明度は呼ぶ側)。LEFT では各ボタンの中心 ± GB_POLE_HALF の窓だけを入れ替える
+   * (既定のスキンはボタンの色のポールピースが光る。枠全体の列を入れ替えると、レーンをまたぐピックアップの箱の角が切れる)。
+   */
+  drawGbBottom(g, lit = false, devScale = 1, left = false) {
+    const row = lit ? 'bottomLit' : 'bottom';
+    const key = row + (left ? 'L' : '');
+    const mirror = left ? (img, sx, sy, sw, sh) => swapLaneColumns(img, sx, sy, sw, sh, GB_POLE_HALF) : null;
+    const c = this._gbSprite(key, 'gbNeck', (L) => L[row], GB_PANEL.w, GB_BOTTOM.h, devScale, (sg, w, h) => {
       sg.fillStyle = 'rgb(34,37,44)';
       sg.fillRect(0, 0, w, h);
       const cx = (GB_WAIL_COL[0] + GB_WAIL_COL[1]) / 2 - GB_PANEL.x;
@@ -652,7 +679,7 @@ export class Skin {
       sg.closePath();
       sg.fillStyle = lit ? 'rgb(255,240,200)' : 'rgb(120,124,134)';
       sg.fill();
-    });
+    }, mirror);
     g.drawImage(c, GB_PANEL.x, GB_BOTTOM.y, GB_PANEL.w, GB_BOTTOM.h);
   }
 
@@ -665,6 +692,39 @@ export class Skin {
     });
     g.drawImage(c, x, y, w, h);
   }
+}
+
+/** LEFT で下の枠を入れ替える窓の半幅(ボタンの中心から。既定のスキンのポールピースの光は半径 9)。 */
+const GB_POLE_HALF = 14;
+
+/**
+ * ギター / ベースの枠の画像(パネルの左端に合わせた 416 幅。画像の画素で sx, sy, sw, sh)のレーンの部分を左右の順に
+ * 入れ替えた絵(sw × sh)を返す(LEFT)。half を省くとレーン 5 列(区切り線の左端から 58.5 ずつ。パネルの左端から
+ * 28.5〜321)をまるごと入れ替える(ボタン列)。half を渡すと各ボタンの中心 ± half の窓だけを入れ替え、ほかはそのまま
+ * (下の枠)。境目は画像の画素で丸めた整数にし、等倍で写すので、継ぎ目に隙間も重なりもできない。透明な所のある
+ * スキンでも元の並びが透けないよう、入れ替える所は空けてから写す。
+ */
+function swapLaneColumns(img, sx, sy, sw, sh, half) {
+  const k = sw / GB_PANEL.w;
+  const c = makeCanvas(sw, sh);
+  const g = c.getContext('2d');
+  const h = c.height;
+  if (half === undefined) {
+    const e = [0, 1, 2, 3, 4, 5].map((j) => Math.round((GB_LANE_X - GB_PANEL.x + GB_LANE_PITCH * j) * k));
+    g.drawImage(img, sx, sy, e[0], sh, 0, 0, e[0], h);
+    g.drawImage(img, sx + e[5], sy, sw - e[5], sh, e[5], 0, c.width - e[5], h);
+    for (let i = 0; i < 5; i++) {
+      const w = e[i + 1] - e[i];
+      g.drawImage(img, sx + e[i], sy, w, sh, e[0] + e[5] - e[i + 1], 0, w, h);
+    }
+    return c;
+  }
+  const x = [0, 1, 2, 3, 4].map((i) => Math.round((gbLaneCenterX(i) - half - GB_PANEL.x) * k));
+  const w = Math.round(2 * half * k);
+  g.drawImage(img, sx, sy, sw, sh, 0, 0, c.width, h);
+  for (let i = 0; i < 5; i++) g.clearRect(x[i], 0, w, h);
+  for (let i = 0; i < 5; i++) g.drawImage(img, sx + x[i], sy, w, sh, x[4 - i], 0, w, h);
+  return c;
 }
 
 /**

@@ -9,7 +9,7 @@
 
 import { decodeXA, isXA } from './xa.js';
 import { decodeWav, isWav } from './wav.js';
-import { buildSynthLanes, SYNTH_SAMPLE_RATE } from './synth.js';
+import { buildSynthLanes, buildClick, SYNTH_SAMPLE_RATE } from './synth.js';
 import { requiredWavIds } from './dtx.js';
 
 const VORBIS_CDN = 'https://cdn.jsdelivr.net/npm/@wasm-audio-decoders/ogg-vorbis@0.1.20/dist/ogg-vorbis-decoder.min.js';
@@ -270,6 +270,18 @@ export class AudioEngine {
       this.synthBuffers = lanes.map((d) => this.toAudioBuffer({ sampleRate: SYNTH_SAMPLE_RATE, channels: 1, length: d.length, channelData: [d] }));
     }
     return this.synthBuffers[lane] || null;
+  }
+
+  /** メトロノームの音(accent = 小節の頭)。初めて使うときに作り、以後は持ち続ける。 */
+  clickBuffer(accent) {
+    if (!this.ctx) return null;
+    if (!this.clickBuffers) {
+      this.clickBuffers = [false, true].map((a) => {
+        const d = buildClick(a);
+        return this.toAudioBuffer({ sampleRate: SYNTH_SAMPLE_RATE, channels: 1, length: d.length, channelData: [d] });
+      });
+    }
+    return this.clickBuffers[accent ? 1 : 0];
   }
 
   hasBuffer(id) {
