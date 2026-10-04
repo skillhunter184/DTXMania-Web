@@ -44,6 +44,13 @@ build.bat
 `assets/`(スキン画像・音)と `tests/fixtures/local/`(実曲パック)も管理外。
 検証でコピーしてきても、コミットに含めない。
 
+## 公開(GitHub Pages)
+
+`main` の直下を GitHub Pages で <https://skillhunter184.github.io/DTXMania-Web/> に配信している。
+**`main` を push すると 1〜2 分でそのまま公開ページに出る。** テストが通っていない `main` を push しない。
+公開ページは `/DTXMania-Web/` の下にあるのでパスは相対で書き、直下の `.nojekyll` は消さない
+(詳細は README の「公開(GitHub Pages)」)。
+
 ## 並行セッションの扱い
 
 このリポジトリは worktree を切った複数セッションが同時に動くことがある。
@@ -72,5 +79,5 @@ build.bat
   `tools/skinart/` を揃える。
 - **手元の DrumGame スキン(`assets/skin/`)はゲーム画面由来なので、既定のスキンに写さない**(画素を測ってなぞらない)。
   なぞっていた旧版の描画はメインのチェックアウトの `assets/skinart-original/` に退避してある(git 管理外)。
-- 公開する前提なので、第三者の素材(実曲パックの音・譜面・画像)をコミットしない。テスト用の音や ZIP は
+- 公開しているので、第三者の素材(実曲パックの音・譜面・画像)をコミットしない。テスト用の音や ZIP は
   `tools/make_fixtures.py` で合成する。移植したコードのライセンス表示は `THIRD_PARTY_NOTICES.md`。
