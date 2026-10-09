@@ -13,6 +13,15 @@ import { t } from '../i18n.js';
 
 const JUDGE_TEXT = ['PERFECT', 'GREAT', 'GOOD', 'OK', 'MISS'];
 const JUDGE_COLOR = ['rgb(255,242,77)', 'rgb(102,255,128)', 'rgb(102,204,255)', 'rgb(204,128,255)', 'rgb(255,102,102)'];
+
+/**
+ * ゴーストノーツ(リプレイで、実際に叩いた時刻に描く半透明のチップ。元実装に無い追加)の色。判定の色(JUDGE_COLOR)と、
+ * 判定の無い打鍵(空打ち・不可視チップ・空ピック)の灰色。添字は判定 + 1。枠は濃く、中は薄く塗る(チップに重なっても見える)。
+ */
+const GHOST_RGB = [[200, 200, 200], [255, 242, 77], [102, 255, 128], [102, 204, 255], [204, 128, 255], [255, 102, 102]];
+export const GHOST_FILL = GHOST_RGB.map(([r, g, b]) => `rgba(${r},${g},${b},0.28)`);
+export const GHOST_STROKE = GHOST_RGB.map(([r, g, b]) => `rgba(${r},${g},${b},0.95)`);
+const REPLAY_COLOR = 'rgb(255,170,90)';
 export const FONT = '"Segoe UI", "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif';
 const PORTRAIT_MARGIN = 80;
 
@@ -230,6 +239,15 @@ export class Renderer {
       const n = notes[i];
       this._drawChip(g, n.lane, yOf(n.timeMs), n.bonus);
     }
+
+    // ゴーストノーツ(リプレイ中。叩いた時刻に、チップの上に重ねる)
+    const ghosts = p.ghosts;
+    if (ghosts) {
+      for (let i = lowerBound(ghosts, nLo); i < ghosts.length && ghosts[i].timeMs <= nHi; i++) {
+        const gh = ghosts[i];
+        this._drawGhost(g, gh.lane, yOf(gh.timeMs), gh.judge);
+      }
+    }
     g.restore();
 
     // パッド列をチップの上に重ねる
@@ -274,7 +292,11 @@ export class Renderer {
         g.font = `24px ${FONT}`;
         g.fillStyle = 'rgba(255,255,255,0.85)';
         g.lineWidth = 3;
-        const hint = t(this.mode === 'portrait' ? 'play.hintPortrait' : 'play.hintLandscape');
+        // 演奏したあとはリプレイの案内も同じ行に(行を足すとギター / ベースのステータス行と重なる)
+        const portrait = this.mode === 'portrait';
+        const hint = p.lastTake
+          ? t(portrait ? 'play.hintPortraitReplay' : 'play.hintLandscapeReplay')
+          : t(portrait ? 'play.hintPortrait' : 'play.hintLandscape');
         g.strokeText(hint, cx, a.stateY + 50);
         g.fillText(hint, cx, a.stateY + 50);
       }
@@ -361,6 +383,22 @@ export class Renderer {
       g.lineWidth = 2;
       g.strokeRect(cx - w / 2 - 3, y - 10, w + 6, 20);
     }
+  }
+
+  /** ゴーストノーツ 1 個(中心 y。チップと同じ幅・高さ)。judge は判定、-1 は判定なし。 */
+  _drawGhost(g, lane, y, judge) {
+    const [x0, x1] = columnRange(LANE_TO_COLUMN[lane]);
+    const w = x1 - x0 - 4;
+    this._drawGhostRect(g, (x0 + x1) / 2 - w / 2, y - 7.5, w, 15, judge);
+  }
+
+  /** ゴーストノーツの形(左上 x, y と大きさ)。薄く塗って、判定の色の枠を内側に引く。 */
+  _drawGhostRect(g, x, y, w, h, judge) {
+    g.fillStyle = GHOST_FILL[judge + 1];
+    g.fillRect(x, y, w, h);
+    g.strokeStyle = GHOST_STROKE[judge + 1];
+    g.lineWidth = 2;
+    g.strokeRect(x + 1, y + 1, w - 2, h - 2);
   }
 
   /** レーンフラッシュ。remain は消えるまでの残り(ms、> 0)。 */
@@ -517,7 +555,10 @@ export class Renderer {
       g.textAlign = 'left';
       g.fillStyle = 'rgb(220,220,220)';
       g.fillText('000', LANE_X0 + LANE_W + 6, LANE_Y1 - 3);
-      for (let lane = 0; lane < 10; lane++) this._drawChip(g, lane, LANE_Y1 - 3, lane === 0);
+      for (let lane = 0; lane < 10; lane++) {
+        this._drawChip(g, lane, LANE_Y1 - 3, lane === 0);
+        this._drawGhost(g, lane, LANE_Y1 - 3 - lane * 9, (lane % 6) - 1); // ゴーストノーツ(リプレイ。全部の色)
+      }
     } finally {
       g.restore();
     }
@@ -568,6 +609,13 @@ export class Renderer {
     g.font = `22px ${FONT}`;
     g.fillStyle = 'rgb(200,220,255)';
     g.fillText(t('play.achievement') + ' ' + this._achievement().toFixed(2) + '%', sd.x, sd.y - 20);
+
+    // リプレイ中の印(スコアの上。ハイウェイに重ねない)
+    if (p.replay) {
+      g.font = `bold 30px ${FONT}`;
+      g.fillStyle = REPLAY_COLOR;
+      g.fillText('▶ REPLAY', sd.x, sd.y - 100);
+    }
 
     // ハイスピード・演奏速度(score_detailed の下)
     g.font = `bold 26px ${FONT}`;
@@ -620,6 +668,14 @@ export class Renderer {
       g.fillText(text, x, y);
       y += 30;
     };
+    // リプレイ中の印はスコアの行の右端に
+    if (p.replay) {
+      g.textAlign = 'right';
+      g.fillStyle = REPLAY_COLOR;
+      g.strokeText('▶ REPLAY', x + L.w, y);
+      g.fillText('▶ REPLAY', x + L.w, y);
+      g.textAlign = 'left';
+    }
     line('SCORE ' + String(st.score).padStart(7, '0'));
     g.font = `20px ${FONT}`;
     line(`P ${st.counts[0]}  G ${st.counts[1]}  Gd ${st.counts[2]}  Ok ${st.counts[3]}  Miss ${st.counts[4]}  Max ${st.maxCombo}`, 'rgb(230,230,230)');
@@ -704,8 +760,7 @@ export class Renderer {
   /** 達成率(レーン別 AUTO の補正込み)。 */
   _achievement() {
     const p = this.player;
-    const lbd = !!(p.settings && p.settings.autoLanes && p.settings.autoLanes[10]);
-    return p.stats.achievement(p.allLanesAuto, p.laneAuto, lbd);
+    return p.stats.achievement(p.allLanesAuto, p.laneAuto, !!p.lbdAuto); // リプレイ中はテイクの AUTO の状態
   }
 
   _hiSpeedText() {

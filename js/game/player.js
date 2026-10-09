@@ -7,12 +7,14 @@
 //   判定窓・スクロール速度は実時間 ms の量なので、譜面時刻差を演奏速度で割ってから使う。
 // 状態: standby(待機) / startin(開始待ち) / playing / paused。
 // 自動発音(BGM・SE・AUTO チップ)は AudioContext に先読みスケジュールして正確に鳴らす。
+// 演奏の通しを記録し、リプレイで同じ順に当て直す(元実装に無い追加。js/game/replay.js)。
 
 import { LANE_COUNT, INSTRUMENT } from '../core/dtx.js';
 import { AudioEngine } from '../core/audio.js';
 import { HitRanges, JUDGE, searchLanes, tieHitsAll, applyChartDowngrade, LEFT_BASS_DRUM_CHANNEL } from './hitranges.js';
 import { PlayStats } from './judge.js';
-import { buildMeasureTimes, PLAY_SPEED_MIN, PLAY_SPEED_MAX } from './training.js';
+import { buildMeasureTimes, PLAY_SPEED_MIN, PLAY_SPEED_MAX, AUTO_LANE_LBD } from './training.js';
+import { Take, cloneStats } from './replay.js';
 import { isMutingSeChannel } from '../core/dtx.js';
 import { t } from '../i18n.js';
 
@@ -36,6 +38,8 @@ const FINISH_TAIL_MS = 2000;
 const SCHEDULE_AHEAD_MS = 200; // 自動発音の先読み量(実時間)
 const METRO_BEAT_VOLUME = 0.4; // メトロノームの拍線の音量(小節線に対して。DTXManiaAI PS:2000-2011、NX は 40/127)
 const PEDAL_CHANNELS = new Set([0x13, 0x1b, 0x1c]);
+/** 演出の時刻をこれにすると何も描かない(リプレイのシークで、飛ばした区間の出来事を演出なしで当て直す)。 */
+const QUIET_PERF = -1e9;
 
 export class Player {
   /**
@@ -82,6 +86,7 @@ export class Player {
     this.auto = false;
     this.laneAuto = new Array(LANE_COUNT).fill(false);
     this.allLanesAuto = false;
+    this.lbdAuto = false; // LBD の AUTO(達成率の補正。レーン別 AUTO の 11 桁目)
     this.judgeOffsetMs = 0;
     this.noteDrawOffsetMs = 0;
     this.loopBeginMs = -1;
@@ -117,6 +122,12 @@ export class Player {
     this.statusUntil = 0;
     this.judgeDisplayUntil = 0;
     this.playedMaxMs = 0;
+
+    // 記録とリプレイ(js/game/replay.js)
+    this._take = null; // 記録中のテイク(演奏中・一時停止中だけ)
+    this.lastTake = null; // 直前のテイク(リプレイで見せる)
+    this.replay = null; // リプレイ中 {take, ei: 次に当て直す出来事, si: 次に予約する音}
+    this._evMs = 0; // 今処理している出来事の譜面時刻(記録に使う。update・打鍵の入口で決める)
 
     this.onStateChange = null;
     this.onQuit = null;
@@ -278,7 +289,7 @@ export class Player {
       }
       case PLAYER_STATE.STANDBY: return 'STANDBY';
       case PLAYER_STATE.PAUSED: return 'PAUSED';
-      default: return 'PLAYING';
+      default: return this.replay ? 'REPLAY' : 'PLAYING';
     }
   }
 
@@ -302,6 +313,7 @@ export class Player {
       if (!s.autoLanes[i]) all = false;
     }
     this.allLanesAuto = all;
+    this.lbdAuto = !!s.autoLanes[AUTO_LANE_LBD];
     const loopOn = s.loop && s.loopRangeValid;
     this.loopBeginMs = loopOn ? s.loopBeginMs : -1;
     this.loopEndMs = loopOn ? s.loopEndMs : -1;
@@ -364,11 +376,16 @@ export class Player {
    */
   seekTo(targetMs) {
     if (!this.canSeek) return false;
-    const target = Math.round(Math.max(0, Math.min(this.seekMaxMs, targetMs || 0)));
+    let target = Math.round(Math.max(0, Math.min(this.seekMaxMs, targetMs || 0)));
+    // リプレイはテイクの範囲の中だけ(外には見せるものが無い)
+    const take = this.replay && this.replay.take;
+    if (take) target = Math.round(Math.max(take.startMs, Math.min(take.endMs, target)));
     if (target === Math.round(this._pinnedSong)) return false;
     this.jumpTo(target, false); // 停止中は必ず _stopChartVoices() に落ちるので無音
     this.startMs = target; // 「演奏開始」はここから始める
-    this._seekDirty = true;
+    // リプレイは成績を数え直さず、テイクの頭からその位置までの出来事を当て直す
+    if (take) this._replayRebuild(target);
+    else this._seekDirty = true;
     return true;
   }
 
@@ -413,6 +430,7 @@ export class Player {
 
   /** 待機へ(EnterStandby)。atMs を渡すとその位置で待つ(停止中にシークした位置から始めるため)。 */
   enterStandby(resetStats, atMs) {
+    this._endTake();
     this._stopChartVoices();
     this.startMs = Number.isFinite(atMs) ? Math.round(Math.max(0, atMs)) : this.standbyPositionMs;
     if (resetStats) this.stats.reset();
@@ -463,7 +481,8 @@ export class Player {
   beginPlaying() {
     // 開始待ち中にシークされているかもしれないので、ここでも演奏可能範囲へ寄せ直す。
     // judged[] を同じ値で張り直してから入ること(ずれたまま始めると 1 フレームで全部 MISS になる)。
-    const at = this.clampStartMs(this.startMs);
+    // リプレイはテイクの位置のまま(ループの区間を後から変えていても寄せない)
+    const at = this.replay ? this.startMs : this.clampStartMs(this.startMs);
     if (at !== this.startMs) {
       this.startMs = at;
       this.jumpTo(at, false);
@@ -472,6 +491,7 @@ export class Player {
     this._anchorReal = this._ctxNowMs();
     this._anchorSong = this.startMs;
     this._setState(PLAYER_STATE.PLAYING);
+    this._beginTake(this.startMs);
     this.resyncAutoSounds(this.startMs);
   }
 
@@ -483,7 +503,10 @@ export class Player {
     } else if (this.state === PLAYER_STATE.PAUSED) {
       // シークして戻ったぶんは叩き直しになるので、ループ折り返しと同じ区切りを入れる
       // (入れないと同じチップが二重に数えられて達成率が壊れる)。
-      if (this._seekDirty) {
+      // テイクもここで区切る(数え直した後は別の通し)
+      const recount = this._seekDirty;
+      if (recount) {
+        this._endTake();
         this.stats.resetForLoop();
         this._seekDirty = false;
         this.showStatus(t('play.recount'));
@@ -491,6 +514,7 @@ export class Player {
       this._anchorReal = this._ctxNowMs(); // beginPlaying と同じ
       this._anchorSong = this._pinnedSong;
       this._setState(PLAYER_STATE.PLAYING);
+      if (recount) this._beginTake(this._pinnedSong);
       this.resyncAutoSounds(this._pinnedSong);
     }
   }
@@ -504,11 +528,17 @@ export class Player {
   command(cmd) {
     switch (cmd) {
       case 'startStop':
-        if (this.isStandby) this.startTrainingAt(this._pinnedSong);
+        if (this.replay) this.stopReplay(); // リプレイ中は止めるだけ(演奏は始めない)
+        else if (this.isStandby) this.startTrainingAt(this._pinnedSong);
         else this.enterStandby(false);
         break;
       case 'restart':
-        this.startTraining();
+        if (this.replay) this.startReplay(); // リプレイ中はリプレイを頭から
+        else this.startTraining();
+        break;
+      case 'replay':
+        if (this.replay) this.stopReplay();
+        else if (this.canReplay) this.startReplay();
         break;
       case 'pauseResume':
         this.togglePause();
@@ -556,6 +586,9 @@ export class Player {
   /** BGM/SE(と伴奏)を現在位置から鳴らし直す(ResyncAutoSounds)。 */
   resyncAutoSounds(songMs) {
     this._stopChartVoices();
+    // 止めた予約の音は鳴っていないので記録から消す(このあと予約し直す)。リプレイは記録の音をここから予約する
+    if (this._take) this._take.dropScheduledFrom(songMs);
+    if (this.replay) this.replay.si = countBefore(this.replay.take.sounds, songMs);
     this._seLast.clear();
     this._bgmIndex = countBefore(this.chart.bgmEvents, songMs);
     this._seIndex = countBefore(this.chart.seEvents, songMs);
@@ -641,15 +674,23 @@ export class Player {
     }
     if (!this.chart) return; // 終了(quit)した
     this.applySettings();
+    // リプレイは AUTO の状態をテイクのものにする(達成率の補正・AUTO のボタンの点灯。メニューで変えても記録は変わらない)
+    if (this.replay) this._useAutoFlags(this.replay.take.flags);
     this.syncStandbyPosition();
 
     if (this.state !== PLAYER_STATE.PLAYING) return;
 
     let songMs = this.songAt(realNow);
+    if (this.replay) {
+      this._updateReplay(songMs, realNow, perfNow);
+      return;
+    }
 
-    // ループ折り返し
+    // ループ折り返し(テイクは 1 周ごとに区切る)
     if (this.loopEndMs !== -1 && songMs > this.loopEndMs) {
       const begin = this.loopBeginMs === -1 ? 0 : this.loopBeginMs;
+      if (this._take) this._take.reach(this.loopEndMs);
+      this._endTake();
       // 終端までに鳴らしたメトロノームのクリックは止めない(終端の拍線のクリックがそのまま継ぎ目の拍。短い音なので、
       // 止めると頭だけ鳴って、開始位置で鳴らし直す同じ拍と二度鳴りに聞こえる)
       const clicks = this._metroVoices;
@@ -667,11 +708,14 @@ export class Player {
       // 終端の拍が鳴ったなら、開始位置の同じ拍は鳴らさない(小節単位のループでは終端と開始はどちらも小節線)
       const next = this.metro[this._metroIndex];
       if (seamClick && next && next.timeMs === begin) this._metroIndex++;
+      this._beginTake(begin);
     }
 
+    this._evMs = songMs;
     this.scheduleAutoSounds(songMs, realNow);
     this.processJudgement(songMs, realNow, perfNow);
     if (songMs > this.playedMaxMs) this.playedMaxMs = songMs;
+    if (this._take) this._take.reach(songMs);
 
     // 曲末 → 待機(成績は残す)
     if (this.notes.length > 0 && this.loopEndMs === -1 && songMs > this.chart.durationMs + FINISH_TAIL_MS * this.ratio) {
@@ -784,7 +828,9 @@ export class Player {
         if (v.src && v.src.addEventListener) v.src.addEventListener('ended', () => this._metroVoices.delete(v));
       }
     }
-    this._scheduleNoteSounds(limit);
+    // 弾いている楽器の音: リプレイは記録した音を、演奏は AUTO のチップの音を予約する
+    if (this.replay) this._scheduleReplaySounds(limit);
+    else this._scheduleNoteSounds(limit);
   }
 
   /** 弾いている楽器の AUTO チップの音を limit(譜面時刻)まで予約する(判定は processJudgement で songMs 到達時に行う)。 */
@@ -804,12 +850,25 @@ export class Player {
 
   /** チップの音を鳴らす(PlayHit)。#WAV が無ければレーンの合成音。 */
   playChipSound(note, vol, when) {
+    this._recordSound({ note, vol }, when);
     const id = note.wavId;
     const { volume, pan } = AudioEngine.gainPan(this.chart, id);
     if (this.audio.hasBuffer(id)) {
       return this.audio.play(id, { when, volume: volume * vol, pan, rate: this.ratio, bus: 'chip' });
     }
     return this.audio.playBuffer(this.audio.synthBuffer(note.lane), { when, volume: vol, rate: this.ratio, key: 'synth' + note.lane, bus: 'chip' });
+  }
+
+  /** パッドの合成音(チップの無いレーンの空打ち)。 */
+  _playSynth(lane, vol, when) {
+    this._recordSound({ synth: lane, vol }, when);
+    return this.audio.playBuffer(this.audio.synthBuffer(lane), { when, volume: vol, rate: this.ratio, key: 'synth' + lane, bus: 'chip' });
+  }
+
+  /** 空打ちの音: いちばん近いチップの音(borrow)、無ければパッドの合成音。 */
+  _playPadSound(pad, borrow) {
+    if (borrow) this.playChipSound(borrow, this.config.chipVolume);
+    else this._playSynth(pad, this.config.chipVolume);
   }
 
   // ---- 判定 ----
@@ -865,7 +924,7 @@ export class Player {
    * @param {number} perfTimeStamp event.timeStamp(performance.now 時間軸)
    */
   hit(pad, perfTimeStamp, opts = {}) {
-    if (!this.chart) return;
+    if (!this.chart || this.replay) return; // リプレイ中の打鍵は使わない
     const perfNow = performance.now();
     if (this.state === PLAYER_STATE.PAUSED) return;
     // タッチの CY 列は RD チップも拾う(RD は CY 列に描かれるため)
@@ -885,8 +944,10 @@ export class Player {
     // するため(長いフレームの空白の後で、過ぎた AUTO チップの音が予約を経ずに頭からまとめて鳴らないように)。
     // ループの終端より後ろは折り返しのフレームに任せる(終端までは済ませる)
     const settleMs = this.loopEndMs === -1 ? songIn : Math.min(songIn, this.loopEndMs);
+    this._evMs = settleMs;
     this.scheduleAutoSounds(settleMs, realIn);
     this.processJudgement(settleMs, realIn, perfNow);
+    this._evMs = songIn;
     const inputMs = songIn + this._w(this.judgeOffsetMs);
     const lanes = searchLanes(pad, groups);
     const lbdOnlyLane = pad === 5 && groups.bdGroup === 1 ? 2 : -1;
@@ -911,7 +972,10 @@ export class Player {
         bestAbs = r.abs;
       }
     }
+    // ゴースト(リプレイで見せる、実際に叩いた時刻)は判定に使った時刻 inputMs に、当たったチップのレーンへ置く。
+    // 色は判定(不可視チップ・空打ちは判定なし)
     if (bestHidden >= 0 && (best < 0 || this.hiddenNotes[bestHidden].timeMs < this.notes[best].timeMs)) {
+      this._ghost(inputMs, this.hiddenNotes[bestHidden].lane, -1);
       this._hitHidden(bestHidden, bestHiddenAbs, perfNow);
       return;
     }
@@ -919,35 +983,40 @@ export class Player {
       const hitNote = this.notes[best];
       const hitTime = hitNote.timeMs;
       const lagMs = (inputMs - hitTime) / this.ratio;
-      this._judgeNote(best, this.rangesFor(hitNote.channel).judge(bestAbs / this.ratio), lagMs, perfNow, {});
+      const j = this.rangesFor(hitNote.channel).judge(bestAbs / this.ratio);
+      this._ghost(inputMs, hitNote.lane, j);
+      this._judgeNote(best, j, lagMs, perfNow, {});
       if (tieHitsAll(pad)) {
         for (const lane of lanes) {
           if (lane === hitNote.lane) continue;
           const filter = lane === lbdOnlyLane ? LEFT_BASS_DRUM_CHANNEL : 0;
           const r = this._findNearest(this.notes, this.judged, lane, inputMs, filter, false);
           if (r.index >= 0 && this.notes[r.index].timeMs === hitTime) {
-            this._judgeNote(r.index, this.rangesFor(this.notes[r.index].channel).judge(r.abs / this.ratio), lagMs, perfNow, {});
+            const j2 = this.rangesFor(this.notes[r.index].channel).judge(r.abs / this.ratio);
+            this._ghost(inputMs, lane, j2);
+            this._judgeNote(r.index, j2, lagMs, perfNow, {});
           }
           const h = this._findNearest(this.hiddenNotes, this.hiddenJudged, lane, inputMs, filter, true);
-          if (h.index >= 0 && this.hiddenNotes[h.index].timeMs === hitTime) this._hitHidden(h.index, h.abs, perfNow);
+          if (h.index >= 0 && this.hiddenNotes[h.index].timeMs === hitTime) {
+            this._ghost(inputMs, lane, -1);
+            this._hitHidden(h.index, h.abs, perfNow);
+          }
         }
       }
       return;
     }
     // 空打ち: パッドのレーンを光らせ、いちばん近いチップの音(無ければ合成音)
+    this._ghost(inputMs, pad, -1);
+    this._record({ kind: 'empty', lane: pad });
     this._laneEffects(pad, perfNow);
-    const borrow = this._findNearestAny(pad, lanes, inputMs);
-    if (borrow) this.playChipSound(borrow, this.config.chipVolume);
-    else this.audio.playBuffer(this.audio.synthBuffer(pad), { volume: this.config.chipVolume, rate: this.ratio, key: 'synth' + pad, bus: 'chip' });
+    this._playPadSound(pad, this._findNearestAny(pad, lanes, inputMs));
   }
 
   /** 待機中の打鍵: 音と演出だけ(判定・成績には触れない)。 */
   _warmUpHit(pad, perfNow, groups = this.groups) {
     this._laneEffects(pad, perfNow);
     const lanes = searchLanes(pad, groups);
-    const borrow = this._findNearestAny(pad, lanes, this._pinnedSong);
-    if (borrow) this.playChipSound(borrow, this.config.chipVolume);
-    else this.audio.playBuffer(this.audio.synthBuffer(pad), { volume: this.config.chipVolume, rate: this.ratio, key: 'synth' + pad, bus: 'chip' });
+    this._playPadSound(pad, this._findNearestAny(pad, lanes, this._pinnedSong));
   }
 
   /**
@@ -1013,19 +1082,29 @@ export class Player {
     js.auto = auto;
   }
 
-  /** 手動/ミス/全 AUTO の判定確定(Judge)。 */
+  /**
+   * 手動/ミス/全 AUTO の判定確定(Judge)。成績と演出は _applyJudge に分け、リプレイは記録からそれだけを当て直す
+   * (音は記録した音を予約する)。レーン別 AUTO・不可視チップも同じ分け方。
+   */
   _judgeNote(i, j, lagMs, perfNow, opts) {
     const n = this.notes[i];
+    const auto = !!opts.auto;
+    this._record({ kind: 'judge', i, judge: j, lagMs, auto });
+    this._applyJudge(i, j, lagMs, perfNow, auto);
+    if (j !== JUDGE.MISS && !n.soundScheduled) {
+      n.soundScheduled = true;
+      this.playChipSound(n, this.config.chipVolume);
+    }
+  }
+
+  _applyJudge(i, j, lagMs, perfNow, auto) {
+    const n = this.notes[i];
     this.judged[i] = true;
-    this.stats.judge(j, n, lagMs, { auto: !!opts.auto });
+    this.stats.judge(j, n, lagMs, { auto });
     this.judgeDisplayUntil = perfNow + 500;
-    this._startJudgeString(n.lane, j, lagMs, !!opts.auto, perfNow);
+    this._startJudgeString(n.lane, j, lagMs, auto, perfNow);
     if (j !== JUDGE.MISS) {
       this._laneEffects(n.lane, perfNow);
-      if (!n.soundScheduled) {
-        n.soundScheduled = true;
-        this.playChipSound(n, this.config.chipVolume);
-      }
       if (j !== JUDGE.OK) this.fireAt[n.lane] = perfNow;
     }
     if (j === JUDGE.PERFECT || j === JUDGE.GREAT || j === JUDGE.GOOD) this.comboJumpAt = perfNow;
@@ -1034,29 +1113,208 @@ export class Player {
   /** レーン別 AUTO の判定(AutoJudge)。 */
   _autoJudgeNote(i, perfNow) {
     const n = this.notes[i];
-    this.judged[i] = true;
-    this.stats.autoJudge(n, { allLanesAuto: this.allLanesAuto, autoAddGage: this.config.autoAddGage });
-    this._startJudgeString(n.lane, JUDGE.PERFECT, 0, true, perfNow);
-    this._laneEffects(n.lane, perfNow);
+    const ev = { kind: 'auto', i, all: this.allLanesAuto, addGage: !!this.config.autoAddGage };
+    this._record(ev);
+    this._applyAutoJudge(ev, perfNow);
     if (!n.soundScheduled) {
       n.soundScheduled = true;
       this.playChipSound(n, this.config.autoChipVolume);
     }
+  }
+
+  _applyAutoJudge(ev, perfNow) {
+    const n = this.notes[ev.i];
+    this.judged[ev.i] = true;
+    this.stats.autoJudge(n, { allLanesAuto: ev.all, autoAddGage: ev.addGage });
+    this._startJudgeString(n.lane, JUDGE.PERFECT, 0, true, perfNow);
+    this._laneEffects(n.lane, perfNow);
     this.fireAt[n.lane] = perfNow;
-    if (this.allLanesAuto) this.comboJumpAt = perfNow;
+    if (ev.all) this.comboJumpAt = perfNow;
   }
 
   /** 不可視チップのヒット(HitHiddenNote): 音と演出のみ。 */
   _hitHidden(i, abs, perfNow) {
+    const fire = HitRanges.default.judge(abs / this.ratio) !== JUDGE.OK;
+    this._record({ kind: 'hidden', i, fire });
+    this._applyHidden(i, fire, perfNow);
+    this.playChipSound(this.hiddenNotes[i], this.config.chipVolume);
+  }
+
+  _applyHidden(i, fire, perfNow) {
     const n = this.hiddenNotes[i];
     this.hiddenJudged[i] = true;
     this._laneEffects(n.lane, perfNow);
-    this.playChipSound(n, this.config.chipVolume);
-    if (HitRanges.default.judge(abs / this.ratio) !== JUDGE.OK) this.fireAt[n.lane] = perfNow;
+    if (fire) this.fireAt[n.lane] = perfNow;
+  }
+
+  // ---- 記録(js/game/replay.js) ----
+
+  /** テイクを始める(演奏に入ったとき・ループの折り返し・数え直し)。リプレイ中は記録しない。 */
+  _beginTake(startMs) {
+    this._take = this.replay ? null : new Take(startMs, this.stats, this._takeInit());
+  }
+
+  /** テイクを締めて、何か起きていれば直前のテイクにする(止めた・曲末・折り返し・数え直し)。 */
+  _endTake() {
+    const take = this._take;
+    if (!take) return;
+    this._take = null;
+    if (!take.empty) this.lastTake = take.finish(this.stats, this._autoFlags());
+  }
+
+  /** 楽器ごとの始めの状態(ドラムは無し。ギター / ベースは押さえているボタン)。 */
+  _takeInit() {
+    return null;
+  }
+
+  /** 成績・演出の出来事を記録する(時刻は今処理している _evMs)。 */
+  _record(ev) {
+    if (this._take) this._take.event(ev, this._evMs);
+  }
+
+  /** 鳴らした音を記録する。when(ctx 秒)に予約した音はその譜面時刻、すぐ鳴らした音は今の _evMs。 */
+  _recordSound(s, when) {
+    const take = this._take;
+    if (!take) return;
+    if (when === undefined) take.sound(s, this._evMs, false);
+    else take.sound(s, this.songAt(when * 1000), true);
+  }
+
+  /** ゴースト(実際に叩いた時刻 timeMs・レーン・判定。判定なしは -1)。 */
+  _ghost(timeMs, lane, judge) {
+    if (this._take) this._take.ghost({ timeMs, lane, judge });
+  }
+
+  /** AUTO の状態(テイクを締めるときに写す)。 */
+  _autoFlags() {
+    return { auto: this.auto, laneAuto: this.laneAuto.slice(), allLanesAuto: this.allLanesAuto, lbdAuto: this.lbdAuto };
+  }
+
+  _useAutoFlags(f) {
+    if (!f) return;
+    this.auto = f.auto;
+    for (let i = 0; i < LANE_COUNT; i++) this.laneAuto[i] = !!f.laneAuto[i];
+    this.allLanesAuto = f.allLanesAuto;
+    this.lbdAuto = f.lbdAuto;
+  }
+
+  // ---- リプレイ ----
+
+  /** 直前のテイクをリプレイできるか(待機中だけ。演奏中・一時停止中は止めてから)。 */
+  get canReplay() {
+    return !!this.lastTake && !!this.chart && !this.replay && this.state === PLAYER_STATE.STANDBY;
+  }
+
+  /** リプレイ中に描くゴースト(時刻順)。リプレイ中でなければ null。 */
+  get ghosts() {
+    return this.replay ? this.replay.take.ghosts : null;
+  }
+
+  /**
+   * 直前のテイクを頭から見せる(リプレイ中なら頭からやり直す)。開始待ち時間を置いてから、テイクの始めの位置・成績から
+   * 演奏と同じ時計で進め、記録した出来事をその時刻に当て直す。演奏速度・ハイスピード・ノーツ表示調整は今の設定で見る。
+   */
+  startReplay() {
+    const take = this.replay ? this.replay.take : this.lastTake;
+    if (!take || !this.chart) return false;
+    this.replay = null;
+    this.enterStandby(false, take.startMs); // 記録中のテイクを締め、鳴っている音を止める
+    this.replay = { take, ei: 0, si: 0 };
+    this._replayRebuild(take.startMs);
+    this._useAutoFlags(take.flags);
+    this.beginStartWait();
+    return true;
+  }
+
+  /** リプレイを止めて待機へ。成績はテイクを締めたときのもの(演奏し終えたときの成績)に戻す。 */
+  stopReplay() {
+    const r = this.replay;
+    if (!r) return;
+    this.replay = null;
+    this.enterStandby(false);
+    this.stats = cloneStats(r.take.stats1);
+    this._afterReplay();
+    this.applySettings();
+  }
+
+  /** リプレイの 1 フレーム: 記録した音の予約 → 出来事の当て直し。テイクの終わりまで来たら待機へ。 */
+  _updateReplay(songMs, realNow, perfNow) {
+    const end = this.replay.take.endMs;
+    this.scheduleAutoSounds(songMs, realNow);
+    this._replayStep(Math.min(songMs, end), perfNow);
+    if (songMs > this.playedMaxMs) this.playedMaxMs = songMs;
+    if (songMs >= end) this.stopReplay();
+  }
+
+  /** songMs までの出来事を当て直す。 */
+  _replayStep(songMs, perfNow) {
+    const r = this.replay;
+    const events = r.take.events;
+    while (r.ei < events.length && events[r.ei].timeMs <= songMs) this._applyEvent(events[r.ei++], perfNow, false);
+    this._replayFrame(songMs, perfNow);
+  }
+
+  /**
+   * 位置 target のリプレイの状態を作り直す(始め・シーク): 成績をテイクの始めに戻し、target より前の出来事を
+   * 演出なしで当て直す。テイクより前のチップは処理済み、後ろは出来事が来るまで未判定。
+   */
+  _replayRebuild(target) {
+    const r = this.replay;
+    const take = r.take;
+    this.stats = cloneStats(take.stats0);
+    for (let i = 0; i < this.notes.length; i++) this.judged[i] = this.notes[i].timeMs < take.startMs;
+    for (let i = 0; i < this.hiddenNotes.length; i++) this.hiddenJudged[i] = this.hiddenNotes[i].timeMs < take.startMs;
+    this._replayInit(take);
+    r.ei = 0;
+    const events = take.events;
+    while (r.ei < events.length && events[r.ei].timeMs < target) this._applyEvent(events[r.ei++], QUIET_PERF, true);
+    r.si = countBefore(take.sounds, target);
+    this._replayFrame(target, QUIET_PERF);
+  }
+
+  /** 楽器ごとのリプレイの始めの状態(ギター / ベースが差し替える)。 */
+  _replayInit() {}
+
+  /** 楽器ごとのリプレイの毎フレームの演出(ギター / ベースのロングノート)。 */
+  _replayFrame() {}
+
+  /** リプレイを止めたあと、楽器ごとの状態を演奏に戻す(ギター / ベースの押さえているボタン)。 */
+  _afterReplay() {}
+
+  /**
+   * 記録した出来事を 1 つ当て直す(ギター / ベースは別の出来事を持つので差し替える)。
+   * quiet はシークで飛ばした区間(perfNow を遠い過去にして演出を出さず、音も鳴らさない)。
+   */
+  _applyEvent(ev, perfNow) {
+    switch (ev.kind) {
+      case 'judge': this._applyJudge(ev.i, ev.judge, ev.lagMs, perfNow, ev.auto); break;
+      case 'auto': this._applyAutoJudge(ev, perfNow); break;
+      case 'hidden': this._applyHidden(ev.i, ev.fire, perfNow); break;
+      case 'empty': this._laneEffects(ev.lane, perfNow); break;
+      default: break;
+    }
+  }
+
+  /** 記録した音を limit(譜面時刻)まで予約する。 */
+  _scheduleReplaySounds(limit) {
+    const r = this.replay;
+    const list = r.take.sounds;
+    while (r.si < list.length && list[r.si].timeMs <= limit) {
+      const s = list[r.si++];
+      this._replaySound(s, this.ctxTimeAt(s.timeMs));
+    }
+  }
+
+  /** 記録した音を 1 つ予約する(一時停止・シークで止められるよう覚えておく。ギター / ベースはパートの音なので差し替える)。 */
+  _replaySound(s, when) {
+    const v = s.note ? this.playChipSound(s.note, s.vol, when) : this._playSynth(s.synth, s.vol, when);
+    if (v) this._trackVoice(v);
   }
 
   dispose() {
     this._stopChartVoices();
+    this._take = null;
+    this.replay = null;
     this.chart = null;
     this.audio.stopAll();
   }

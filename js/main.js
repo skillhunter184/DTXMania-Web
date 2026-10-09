@@ -865,6 +865,7 @@ class App {
       onVolumeStep: (kind, step) => this.stepVolume(kind, step),
       getGbBad: () => !this.config.gbLight,
       onGbBadToggle: () => this.setGbLight(!this.config.gbLight),
+      canReplay: () => !!this.player && this.player.canReplay,
     });
     this.menu.setChart(player.chart);
     this.menu.build(overlay);
@@ -901,6 +902,8 @@ class App {
     $('btn-start').onclick = () => player.command(MENU_COMMAND.START_STOP);
     $('btn-restart').onclick = () => player.command(MENU_COMMAND.RESTART);
     $('btn-pause').onclick = () => player.command(MENU_COMMAND.PAUSE_RESUME);
+    $('btn-replay').onclick = () => { player.command(MENU_COMMAND.REPLAY); this.pacer.forceNext(); };
+    this.syncReplayButton();
     $('btn-menu').onclick = () => this.toggleMenu();
     $('btn-fullscreen').onclick = () => this.toggleFullscreen();
     // ボタンにフォーカスが残ると Enter / Space(BD)でボタンが再度押されてしまうので、押したら外す
@@ -929,10 +932,12 @@ class App {
       }
       this.menu.playing = !this.player.isStandby;
       this.menu.paused = st === PLAYER_STATE.PAUSED;
+      this.menu.replaying = !!this.player.replay;
       this.menu.stateText = this.player.stateText();
       this.menu.refresh();
       this.renderer.draw(now);
       this.updateSeekBar();
+      this.syncReplayButton();
       this.raf = requestAnimationFrame(loop);
     };
     this.raf = requestAnimationFrame(loop);
@@ -954,6 +959,20 @@ class App {
     }
     if (code === 'F11') return false;
     return this.menu.keyDown(code, ev.ctrlKey, performance.now());
+  }
+
+  /**
+   * プレイバーの「リプレイ」(直前の演奏を見直す。js/game/replay.js)。演奏したあとから出し、待機中とリプレイ中だけ押せる
+   * (リプレイ中は押すと止まる)。毎フレーム呼ぶので、DOM へは変わったときだけ書く。
+   */
+  syncReplayButton() {
+    const b = $('btn-replay');
+    const p = this.player;
+    const show = !!(p && p.lastTake);
+    const enabled = !!(p && (p.replay || p.canReplay));
+    if (b.hidden === show) b.hidden = !show;
+    if (b.disabled === enabled) b.disabled = !enabled;
+    b.classList.toggle('on', !!(p && p.replay));
   }
 
   toggleMenu() {
@@ -1175,19 +1194,24 @@ class App {
     const max = Math.max(1, p.seekMaxMs);
     const now = Math.max(0, Math.min(max, p.songMs));
     const unit = this.training.loopUnit;
-    const key = Math.round((now / max) * 4000) + '/' + p.loopBeginMs + '/' + p.loopEndMs + '/' + unit + '/' + Math.round(max);
+    // 帯はループ区間(リプレイ中はテイクの範囲。シークできるのはその中だけ)
+    const take = p.replay ? p.replay.take : null;
+    const bandBegin = take ? take.startMs : p.loopBeginMs;
+    const bandEnd = take ? take.endMs : p.loopEndMs;
+    const key = Math.round((now / max) * 4000) + '/' + bandBegin + '/' + bandEnd + '/' + unit + '/' + Math.round(max);
     if (key === s.key) return;
     s.key = key;
 
     const pct = (v) => (Math.max(0, Math.min(1, v)) * 100).toFixed(3) + '%';
     s.fill.style.width = pct(now / max);
     s.thumb.style.left = pct(now / max);
-    const hasLoop = p.loopEndMs >= 0 && p.loopEndMs > p.loopBeginMs;
-    s.loop.hidden = !hasLoop;
-    if (hasLoop) {
-      const a = Math.max(0, p.loopBeginMs) / max;
+    const hasBand = bandEnd >= 0 && bandEnd > bandBegin;
+    s.loop.hidden = !hasBand;
+    s.loop.classList.toggle('replay', !!take);
+    if (hasBand) {
+      const a = Math.max(0, bandBegin) / max;
       s.loop.style.left = pct(a);
-      s.loop.style.width = pct(p.loopEndMs / max - a);
+      s.loop.style.width = pct(bandEnd / max - a);
     }
     s.pos.textContent = formatLoopTime(now, unit, p.measureTimes) + '   ' + clockText(now) + ' / ' + clockText(max);
   }
@@ -1202,6 +1226,7 @@ class App {
     this.gamepad.deactivate('play');
     if (this.menu) { this.menu.destroy(); this.menu = null; }
     if (this.player) { this.player.dispose(); this.player = null; }
+    this.syncReplayButton(); // 直前の演奏は曲ごと(次の曲では出さない)
     if (this.renderer) this.renderer._releaseBase(); // キャンバスと同じ大きさの作り置きをすぐ手放す
     this.renderer = null;
     this.training.save();

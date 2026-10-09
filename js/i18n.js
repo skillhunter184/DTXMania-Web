@@ -214,11 +214,21 @@ export const STRINGS = {
     '<b>メニュー項目</b>: 自動演奏 / AUTO プリセット(ギター / ベースのみ) / 自動演奏詳細(レーン別・ボタン別 AUTO) / ノーツ表示調整 / '
       + '判定タイミング調整 / ハイスピード / 演奏速度 / 開始待ち時間 / ドラム音量(ギター / ベース音量) / BGM 音量 / メトロノーム / '
       + 'リバース・LEFT(左利き)・空ピックで BAD(ギター / ベースのみ) / ループ演奏 / ループ位置単位 / '
-      + 'ループ終了位置 / ループ開始位置 / 現在位置 / 演奏開始・停止 / リスタート / 一時停止 / トレーニング終了',
+      + 'ループ終了位置 / ループ開始位置 / 現在位置 / 演奏開始・停止 / リスタート / 一時停止 / リプレイ / トレーニング終了',
     '<b>Menu items</b>: Auto Play / Auto Preset (guitar / bass only) / Auto Lanes (per-lane / per-button AUTO) / Visual Offset / '
       + 'Judge Offset / Hi-Speed / Play Speed / Start Delay / Drum Volume (Guitar / Bass Volume) / BGM Volume / Metronome / '
       + 'Reverse · Left (Lefty) · Wrong Pick = BAD (guitar / bass only) / Loop / Loop Unit / '
-      + 'Loop End / Loop Start / Position / Start · Stop / Restart / Pause / Exit Training',
+      + 'Loop End / Loop Start / Position / Start · Stop / Restart / Pause / Replay / Exit Training',
+  ],
+  'help.replay': [
+    '<b>リプレイ</b>: 演奏を止めたあと(曲末まで弾いたあと)、メニューかプレイバーの「リプレイ」で直前の演奏を見直せます'
+      + '(ループ演奏では直前の 1 周)。実際に叩いた時刻に、判定の色の枠のゴーストノーツが流れます(灰色はチップの無い打鍵・空ピック)。'
+      + 'ゴーストノーツがチップより後から来れば遅く、先に来れば早く叩いています。リプレイ中も演奏速度・ハイスピードを変えられ、'
+      + '一時停止中はシークバーで前後に送れます。リプレイしても成績は変わりません。',
+    '<b>Replay</b>: After you stop (or reach the end of the song), choose "Replay" in the menu or on the play bar to watch your last run again '
+      + '(the last lap when looping). Ghost notes outlined in the judgment color flow at the moments you actually hit (gray: hits with no chip / '
+      + 'wrong picks). A ghost arriving after its chip means you hit late; arriving before it means early. You can change the play speed and '
+      + 'hi-speed during a replay, and move with the seek bar while it is paused. Replaying never changes the score.',
   ],
   'help.misc': [
     '待機中に叩くと音だけ鳴ります(ウォーミングアップ)。ループ区間の折り返しごとに開始待ち時間を置きます。成績はどこにも保存しません。',
@@ -232,6 +242,8 @@ export const STRINGS = {
   'play.pause': ['一時停止 / 再開', 'Pause / Resume'],
   'play.fullscreen': ['全画面', 'Full screen'],
   'play.menu': ['トレーニングメニュー', 'Training menu'],
+  'play.replay': ['リプレイ', 'Replay'],
+  'play.replayTitle': ['直前の演奏をリプレイ / 停止', 'Replay the last run / Stop'],
   'seek.prev10': ['10 戻る', 'Back 10'],
   'seek.prev': ['1 戻る', 'Back 1'],
   'seek.track': ['演奏位置', 'Play position'],
@@ -532,6 +544,9 @@ export const STRINGS = {
   // ---- 演奏画面(js/game/player.js・js/ui/renderer.js) ----
   'play.hintPortrait': ['メニューから「演奏開始」', 'Choose "Start" in the menu'],
   'play.hintLandscape': ['メニューの「演奏開始」(Enter)で開始', 'Choose "Start" (Enter) in the menu to begin'],
+  // 演奏したあと(リプレイできるとき)の案内
+  'play.hintPortraitReplay': ['メニューから「演奏開始」/「リプレイ」', 'Choose "Start" or "Replay" in the menu'],
+  'play.hintLandscapeReplay': ['「演奏開始」(Enter)で開始 /「リプレイ」で見直す', 'Choose "Start" (Enter) to begin, or "Replay" to watch again'],
   'play.achievement': ['達成率', 'Achievement'],
   'play.toLoop': ['ループ区間へ', 'Moved into the loop range'],
   'play.beforeEnd': ['曲末より前から始めます', 'Starting before the end of the song'],
@@ -568,6 +583,8 @@ export const STRINGS = {
   'menu.restart': ['リスタート', 'Restart'],
   'menu.pause': ['一時停止', 'Pause'],
   'menu.resume': ['再開', 'Resume'],
+  'menu.replay': ['リプレイ', 'Replay'],
+  'menu.replayStop': ['リプレイ停止', 'Stop Replay'],
   'menu.quit': ['トレーニング終了', 'Exit Training'],
   'menu.back': ['戻る', 'Back'],
   'menu.all': ['すべて', 'All'],

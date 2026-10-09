@@ -18,7 +18,7 @@ function makeMenu() {
 
 test('menu: item order, initial values, formats', () => {
   const { m, s } = makeMenu();
-  assertEq(m.itemCount, 19);
+  assertEq(m.itemCount, 20);
   assertEq(m.itemName(0), '自動演奏');
   assertEq(m.itemName(7), 'ドラム音量');
   assertEq(m.itemName(8), 'BGM 音量');
@@ -60,7 +60,7 @@ test('menu: cursor wraps, Enter on value items steps +1, Ctrl x10, clamps', () =
   const t = 1000;
   m.keyDown('ArrowUp', false, t);
   m.keyUp('ArrowUp');
-  assertEq(m.cursor, 18, 'wrap to last');
+  assertEq(m.cursor, 19, 'wrap to last');
   m.keyDown('ArrowDown', false, t + 100);
   m.keyUp('ArrowDown');
   assertEq(m.cursor, 0);
@@ -266,7 +266,7 @@ test('menu: guitar / bass variant (button AUTO, own hi-speed, part volume, rever
   });
   m.setChart(parseDTX('#BPM: 120\n#000A1: 01\n#003A1: 01\n'));
   const row = (item) => m.items.indexOf(item);
-  assertEq(m.itemCount, 23);
+  assertEq(m.itemCount, 24);
   // 並び: 自動演奏 / AUTO プリセット / 自動演奏詳細 / … / BGM 音量 / メトロノーム / リバース / LEFT / 空ピックで BAD / ループ演奏 / …
   assertDeepEq([0, 1, 2, 3].map((i) => m.itemName(i)), ['自動演奏', 'AUTO プリセット', '自動演奏詳細', 'ノーツ表示調整']);
   assertDeepEq([9, 10, 11, 12, 13, 14].map((i) => m.itemName(i)), ['BGM 音量', 'メトロノーム', 'リバース', 'LEFT(左利き)', '空ピックで BAD', 'ループ演奏']);

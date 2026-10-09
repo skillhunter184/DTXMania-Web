@@ -176,8 +176,9 @@
         <p data-i18n-html="help.midi"><b>電子ドラム</b>: 設定の「電子ドラム(MIDI)」で「電子ドラムを使う」を押して開く。パッドの割り当ては叩いて登録するか、機種のプリセットを適用。叩いたパッドの行き先は同じ欄のモニタで確かめられます。</p>
         <p data-i18n-html="help.menu"><b>トレーニングメニュー</b>: ↑↓ 項目 / ←→ 変更(Ctrl で 10 段) / Enter 決定 / Esc 戻る・終了 / F1 AUTO 切替</p>
         <p data-i18n-html="help.seek"><b>譜面の確認</b>: 停止中・一時停止中は画面上部(ギター / ベースの横画面は判定ラインが上にあるので画面下部。リバースでは上部)のシークバーで前後に送れます。バーをドラッグ(離すと小節頭に吸着)、◀ ▶ で 1 つ送り、◀◀ ▶▶ で 10 送り、バーの上でホイール。メニューの「現在位置」でも ←→ で送れます(Ctrl で 10 段)。送った位置から「演奏開始」で始まります(「リスタート」は曲頭・ループ開始位置から)。</p>
+        <p data-i18n-html="help.replay"><b>リプレイ</b>: 演奏を止めたあと(曲末まで弾いたあと)、メニューかプレイバーの「リプレイ」で直前の演奏を見直せます(ループ演奏では直前の 1 周)。実際に叩いた時刻に、判定の色の枠のゴーストノーツが流れます(灰色はチップの無い打鍵・空ピック)。ゴーストノーツがチップより後から来れば遅く、先に来れば早く叩いています。リプレイ中も演奏速度・ハイスピードを変えられ、一時停止中はシークバーで前後に送れます。リプレイしても成績は変わりません。</p>
         <p data-i18n-html="help.touch"><b>タッチ</b>: レーンの列をタップで打鍵。メニューは「☰ メニュー」から。値の行は ◀ ▶ で変更、動作の行はタップで実行。</p>
-        <p data-i18n-html="help.items"><b>メニュー項目</b>: 自動演奏 / AUTO プリセット(ギター / ベースのみ) / 自動演奏詳細(レーン別・ボタン別 AUTO) / ノーツ表示調整 / 判定タイミング調整 / ハイスピード / 演奏速度 / 開始待ち時間 / ドラム音量(ギター / ベース音量) / BGM 音量 / メトロノーム / リバース・LEFT(左利き)・空ピックで BAD(ギター / ベースのみ) / ループ演奏 / ループ位置単位 / ループ終了位置 / ループ開始位置 / 現在位置 / 演奏開始・停止 / リスタート / 一時停止 / トレーニング終了</p>
+        <p data-i18n-html="help.items"><b>メニュー項目</b>: 自動演奏 / AUTO プリセット(ギター / ベースのみ) / 自動演奏詳細(レーン別・ボタン別 AUTO) / ノーツ表示調整 / 判定タイミング調整 / ハイスピード / 演奏速度 / 開始待ち時間 / ドラム音量(ギター / ベース音量) / BGM 音量 / メトロノーム / リバース・LEFT(左利き)・空ピックで BAD(ギター / ベースのみ) / ループ演奏 / ループ位置単位 / ループ終了位置 / ループ開始位置 / 現在位置 / 演奏開始・停止 / リスタート / 一時停止 / リプレイ / トレーニング終了</p>
         <p data-i18n="help.misc">待機中に叩くと音だけ鳴ります(ウォーミングアップ)。ループ区間の折り返しごとに開始待ち時間を置きます。成績はどこにも保存しません。</p>
       </div>
     </details>
@@ -198,6 +199,7 @@
       <button id="btn-start" class="pb" title="演奏開始 / 停止" data-i18n-title="play.startStop">▶</button>
       <button id="btn-restart" class="pb" title="リスタート" data-i18n-title="play.restart">⟲</button>
       <button id="btn-pause" class="pb" title="一時停止 / 再開" data-i18n-title="play.pause">⏸</button>
+      <button id="btn-replay" class="pb text" title="直前の演奏をリプレイ / 停止" data-i18n="play.replay" data-i18n-title="play.replayTitle" hidden>リプレイ</button>
       <button id="btn-fullscreen" class="pb" title="全画面" data-i18n-title="play.fullscreen">⛶</button>
       <button id="btn-menu" class="pb" title="トレーニングメニュー" data-i18n-title="play.menu">☰</button>
     </div>

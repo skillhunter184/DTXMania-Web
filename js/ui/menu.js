@@ -12,7 +12,9 @@ import {
 import { LANE_COUNT, LANE_NAMES, INSTRUMENT } from '../core/dtx.js';
 import { t } from '../i18n.js';
 
-export const MENU_COMMAND = { NONE: 'none', START_STOP: 'startStop', RESTART: 'restart', PAUSE_RESUME: 'pauseResume', QUIT: 'quit' };
+export const MENU_COMMAND = {
+  NONE: 'none', START_STOP: 'startStop', RESTART: 'restart', PAUSE_RESUME: 'pauseResume', REPLAY: 'replay', QUIT: 'quit',
+};
 
 // 「ドラム音量」「BGM 音量」「メトロノーム」「現在位置」は本アプリの追加項目(元実装のトレーニングメニューには無い。
 // メトロノームは元実装では Config の ON/OFF)。音量とメトロノームは演奏中でも耳で合わせられるように、位置は停止中に
@@ -22,31 +24,32 @@ export const MENU_COMMAND = { NONE: 'none', START_STOP: 'startStop', RESTART: 'r
 // 「LEFT」(NX GuitarLeft / BassLeft)・「空ピックで BAD」(NX GuitarLight / BassLight の裏返し)が加わる
 // (元実装はギター / ベースのトレーニングを持たない。項目の並びはドラムに合わせ、プリセットは自動演奏詳細の前、
 // リバース・LEFT・空ピックは音量の後ろに置いた)。
+// 「リプレイ」も本アプリの追加(直前の演奏を見直す。js/game/replay.js)。動作の行で、一時停止の後ろに置く。
 export const ITEM = {
   AUTO: 0, AUTO_DETAIL: 1, NOTE_OFFSET: 2, JUDGE_OFFSET: 3, HI_SPEED: 4, PLAY_SPEED: 5, START_WAIT: 6,
   DRUM_VOLUME: 7, BGM_VOLUME: 8,
   LOOP: 9, LOOP_UNIT: 10, LOOP_END: 11, LOOP_BEGIN: 12, POSITION: 13,
   START_STOP: 14, RESTART: 15, PAUSE: 16, QUIT: 17,
-  REVERSE: 18, AUTO_PRESET: 19, METRONOME: 20, GB_BAD: 21, LEFT: 22,
+  REVERSE: 18, AUTO_PRESET: 19, METRONOME: 20, GB_BAD: 21, LEFT: 22, REPLAY: 23,
 };
-// 項目名の文言のキー(js/i18n.js。ITEM の番号の順)。演奏開始 / 一時停止は状態で、音量は楽器で変わるので itemName で選ぶ
+// 項目名の文言のキー(js/i18n.js。ITEM の番号の順)。演奏開始 / 一時停止 / リプレイは状態で、音量は楽器で変わるので itemName で選ぶ
 const ITEM_NAMES = [
   'menu.autoPlay', 'menu.autoDetail', 'menu.noteOffset', 'menu.judgeOffset', 'menu.hiSpeed',
   'menu.playSpeed', 'menu.startWait', 'menu.drumVolume', 'menu.bgmVolume', 'menu.loop', 'menu.loopUnit',
   'menu.loopEnd', 'menu.loopBegin', 'menu.position', 'menu.start', 'menu.restart', 'menu.pause', 'menu.quit',
-  'menu.reverse', 'menu.autoPreset', 'menu.metronome', 'menu.gbBad', 'menu.left',
+  'menu.reverse', 'menu.autoPreset', 'menu.metronome', 'menu.gbBad', 'menu.left', 'menu.replay',
 ];
 /** メイン画面の項目の並び(ドラムは元実装の順に、追加項目を挟む)。 */
 const DRUM_ITEMS = [
   ITEM.AUTO, ITEM.AUTO_DETAIL, ITEM.NOTE_OFFSET, ITEM.JUDGE_OFFSET, ITEM.HI_SPEED, ITEM.PLAY_SPEED, ITEM.START_WAIT,
   ITEM.DRUM_VOLUME, ITEM.BGM_VOLUME, ITEM.METRONOME, ITEM.LOOP, ITEM.LOOP_UNIT, ITEM.LOOP_END, ITEM.LOOP_BEGIN, ITEM.POSITION,
-  ITEM.START_STOP, ITEM.RESTART, ITEM.PAUSE, ITEM.QUIT,
+  ITEM.START_STOP, ITEM.RESTART, ITEM.PAUSE, ITEM.REPLAY, ITEM.QUIT,
 ];
 const GB_ITEMS = [
   ITEM.AUTO, ITEM.AUTO_PRESET, ITEM.AUTO_DETAIL, ITEM.NOTE_OFFSET, ITEM.JUDGE_OFFSET, ITEM.HI_SPEED, ITEM.PLAY_SPEED,
   ITEM.START_WAIT, ITEM.DRUM_VOLUME, ITEM.BGM_VOLUME, ITEM.METRONOME, ITEM.REVERSE, ITEM.LEFT, ITEM.GB_BAD,
   ITEM.LOOP, ITEM.LOOP_UNIT, ITEM.LOOP_END, ITEM.LOOP_BEGIN, ITEM.POSITION,
-  ITEM.START_STOP, ITEM.RESTART, ITEM.PAUSE, ITEM.QUIT,
+  ITEM.START_STOP, ITEM.RESTART, ITEM.PAUSE, ITEM.REPLAY, ITEM.QUIT,
 ];
 /** 自動演奏詳細のボタン名(ギター / ベース。js/game/training.js の gbAutoLanes の並び)。 */
 const GB_AUTO_NAMES = ['R', 'G', 'B', 'Y', 'P', 'PICK', 'WAIL'];
@@ -155,6 +158,8 @@ export class TrainingMenu {
     /** 空ピックで BAD にするか(ギター / ベース。アプリ設定の gbLight の裏返し)を返す / 切り替える。 */
     this.getGbBad = hooks.getGbBad || null;
     this.onGbBadToggle = hooks.onGbBadToggle || null;
+    /** リプレイを始められるか(直前の演奏があって待機中)。リプレイ中かどうかは replaying(毎フレーム外から入れる)。 */
+    this.canReplay = hooks.canReplay || null;
     /** AUTO プリセットで上書きする前のカスタムの組み合わせ(GB_AUTO_COUNT 桁の '0' / '1')。 */
     this._gbCustom = null;
     this.page = 'main';
@@ -163,6 +168,7 @@ export class TrainingMenu {
     this.measureTimes = [0];
     this.playing = false;
     this.paused = false;
+    this.replaying = false;
     this.stateText = '';
     this.root = null;
     this.rows = [];
@@ -383,6 +389,13 @@ export class TrainingMenu {
         // 待機中でも決定音は鳴らし、指示は演奏側が無視する(元実装と同じ)
         this.sound.decide();
         return MENU_COMMAND.PAUSE_RESUME;
+      case ITEM.REPLAY:
+        if (this.isDisabled(this.cursor)) {
+          this.sound.cancel(); // 見せる演奏が無い・演奏中
+          return MENU_COMMAND.NONE;
+        }
+        this.sound.decide();
+        return MENU_COMMAND.REPLAY;
       case ITEM.QUIT:
         this.sound.cancel();
         return MENU_COMMAND.QUIT;
@@ -506,7 +519,7 @@ export class TrainingMenu {
   isAction(i) {
     if (this.page === 'auto') return i === this._autoBack;
     const item = this._item(i);
-    return item === ITEM.START_STOP || item === ITEM.RESTART || item === ITEM.PAUSE || item === ITEM.QUIT;
+    return item === ITEM.START_STOP || item === ITEM.RESTART || item === ITEM.PAUSE || item === ITEM.REPLAY || item === ITEM.QUIT;
   }
 
   isDisabled(i) {
@@ -515,6 +528,7 @@ export class TrainingMenu {
       case ITEM.LOOP_UNIT: case ITEM.LOOP_END: case ITEM.LOOP_BEGIN: return !this.s.loop;
       case ITEM.PAUSE: return !this.playing;
       case ITEM.POSITION: return !this.canSeek || !this.canSeek();
+      case ITEM.REPLAY: return !this.replaying && !(this.canReplay && this.canReplay());
       default: return false;
     }
   }
@@ -549,6 +563,7 @@ export class TrainingMenu {
     const item = this._item(i);
     if (item === ITEM.START_STOP) return t(this.playing ? 'menu.stop' : 'menu.start');
     if (item === ITEM.PAUSE) return t(this.paused ? 'menu.resume' : 'menu.pause');
+    if (item === ITEM.REPLAY) return t(this.replaying ? 'menu.replayStop' : 'menu.replay');
     if (item === ITEM.DRUM_VOLUME && this.gb) return t(this.instrument === INSTRUMENT.BASS ? 'menu.bassVolume' : 'menu.guitarVolume');
     return t(ITEM_NAMES[item]);
   }

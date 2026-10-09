@@ -217,6 +217,7 @@ export class GuitarRenderer extends Renderer {
 
     this._drawChips(g, p, dist, yBar, tLo, tHi, JL, rev, ds);
     this._drawWailChips(g, p, yBar, tHi, ppm, ds);
+    this._drawGhosts(g, p, yBar, tLo, tHi);
     g.restore();
 
     // 押さえているボタンを点ける(元実装に無い追加)・ピックの絵・判定ライン(チップの上)
@@ -361,6 +362,27 @@ export class GuitarRenderer extends Renderer {
     const tLo = p.drawMs - ((BEHIND_PX + GB_WAIL_CHIP.h) / ppm) * p.ratio;
     for (let i = lowerBound(w, tLo); i < w.length && w[i].timeMs <= tHi; i++) {
       if (!hit[i]) this.skin.drawGbWail(g, yBar(w[i].timeMs), ds);
+    }
+  }
+
+  /**
+   * ゴーストノーツ(リプレイ中。元実装に無い追加)。ピックした時刻(判定に使った時刻)に、押さえていたボタンの列へチップの
+   * 形で描く(AUTO のボタンはチップのとおり。LEFT ならボタンの列)。何も押さえていないピックは OPEN の棒の形。色は判定。
+   */
+  _drawGhosts(g, p, yBar, tLo, tHi) {
+    const ghosts = p.ghosts;
+    if (!ghosts) return;
+    const left = this._left();
+    for (let i = lowerBound(ghosts, tLo); i < ghosts.length && ghosts[i].timeMs <= tHi; i++) {
+      const gh = ghosts[i];
+      const yc = yBar(gh.timeMs) + 1.5;
+      if (!gh.bits) {
+        this._drawGhostRect(g, GB_OPEN.x, yc + GB_OPEN.top, GB_OPEN.w, GB_OPEN.h, gh.judge);
+        continue;
+      }
+      for (let lane = 0; lane < GB_LANE_COUNT; lane++) {
+        if (gh.bits & GB_LANE_BITS[lane]) this._drawGhostRect(g, gbChipX(gbSlot(lane, left)), yc - GB_CHIP_H / 2, GB_CHIP_W, GB_CHIP_H, gh.judge);
+      }
     }
   }
 
@@ -535,6 +557,9 @@ export class GuitarRenderer extends Renderer {
       }
       skin.drawGbOpen(g, GB_VIEW_Y0 - 5, ds);
       skin.drawGbWail(g, GB_VIEW_Y1, ds);
+      // ゴーストノーツ(リプレイ。全部の色と OPEN の形)
+      for (let k = 0; k < 6; k++) this._drawGhostRect(g, gbChipX(k % GB_LANE_COUNT), GB_VIEW_Y1 - 30 - k * 9, GB_CHIP_W, GB_CHIP_H, k - 1);
+      this._drawGhostRect(g, GB_OPEN.x, GB_VIEW_Y0 - 6, GB_OPEN.w, GB_OPEN.h, 0);
       this._drawPillar(g, (age * 2) % PILLAR_MS, age % 2 === 1, ds);
       g.font = `20px ${FONT}`;
       g.textBaseline = 'middle';

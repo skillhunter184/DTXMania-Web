@@ -59,6 +59,7 @@ export class GuitarPlayer extends Player {
 
     // 入力の状態
     this.fretHeld = new Array(GB_LANE_COUNT).fill(false);
+    this._liveFrets = new Array(GB_LANE_COUNT).fill(false); // 実際に押しているボタン(リプレイ中は fretHeld が記録のボタンになる)
     this.pendingPick = null; // 押さえ方を待っているピック {perfTs, inputMs, target, deadline, touch}
     this._pendingTimer = 0;
     this._lastTouchPick = -1e9;
@@ -130,14 +131,19 @@ export class GuitarPlayer extends Player {
     super.applySettings();
     const s = this.settings;
     for (let i = 0; i < GB_AUTO_COUNT; i++) this.gbAuto[i] = !!s.gbAutoLanes[i];
+    this._deriveGbAuto();
+    this.reverse = !!s.gbReverse;
+    this.left = !!s.gbLeft;
+  }
+
+  /** ボタン別 AUTO(gbAuto)から決まる値。 */
+  _deriveGbAuto() {
     this.autoMask = gbAutoMask(this.gbAuto);
     this.autoPick = this.gbAuto[GB_AUTO_PICK];
     this.autoWail = this.gbAuto[GB_AUTO_WAIL];
     this.allAuto = allGbAuto(this.gbAuto);
     this.scoreRev = gbScoreRevise(this.gbAuto, this.config.autoAddGage);
     this.achievementRevise = gbAchievementRevise(this.gbAuto);
-    this.reverse = !!s.gbReverse;
-    this.left = !!s.gbLeft;
   }
 
   // ---- 位置 ----
@@ -178,6 +184,7 @@ export class GuitarPlayer extends Player {
    * 予約し、前の音もその時刻で止める。#WAV の無い音は鳴らさないが、前の音は止める(NX は止めてから鳴らそうとする)。
    */
   _playPart(wavId, vol, when, noteIndex = -1) {
+    this._recordSound({ wavId, vol, noteIndex }, when); // 鳴らせない音も記録する(前の音を止めるので)
     if (this.lastVoice) this.audio.stopVoice(this.lastVoice, when);
     this.lastVoice = null;
     if (!wavId || !this.audio.hasBuffer(wavId)) return null;
@@ -281,36 +288,49 @@ export class GuitarPlayer extends Player {
     }
     const held = this.heldBits;
     if (fretsMatch(n.bits, held, this._matchMask)) {
-      this._fireLanes(n.bits, held, perfNow, false);
+      this._fire(this._fireBits(n.bits, held, false), perfNow);
       if (this.holdSegment < LN_TICK_MAX) {
         const nextAt = n.timeMs + Math.floor(((this.holdSegment + 1) * (n.lnEndMs - n.timeMs)) / 6);
         if (songMs >= nextAt) {
-          this.stats.lnTick(this.auto ? 1 : this.scoreRev);
-          this.holdSegment++;
-          this.lnTickAt = perfNow;
+          const ev = { kind: 'tick', rev: this.auto ? 1 : this.scoreRev };
+          this._record(ev);
+          this._applyTick(ev, perfNow);
         }
       }
       return;
     }
     const lag = (songMs + this._w(this.judgeOffsetMs) - n.lnEndMs) / this.ratio;
     if (HitRanges.default.judge(Math.abs(lag)) >= JUDGE.MISS) {
-      // 止めるのはこのロングノートの音だけ(先読みで予約した次のチップの音を巻き込まない)
-      const v = this._noteVoice[this.holdIndex];
-      this.holdIndex = -1;
-      if (v) {
-        this.audio.stopVoice(v);
-        if (this.lastVoice === v) this.lastVoice = null;
-      }
+      this._record({ kind: 'release' });
+      this._applyRelease(true);
     }
   }
 
-  /** チップの構成ボタンのうち、AUTO か押さえているボタンにファイアを出す(OPEN の成功は全ボタン)。 */
-  _fireLanes(bits, held, perfNow, open) {
-    const mask = this._matchMask;
-    for (let i = 0; i < GB_LANE_COUNT; i++) {
-      const bit = GB_LANE_BITS[i];
-      if (open || ((bits & bit) && ((mask & bit) || (held & bit)))) this.fireAt[i] = perfNow;
+  _applyTick(ev, perfNow) {
+    this.stats.lnTick(ev.rev);
+    this.holdSegment++;
+    this.lnTickAt = perfNow;
+  }
+
+  /** ロングノートを途中で離した: 保持を解いて、このロングノートの音だけを止める(先読みで予約した次のチップの音を巻き込まない)。 */
+  _applyRelease(stopSound) {
+    const v = this.holdIndex >= 0 ? this._noteVoice[this.holdIndex] : null;
+    this.holdIndex = -1;
+    if (v && stopSound) {
+      this.audio.stopVoice(v);
+      if (this.lastVoice === v) this.lastVoice = null;
     }
+  }
+
+  /** チップの構成ボタンのうち、AUTO か押さえているボタン(OPEN の成功は全ボタン)のビット。ファイアを出すレーン。 */
+  _fireBits(bits, held, open) {
+    if (open) return ALL_FRETS;
+    return bits & (this._matchMask | held);
+  }
+
+  /** ビットのレーンにファイアを出す。 */
+  _fire(bits, perfNow) {
+    for (let i = 0; i < GB_LANE_COUNT; i++) if (bits & GB_LANE_BITS[i]) this.fireAt[i] = perfNow;
   }
 
   /** AUTO ピック(と自動演奏)でバーを通過したチップ(NX 4297-4418)。 */
@@ -320,8 +340,7 @@ export class GuitarPlayer extends Player {
     const demo = this.auto;
     const hit = demo || autoPickHits(n.bits, held, this.gbAuto);
     const chipAuto = demo || isAutoChip(n, this.gbAuto);
-    const successOpen = n.open && hit;
-    this._fireLanes(n.bits, held, perfNow, successOpen);
+    const fire = this._fireBits(n.bits, held, n.open && hit);
     let j = JUDGE.MISS;
     let lagMs = 0;
     if (hit) {
@@ -329,7 +348,7 @@ export class GuitarPlayer extends Player {
       lagMs = chipAuto ? 0 : this.judgeOffsetMs;
       j = chipAuto ? JUDGE.PERFECT : this.config.gbHitRanges.judge(Math.abs(lagMs));
     }
-    this._judgeChip(i, j, lagMs, perfNow, { auto: chipAuto, demo });
+    this._judgeChip(i, j, lagMs, perfNow, { auto: chipAuto, demo, fire });
     if (!n.soundScheduled) {
       n.soundScheduled = true;
       this._playPart(n.wavId, demo ? this.config.chipVolume : this.config.autoChipVolume, undefined, i);
@@ -339,27 +358,48 @@ export class GuitarPlayer extends Player {
 
   /**
    * チップ 1 個の判定の確定(NX tProcessChipHit のギター / ベース)。ロングノートの始端なら保持を始め、Miss はどのチップでも
-   * 保持を解く。opts.auto は AUTO チップ、opts.demo は自動演奏(js/game/gbjudge.js GbStats.judge)。
+   * 保持を解く。opts.auto は AUTO チップ、opts.demo は自動演奏(js/game/gbjudge.js GbStats.judge)、opts.fire はファイアを
+   * 出すレーンのビット。成績と演出は _applyChip に分け、リプレイは記録からそれだけを当て直す。
    */
   _judgeChip(i, j, lagMs, perfNow, opts) {
-    const n = this.notes[i];
-    this.judged[i] = true;
+    const ev = {
+      kind: 'judge', i, judge: j, lagMs, auto: !!opts.auto, demo: !!opts.demo,
+      rev: this.scoreRev, addGage: !!this.config.autoAddGage, fire: opts.fire || 0,
+    };
+    this._record(ev);
+    this._applyChip(ev, perfNow);
+  }
+
+  _applyChip(ev, perfNow) {
+    const j = ev.judge;
+    const n = this.notes[ev.i];
+    this.judged[ev.i] = true;
     if (n.lnEndMs >= 0 && j !== JUDGE.MISS) {
-      this.holdIndex = i;
+      this.holdIndex = ev.i;
       this.holdSegment = 0;
     }
-    this.stats.judge(j, {
-      auto: !!opts.auto, demo: !!opts.demo, lagMs, rev: this.scoreRev, autoAddGage: !!this.config.autoAddGage,
-    });
+    this.stats.judge(j, { auto: ev.auto, demo: ev.demo, lagMs: ev.lagMs, rev: ev.rev, autoAddGage: ev.addGage });
     if (j === JUDGE.MISS) this.holdIndex = -1;
     this.judgeDisplayUntil = perfNow + 500;
     const g = this.gbJudge;
     g.at = perfNow;
     g.judge = j;
-    g.lagMs = lagMs;
-    g.auto = !!opts.auto || !!opts.demo;
+    g.lagMs = ev.lagMs;
+    g.auto = ev.auto || ev.demo;
     g.bad = false;
+    this._fire(ev.fire, perfNow);
     if (j === JUDGE.PERFECT || j === JUDGE.GREAT || j === JUDGE.GOOD) this.comboJumpAt = perfNow;
+  }
+
+  /** Light OFF の空ピック(BAD)。 */
+  _applyBad(perfNow) {
+    this.stats.bad();
+    const g = this.gbJudge;
+    g.at = perfNow;
+    g.judge = JUDGE.MISS;
+    g.lagMs = 0;
+    g.auto = false;
+    g.bad = true;
   }
 
   // ---- 入力 ----
@@ -375,12 +415,15 @@ export class GuitarPlayer extends Player {
    */
   fret(lane, down, perfTimeStamp) {
     if (lane < 0 || lane >= GB_LANE_COUNT) return;
+    this._liveFrets[lane] = !!down;
+    if (this.replay) return; // リプレイ中は記録したボタンを見せる(押している状態だけ覚えておき、止めたら戻す)
     const perfNow = performance.now();
+    // 記録の時刻は押した時刻(一時停止中は止めた位置。押さえ方は再開後も続くので記録する)
+    if (this._take) this._evMs = this.songAt(Number.isFinite(perfTimeStamp) ? Math.min(this.realFromPerf(perfTimeStamp), this.nowReal()) : this.nowReal());
     const p = this.pendingPick;
     if (p && Number.isFinite(perfTimeStamp) && perfTimeStamp > p.deadline) this._resolvePendingPick(perfNow);
-    this.fretHeld[lane] = !!down;
-    if (down) this.fretAt[lane] = perfNow;
-    else this.fretUpAt[lane] = perfNow;
+    this._record({ kind: 'fret', lane, down: !!down });
+    this._applyFret(lane, !!down, perfNow);
     const q = this.pendingPick;
     if (!q || this.state !== PLAYER_STATE.PLAYING) return;
     // 離して合うこともある(和音から単音へ移るときに、余分なボタンをピックの直後に離した)。ただしタッチは、レーンを押す = 押さえて
@@ -392,6 +435,12 @@ export class GuitarPlayer extends Player {
     if (this._tryPick(q, perfNow)) this._cancelPendingPick();
   }
 
+  _applyFret(lane, down, perfNow) {
+    this.fretHeld[lane] = down;
+    if (down) this.fretAt[lane] = perfNow;
+    else this.fretUpAt[lane] = perfNow;
+  }
+
   /**
    * ピック(押した瞬間)。待機中は音と演出だけ。自動演奏・AUTO ピックの間は使わない((変更) NX は AUTO ピックでも手動のピックを
    * 受け付けて早いピックで先に当たることがあるが、DTXManiaAI と同じく無視する。ボタンだけを練習するための設定なので)。
@@ -399,7 +448,7 @@ export class GuitarPlayer extends Player {
    * @param {{touch?: boolean}} [opts] タッチ(和音の指が揃うまで長めに待つ。続けて押した指は同じピックにまとめる)
    */
   pick(perfTimeStamp, opts = {}) {
-    if (!this.chart || this.state === PLAYER_STATE.PAUSED) return;
+    if (!this.chart || this.state === PLAYER_STATE.PAUSED || this.replay) return;
     const perfNow = performance.now();
     const touch = !!opts.touch;
     if (touch) {
@@ -413,14 +462,18 @@ export class GuitarPlayer extends Player {
       this._playEmptyPick(this._pinnedSong);
       return;
     }
-    if (this.auto || this.autoPick) return;
-    // 押した時刻までのフレームの処理を先に済ませる(ドラムの hit と同じ)。待っているピックはここで決着させる
     const realIn = this.realFromPerf(perfTimeStamp);
     const songIn = this.songAt(Math.min(realIn, this.nowReal()));
+    this._evMs = songIn;
+    this._record({ kind: 'pick' }); // ピックの絵を光らせる(AUTO ピックの間の手動のピックも光る)
+    if (this.auto || this.autoPick) return;
+    // 押した時刻までのフレームの処理を先に済ませる(ドラムの hit と同じ)。待っているピックはここで決着させる
     const settleMs = this.loopEndMs === -1 ? songIn : Math.min(songIn, this.loopEndMs);
+    this._evMs = settleMs;
     this.scheduleAutoSounds(settleMs, realIn);
     this.processJudgement(settleMs, realIn, perfNow);
     if (this.pendingPick) this._resolvePendingPick(perfNow);
+    this._evMs = songIn;
     const inputMs = songIn + this._w(this.judgeOffsetMs);
     const target = findPickTarget(this.notes, this.judged, inputMs, this._w(this.config.gbHitRanges.okMs));
     const p = {
@@ -431,7 +484,9 @@ export class GuitarPlayer extends Player {
     this.pendingPick = p;
     clearTimeout(this._pendingTimer);
     this._pendingTimer = setTimeout(() => {
-      if (this.pendingPick === p) this._resolvePendingPick(performance.now());
+      if (this.pendingPick !== p) return;
+      this._evMs = this.songMs;
+      this._resolvePendingPick(performance.now());
     }, Math.max(0, p.deadline - perfNow) + 1);
   }
 
@@ -446,8 +501,10 @@ export class GuitarPlayer extends Player {
     const j = this.config.gbHitRanges.judge(Math.abs(lagChart) / this.ratio);
     if (j === JUDGE.MISS) return false;
     const successOpen = n.open && (held & ~this._matchMask & ALL_FRETS) === 0;
-    this._fireLanes(n.bits, held, perfNow, successOpen);
-    this._judgeChip(i, j, lagChart / this.ratio, perfNow, { auto: false });
+    const fire = this._fireBits(n.bits, held, successOpen);
+    // ゴースト: ピックの時刻(判定に使った時刻)に、弾いた押さえ方(AUTO のボタンはチップのとおり)を判定の色で
+    this._ghostPick(p.inputMs, held | (n.bits & this._matchMask), j);
+    this._judgeChip(i, j, lagChart / this.ratio, perfNow, { auto: false, fire });
     n.soundScheduled = true;
     this._playPart(n.wavId, this.config.chipVolume, undefined, i);
     this._reserveWailing(p.inputMs);
@@ -461,16 +518,17 @@ export class GuitarPlayer extends Player {
     this._cancelPendingPick();
     if (!this.chart) return; // 終了した
     if (this._tryPick(p, perfNow)) return;
+    this._ghostPick(p.inputMs, p.touch ? p.touchBits : this.heldBits, -1);
     this._playEmptyPick(p.songMs);
     if (!this.config.light) {
-      this.stats.bad();
-      const g = this.gbJudge;
-      g.at = perfNow;
-      g.judge = JUDGE.MISS;
-      g.lagMs = 0;
-      g.auto = false;
-      g.bad = true;
+      this._record({ kind: 'bad' });
+      this._applyBad(perfNow);
     }
+  }
+
+  /** ピックのゴースト(時刻・押さえていたボタンのビット(0 は OPEN)・判定。判定なしは -1)。 */
+  _ghostPick(timeMs, bits, judge) {
+    if (this._take) this._take.ghost({ timeMs, bits, judge });
   }
 
   _cancelPendingPick() {
@@ -491,7 +549,7 @@ export class GuitarPlayer extends Player {
    * (NX DoWailingFromQueue。加点は今のコンボで決まる。AUTO のウェイリングは成立させるだけで加点しない)。
    */
   wail(perfTimeStamp) {
-    if (!this.chart || this.state === PLAYER_STATE.PAUSED) return;
+    if (!this.chart || this.state === PLAYER_STATE.PAUSED || this.replay) return;
     const perfNow = performance.now();
     if (this.isStandby) {
       this.wailAt = perfNow;
@@ -500,7 +558,9 @@ export class GuitarPlayer extends Player {
     const realIn = this.realFromPerf(perfTimeStamp);
     const songIn = this.songAt(Math.min(realIn, this.nowReal()));
     const settleMs = this.loopEndMs === -1 ? songIn : Math.min(songIn, this.loopEndMs);
+    this._evMs = settleMs;
     this.processJudgement(settleMs, realIn, perfNow);
+    this._evMs = songIn;
     this._doWailing(songIn, perfNow, this.auto || this.autoWail);
   }
 
@@ -511,14 +571,22 @@ export class GuitarPlayer extends Player {
     for (const idx of queue) {
       if (this.wailDone[idx]) continue;
       if (songMs - this.wailing[idx].timeMs > accept) continue;
-      this.wailDone[idx] = this.wailHit[idx] = true;
-      this.wailAt = perfNow;
-      if (!autoWail) this.stats.wail(this.scoreRev);
       // ウェイリング音(0x2F の通過したもの。ギターだけ)。NX の既定スキンの歓声は持っていないので、無ければ鳴らさない
-      if (this.wailSoundWavId && this.audio.hasBuffer(this.wailSoundWavId)) {
-        const { volume, pan } = AudioEngine.gainPan(this.chart, this.wailSoundWavId);
-        this.audio.play(this.wailSoundWavId, { volume: volume * this.config.autoChipVolume, pan, rate: this.ratio, bus: 'bgm' });
-      }
+      const sound = this.wailSoundWavId && this.audio.hasBuffer(this.wailSoundWavId) ? this.wailSoundWavId : '';
+      const ev = { kind: 'wail', i: idx, auto: autoWail, rev: this.scoreRev, sound };
+      this._record(ev);
+      this._applyWail(ev, perfNow, true);
+    }
+  }
+
+  /** ウェイリングの成立(AUTO のウェイリングは加点しない)。withSound でウェイリング音も鳴らす。 */
+  _applyWail(ev, perfNow, withSound) {
+    this.wailDone[ev.i] = this.wailHit[ev.i] = true;
+    this.wailAt = perfNow;
+    if (!ev.auto) this.stats.wail(ev.rev);
+    if (withSound && ev.sound) {
+      const { volume, pan } = AudioEngine.gainPan(this.chart, ev.sound);
+      this.audio.play(ev.sound, { volume: volume * this.config.autoChipVolume, pan, rate: this.ratio, bus: 'bgm' });
     }
   }
 
@@ -527,7 +595,77 @@ export class GuitarPlayer extends Player {
    * 一時停止中のシークで数え直していない)に全部のチップを判定したときだけ。
    */
   _onSongEnd() {
-    if (this.stats.lapJudged >= this.notes.length) this.stats.fullComboBonus(this.allAuto && !this.auto);
+    if (this.stats.lapJudged < this.notes.length) return;
+    const ev = { kind: 'fullCombo', allAuto: this.allAuto && !this.auto };
+    this._record(ev);
+    this.stats.fullComboBonus(ev.allAuto);
+  }
+
+  // ---- 記録とリプレイ(js/game/replay.js。Player の差し替え) ----
+
+  _takeInit() {
+    return { frets: this.fretHeld.slice() };
+  }
+
+  _autoFlags() {
+    const f = super._autoFlags();
+    f.gbAuto = this.gbAuto.slice();
+    return f;
+  }
+
+  _useAutoFlags(f) {
+    if (!f) return;
+    super._useAutoFlags(f);
+    for (let i = 0; i < GB_AUTO_COUNT; i++) this.gbAuto[i] = !!f.gbAuto[i];
+    this._deriveGbAuto();
+  }
+
+  /** リプレイの始めの状態: テイクより前のウェイリングチップは済み、押さえているボタンはテイクを始めたときのもの。 */
+  _replayInit(take) {
+    for (let i = 0; i < this.wailing.length; i++) this.wailDone[i] = this.wailHit[i] = this.wailing[i].timeMs < take.startMs;
+    this.wailQueue = [];
+    this.holdIndex = -1;
+    this.holdSegment = 0;
+    const frets = take.init ? take.init.frets : null;
+    for (let i = 0; i < GB_LANE_COUNT; i++) this.fretHeld[i] = !!(frets && frets[i]);
+  }
+
+  /**
+   * リプレイの毎フレーム: 押さえ続けているロングノートのファイア(加点と離したことは記録の出来事で来る)。
+   * 終端を過ぎたら保持を解く(演奏の _updateHold と同じ)。
+   */
+  _replayFrame(songMs, perfNow) {
+    if (this.holdIndex < 0) return;
+    const n = this.notes[this.holdIndex];
+    if (songMs >= n.lnEndMs) {
+      this.holdIndex = -1;
+      return;
+    }
+    const held = this.heldBits;
+    if (fretsMatch(n.bits, held, this._matchMask)) this._fire(this._fireBits(n.bits, held, false), perfNow);
+  }
+
+  /** リプレイを止めたら、押さえているボタンを実際のものに戻す。 */
+  _afterReplay() {
+    for (let i = 0; i < GB_LANE_COUNT; i++) this.fretHeld[i] = this._liveFrets[i];
+  }
+
+  _applyEvent(ev, perfNow, quiet) {
+    switch (ev.kind) {
+      case 'judge': this._applyChip(ev, perfNow); break;
+      case 'bad': this._applyBad(perfNow); break;
+      case 'wail': this._applyWail(ev, perfNow, !quiet); break;
+      case 'tick': this._applyTick(ev, perfNow); break;
+      case 'release': this._applyRelease(!quiet); break;
+      case 'fullCombo': this.stats.fullComboBonus(ev.allAuto); break;
+      case 'fret': this._applyFret(ev.lane, ev.down, perfNow); break;
+      case 'pick': this.pickAt = perfNow; break;
+      default: break;
+    }
+  }
+
+  _replaySound(s, when) {
+    this._playPart(s.wavId, s.vol, when, s.noteIndex); // パートの音として鳴らす(前の音を止める。覚えておくのも _playPart)
   }
 
   /** 達成率(%)。自動演奏はドラムと同じく補正しない。 */

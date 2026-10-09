@@ -136,6 +136,13 @@ footer.note { margin-top: 24px; }
 #playbar > * { pointer-events: auto; }
 #playbar .pb { background: rgba(20, 26, 40, 0.75); color: var(--text); border: 1px solid var(--line); border-radius: 8px; min-width: 44px; height: 40px; font-size: 1.1em; cursor: pointer; }
 #playbar .pb:active { background: #38466b; }
+/* 文字のボタン(リプレイ)。狭い画面ではこれだけ縮めて、☰ などのボタンを画面の外へ押し出さない */
+#playbar .pb.text { font-size: 0.85em; padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+@media (max-width: 420px) {
+  #playbar { gap: 4px; padding-left: 4px; padding-right: 4px; }
+}
+#playbar .pb:disabled { color: var(--muted); cursor: default; }
+#playbar .pb.on { background: rgba(110, 60, 20, 0.85); border-color: rgb(255, 170, 90); color: rgb(255, 200, 150); }
 #play-title { flex: 1; min-width: 0; color: var(--muted); font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 4px #000; }
 body.desktop #playbar .pb { opacity: 0.35; }
 body.desktop #playbar:hover .pb { opacity: 1; }
@@ -156,6 +163,7 @@ body.desktop #playbar:hover .pb { opacity: 1; }
 #seek-track { position: relative; flex: 1; min-width: 60px; height: 36px; cursor: pointer; }
 #seek-track::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 8px; margin-top: -4px; background: rgba(255,255,255,0.14); border: 1px solid var(--line); border-radius: 4px; }
 #seek-loop { position: absolute; top: 50%; height: 8px; margin-top: -4px; background: rgba(102,217,255,0.45); border-radius: 2px; }
+#seek-loop.replay { background: rgba(255,170,90,0.5); } /* リプレイ中はテイクの範囲(シークできるのはその中だけ) */
 #seek-fill { position: absolute; left: 0; top: 50%; height: 8px; margin-top: -4px; background: var(--accent2); border-radius: 4px 0 0 4px; }
 #seek-thumb { position: absolute; top: 4px; width: 4px; height: 28px; margin-left: -2px; background: #fff; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0,0,0,0.6); }
 #seekbar.dragging #seek-thumb { width: 6px; margin-left: -3px; }
