@@ -54,9 +54,15 @@ const DEFAULT_CONFIG = {
   skinPath: LEGACY_SKIN_BASE,
   hhGroup: 0,
   ftGroup: 0,
-  cyGroup: 0,
+  // (変更) CY だけ既定を共通にする(NX / DTXManiaAI は 0 = 打ち分け)。RD のチップは CY 列に CY と同じ絵で描くので
+  // (js/ui/skin.js)、打ち分けでは見分けられず、右のシンバル 1 枚で叩くと片方のチップが全部 MISS になる
+  // (GM の既定ではライドの 51 が RD。GITADORA から変換した譜面は右のシンバルを CY と RD に書き分けている)
+  cyGroup: 1,
   bdGroup: 0,
 };
+
+/** 保存する設定の版(config.configRev)。上げたら App の constructor に移し替えを足す。1: CY グループの既定を共通に変えた */
+const CONFIG_REV = 1;
 
 /** ミリ秒を m:ss.s で表す(シークバーの位置表示)。 */
 function clockText(ms) {
@@ -84,6 +90,9 @@ class App {
     // 以前の「スキン画像(assets/skin)を使う」(skinImages)は、そのフォルダを指定したスキンへ移す
     if (saved.skin === undefined && saved.skinImages !== undefined) this.config.skin = saved.skinImages ? 'folder' : 'default';
     delete this.config.skinImages;
+    // 版 1 より前に保存した CY グループの 0 は、既定のままの値と見分けられないので一度だけ共通に直す(以後は選んだ値を残す)
+    if (!(Number(saved.configRev) >= 1)) this.config.cyGroup = 1;
+    this.config.configRev = CONFIG_REV;
     // 壊れている / 古い形式の config でもレーン単位で直す(1 レーンの欠落で他 9 レーンを捨てない)
     const norm = normalizeBindings(this.config.bindings);
     this.config.bindings = norm.bindings;

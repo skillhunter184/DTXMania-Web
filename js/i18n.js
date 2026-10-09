@@ -153,8 +153,10 @@ export const STRINGS = {
   'settings.bd2': ['2: 左右ペダルのみ', '2: Left/right pedals only'],
   'settings.bd3': ['3: どっちも BD', '3: Both as BD'],
   'settings.groupNote': [
-    '譜面に LC が無ければ HH は共通、RD が無ければ CY は共通に自動で下がります。タッチの CY 列は常に RD も拾います。',
-    'If the chart has no LC, HH falls back to shared; if it has no RD, CY falls back to shared. The CY column on touch always picks up RD too.',
+    'CY は既定で共通です(RD のチップは CY 列に同じ絵で描くため。NX の既定は打ち分け)。'
+      + '譜面に LC が無ければ HH は共通、RD が無ければ CY は共通に自動で下がります。タッチの CY 列は常に RD も拾います。',
+    'CY is shared by default (RD chips are drawn in the CY column with the same image; NX defaults to separate). '
+      + 'If the chart has no LC, HH falls back to shared; if it has no RD, CY falls back to shared. The CY column on touch always picks up RD too.',
   ],
 
   // ---- index.html: 操作方法 ----
@@ -509,9 +511,9 @@ export const STRINGS = {
   ],
   'midi.presetApplied': [
     'プリセット「{name}」を適用しました。キーボードの割り当てはそのままです。'
-      + 'RD は空になります(RD のチップは打ち分けの CY グループを「共通」にすると CY のパッドで叩けます)。',
+      + 'RD は空になります(CY グループが既定の「共通」なら、RD のチップも CY のパッドで叩けます)。',
     'Applied the preset "{name}". The keyboard bindings are unchanged. '
-      + 'RD is now empty (set CY Group under Lane Grouping to "Shared" to hit RD chips with the CY pad).',
+      + 'RD is now empty (with CY Group under Lane Grouping at its default "Shared", the CY pad also hits RD chips).',
   ],
   'midi.minSet': [
     '{lane} の下限を {v} にしました({v} 以下の強さの打鍵を捨てます)',

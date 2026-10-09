@@ -9,6 +9,7 @@
 | `js/core/setdef.js` | DTXManiaAI `Song/SetDef.cs` | |
 | `js/core/synth.js` | DTXManiaAI `Audio/DrumSynth.cs` | 乱数列は非互換(音色は同等) |
 | `js/game/hitranges.js` | DTXManiaAI `Core/HitRanges.cs`, `Core/DrumGroups.cs` | |
+| (変更) CY グループの既定 | NX / DTXManiaAI `CYGroup=0`(打ち分け。`docs/spec/judge-score.md` §1.3) | 既定を 1(共通)に(`DEFAULT_CONFIG.cyGroup`、js/main.js)。元実装は RD に専用のレーンがあるが、本アプリは RD のチップを CY 列に CY と同じ絵で描くので、打ち分けでは見分けられず、右のシンバル 1 枚で叩くと片方のチップが全部 MISS になる(GM の既定ではライドの 51 が RD。GITADORA から変換した譜面は右のシンバルを CY と RD に書き分けている)。打ち分けは設定で選べる。版 1(`config.configRev`)より前に保存した設定の 0 は既定のままの値と見分けられないので、読み込み時に一度だけ共通に直す。譜面に RD が無いときの自動降格、タッチの CY 列が RD も拾うのは今までどおり |
 | `js/game/judge.js` | DTXManiaAI `Core/PerformanceResult.cs` + `PerformanceStage.Judge/AutoJudge` | `docs/spec/judge-score.md` |
 | `js/game/training.js` | DTXManiaAI `Core/TrainingSettings.cs` | |
 | `js/game/player.js` | DTXManiaAI `Stages/PerformanceStage.cs`(トレーニング分岐) | `docs/spec/training-state.md` |

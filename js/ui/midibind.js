@@ -281,7 +281,7 @@ export function presetNotesForLane(preset, lane) {
  * ノート別しきい値は書かない(レーン別の下限に任せる)。GITADORA に無い RD の MIDI は空にする:
  * 残すと GITADORA の右シンバル(ライドの 51/52/53)が CY に入る一方で RD 側に 59/53 が残り、
  * 1 枚のライドパッドがボウで CY・エッジで RD を鳴らす割れた状態になるため(22:90-94)。
- * RD のチップを叩きたいときは CY グループを「共通」にする。
+ * RD のチップは CY グループが既定の「共通」なら CY のパッドで叩ける。
  */
 export function applyPreset(notes, preset) {
   const next = copyNotes(notes);

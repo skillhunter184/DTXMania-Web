@@ -201,11 +201,11 @@ test('player: output latency — chip sounds are scheduled at realAt(S) and in-t
   }
 });
 
-function makePlayer(dtxText) {
+function makePlayer(dtxText, config = {}) {
   const audio = fakeAudio();
   const settings = new TrainingSettings();
   settings.startWaitMs = 0;
-  const player = new Player({ audio, settings, config: {} });
+  const player = new Player({ audio, settings, config });
   const chart = parseDTX(dtxText);
   return { audio, settings, player, chart };
 }
@@ -548,8 +548,8 @@ const framesEvery = (step, from, to) => {
 };
 
 /** 譜面時刻で並べた打鍵({t, pad})とフレーム(譜面時刻)を時刻順に流し、成績を返す(同時刻は打鍵が先)。 */
-async function playScript(dtx, { hits = [], frames = [], afterLoad } = {}) {
-  const { audio, player, chart, settings } = makePlayer(dtx);
+async function playScript(dtx, { hits = [], frames = [], afterLoad, config } = {}) {
+  const { audio, player, chart, settings } = makePlayer(dtx, config);
   await player.load({ resolve() { return null; }, readBytes() {} }, chart);
   if (afterLoad) afterLoad(settings, player);
   const perf = () => audio.ctx.currentTime * 1000;
@@ -592,6 +592,18 @@ test('player: misses up to a hit are settled before the hit, so the result does 
   }
   assertDeepEq(results[2], results[0], '100 ms frames = 360 Hz frames');
   assertDeepEq(results[1], results[0], '60 Hz frames = 360 Hz frames');
+});
+
+test('player: CY Group shared lets one right cymbal hit both CY and RD chips (both drawn in the CY column)', async () => {
+  // CY 2000・RD 3000 を、RD のパッド(GM の既定でライドの 51)→ CY のパッドの順で叩く。
+  // 打ち分けではどちらも MISS(GITADORA から変換した譜面は右のシンバルを小節ごとに CY と RD に書き分けていることがある)
+  const dtx = `#BPM: 120\n#00016: ${chipRow(4, [0])}\n#00019: ${chipRow(4, [2])}\n`;
+  const hits = [{ t: 2005, pad: 9 }, { t: 3005, pad: 8 }];
+  const frames = framesEvery(10, 10, 3400);
+  const shared = await playScript(dtx, { hits, frames, config: { cyGroup: 1 } });
+  assertDeepEq(shared.counts, [2, 0, 0, 0, 0], 'shared: both Perfect');
+  const separate = await playScript(dtx, { hits, frames, config: { cyGroup: 0 } });
+  assertDeepEq(separate.counts, [0, 0, 0, 0, 2], 'separate: the other pad misses both');
 });
 
 test('player: a hit just after an invisible chip is not swallowed by it before the next frame', async () => {
