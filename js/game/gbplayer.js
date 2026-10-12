@@ -200,16 +200,17 @@ export class GuitarPlayer extends Player {
 
   /**
    * AUTO ピックのチップの音は判定より先に予約する(成否に関わらず鳴る。NX は強制 Miss でもチップの音を鳴らす)。
-   * 自動演奏はドラムの自動演奏と同じく手動の音量、AUTO ピックは AUTO の音量(NX のモニタ音量)。
+   * 自動演奏(とループの助走)はドラムの自動演奏と同じく手動の音量、AUTO ピックは AUTO の音量(NX のモニタ音量)。
    */
   _scheduleNoteSounds(limit) {
     while (this._autoSoundIndex < this.notes.length && this.notes[this._autoSoundIndex].timeMs <= limit) {
       const i = this._autoSoundIndex++;
       const n = this.notes[i];
       if (this.judged[i] || n.soundScheduled) continue;
-      if (!this.auto && !this.autoPick) continue;
+      const leadIn = n.timeMs < this.leadInEndMs;
+      if (!this.auto && !this.autoPick && !leadIn) continue;
       n.soundScheduled = true;
-      this._playPart(n.wavId, this.auto ? this.config.chipVolume : this.config.autoChipVolume, this.ctxTimeAt(n.timeMs), i);
+      this._playPart(n.wavId, this.auto || leadIn ? this.config.chipVolume : this.config.autoChipVolume, this.ctxTimeAt(n.timeMs), i);
     }
   }
 
@@ -242,6 +243,7 @@ export class GuitarPlayer extends Player {
   processJudgement(songMs, realNow, perfNow) {
     if (this.pendingPick && perfNow >= this.pendingPick.deadline) this._resolvePendingPick(perfNow);
     this._latch(songMs);
+    this._leadIn(songMs, perfNow);
     if (this.auto || this.autoPick) {
       for (let i = 0; i < this.notes.length; i++) {
         if (this.judged[i]) continue;
@@ -354,6 +356,50 @@ export class GuitarPlayer extends Player {
       this._playPart(n.wavId, demo ? this.config.chipVolume : this.config.autoChipVolume, undefined, i);
     }
     if (hit) this._reserveWailing(n.timeMs + this._w(chipAuto ? 0 : this.judgeOffsetMs));
+  }
+
+  /**
+   * ループの助走(Player.leadInStartMs の注記)。チップに加えてウェイリングチップも自動で成立させる(加点しない)。
+   * ロングノートは押さえ続けない(加点が成績に入るので)。
+   */
+  _leadIn(songMs, perfNow) {
+    super._leadIn(songMs, perfNow);
+    const end = this.leadInEndMs;
+    for (let i = 0; i < this.wailing.length; i++) {
+      const w = this.wailing[i];
+      if (w.timeMs >= end || w.timeMs > songMs) break;
+      if (this.wailDone[i]) continue;
+      const ev = { kind: 'lead', wail: i };
+      this._record(ev);
+      this._applyLeadIn(ev, perfNow);
+    }
+  }
+
+  _leadInNote(i, perfNow) {
+    const n = this.notes[i];
+    const ev = { kind: 'lead', i, fire: n.open ? ALL_FRETS : n.bits };
+    this._record(ev);
+    this._applyLeadIn(ev, perfNow);
+    if (!n.soundScheduled) {
+      n.soundScheduled = true;
+      this._playPart(n.wavId, this.config.chipVolume, undefined, i);
+    }
+  }
+
+  _applyLeadIn(ev, perfNow) {
+    if (ev.wail !== undefined) {
+      this.wailDone[ev.wail] = this.wailHit[ev.wail] = true;
+      this.wailAt = perfNow;
+      return;
+    }
+    this.judged[ev.i] = true;
+    const g = this.gbJudge;
+    g.at = perfNow;
+    g.judge = JUDGE.PERFECT;
+    g.lagMs = 0;
+    g.auto = true;
+    g.bad = false;
+    this._fire(ev.fire, perfNow);
   }
 
   /**
@@ -475,7 +521,7 @@ export class GuitarPlayer extends Player {
     if (this.pendingPick) this._resolvePendingPick(perfNow);
     this._evMs = songIn;
     const inputMs = songIn + this._w(this.judgeOffsetMs);
-    const target = findPickTarget(this.notes, this.judged, inputMs, this._w(this.config.gbHitRanges.okMs));
+    const target = findPickTarget(this.notes, this.judged, inputMs, this._w(this.config.gbHitRanges.okMs), this.leadInEndMs);
     const p = {
       perfTs: perfTimeStamp, inputMs, songMs: songIn, target, deadline: perfTimeStamp + PICK_SETTLE_MS[touch ? 'touch' : 'key'], touch,
       touchBits: touch ? this.heldBits : 0, // タッチのピックの押さえ方(ピックの時点の押さえ方 + 待っている間に置いた指)
@@ -520,7 +566,9 @@ export class GuitarPlayer extends Player {
     if (this._tryPick(p, perfNow)) return;
     this._ghostPick(p.inputMs, p.touch ? p.touchBits : this.heldBits, -1);
     this._playEmptyPick(p.songMs);
-    if (!this.config.light) {
+    // ループの助走の中で、区間のチップに届かないピックは BAD にしない(助走は成績に数えない)
+    const inLeadIn = p.inputMs + this._w(this.config.gbHitRanges.okMs) < this.leadInEndMs;
+    if (!this.config.light && !inLeadIn) {
       this._record({ kind: 'bad' });
       this._applyBad(perfNow);
     }
@@ -537,9 +585,12 @@ export class GuitarPlayer extends Player {
     this._pendingTimer = 0;
   }
 
-  /** ピックが当たったら、近くのウェイリングチップ(± 140 ms・過去優先・未消化)を予約する(NX 5484-5490)。 */
+  /**
+   * ピックが当たったら、近くのウェイリングチップ(± 140 ms・過去優先・未消化)を予約する(NX 5484-5490)。
+   * ループの助走のウェイリングチップは自動で成立させるので予約しない。
+   */
   _reserveWailing(inputMs) {
-    const w = findPickTarget(this.wailing, this.wailDone, inputMs, this._w(WAIL_RESERVE_MS));
+    const w = findPickTarget(this.wailing, this.wailDone, inputMs, this._w(WAIL_RESERVE_MS), this.leadInEndMs);
     // (変更) 同じチップを 2 度予約しない(NX は 2 回のピックで同じチップを 2 度積み、1 回のウェイリングで 2 度加点する)
     if (w >= 0 && this.wailQueue.indexOf(w) < 0) this.wailQueue.push(w);
   }
@@ -653,6 +704,7 @@ export class GuitarPlayer extends Player {
   _applyEvent(ev, perfNow, quiet) {
     switch (ev.kind) {
       case 'judge': this._applyChip(ev, perfNow); break;
+      case 'lead': this._applyLeadIn(ev, perfNow); break;
       case 'bad': this._applyBad(perfNow); break;
       case 'wail': this._applyWail(ev, perfNow, !quiet); break;
       case 'tick': this._applyTick(ev, perfNow); break;

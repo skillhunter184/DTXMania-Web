@@ -1,7 +1,7 @@
 import { test, assert, assertEq, assertNear, assertDeepEq } from './runner.js';
 import { scoreDelta, PlayStats, achievementRate, rankOf, GAUGE_INITIAL, autoLaneRevise } from '../js/game/judge.js';
 import { HitRanges, searchLanes, tieHitsAll, applyChartDowngrade, JUDGE } from '../js/game/hitranges.js';
-import { TrainingSettings, stepLoopTime, stepLoopBegin, stepLoopEnd, formatLoopTime, LOOP_UNIT } from '../js/game/training.js';
+import { TrainingSettings, stepLoopTime, stepLoopBegin, stepLoopEnd, formatLoopTime, loopLeadInStart, LOOP_UNIT } from '../js/game/training.js';
 import { parseDTX } from '../js/core/dtx.js';
 import { Player, PLAYER_STATE, SCROLL_BASE_PX_PER_MS, buildMetronome } from '../js/game/player.js';
 import { AudioEngine } from '../js/core/audio.js';
@@ -129,6 +129,17 @@ test('training: loop stepping in measure/second units with non-overlap clamp', (
   assertEq(stepLoopBegin(0, 4000, 1, LOOP_UNIT.MEASURE, times, dur), 2000);
   assertEq(formatLoopTime(2500, LOOP_UNIT.MEASURE, times), '001 小節');
   assertEq(formatLoopTime(2500, LOOP_UNIT.SECOND, times), '2.5 s');
+});
+
+test('training: the loop lead-in starts one bar before the loop begin (the same fraction inside a bar)', () => {
+  const times = [0, 2000, 4000, 7000, 9000]; // 4000〜7000 だけ 3000 ms の小節
+  assertEq(loopLeadInStart(4000, times), 2000, 'a bar head → the previous bar head');
+  assertEq(loopLeadInStart(7000, times), 4000, 'one whole bar, even a longer one');
+  assertEq(loopLeadInStart(5500, times), 3000, 'mid-bar (half way) → half way into the previous bar');
+  assertEq(loopLeadInStart(10000, times), 8000, 'past the last bar line: that bar is taken as long as the one before');
+  assertEq(loopLeadInStart(2000, times), 0, 'the first bar → the lead-in bar at the top');
+  assertEq(loopLeadInStart(1000, times), 0, 'not before the top');
+  assertEq(loopLeadInStart(4000, [0]), 4000, 'no bar lines: no lead-in');
 });
 test('training: settings clamp and JSON round trip', () => {
   const s = TrainingSettings.fromJSON({ noteOffsetMs: 5000, judgeOffsetMs: -200, scrollSpeedTenth: 0, playSpeed: 41, startWaitMs: 1234, loop: 1, loopUnit: 7, autoLanes: '10100000001' });
@@ -313,26 +324,26 @@ test('player: loop turnaround resets counts/score but keeps gauge; wait re-enter
     settings.loopBeginMs = 2000;
     settings.loopEndMs = 4000;
     settings.startWaitMs = 300;
-    player.update(perf(), null); // standby follows loop begin
-    assertEq(player.startMs, 2000);
+    player.update(perf(), null); // standby follows loop begin(助走の始め = 1 小節前の曲頭)
+    assertEq(player.startMs, 0);
     assertEq(player.judged[0], false, 'chip exactly at loop begin stays hittable');
     player.command('startStop');
     audio.advance(400);
     player.update(perf(), null);
     assertEq(player.state, PLAYER_STATE.PLAYING);
-    assertNear(player.songMs, 2000, 1, 'song starts at loop begin when the wait expires (no catch-up)');
+    assertNear(player.songMs, 0, 1, 'song starts at the lead-in when the wait expires (no catch-up)');
     // 2000 のチップは放置(ミス)、2500 を叩く
-    audio.advance(500);
+    audio.advance(2500);
     player.update(perf(), null);
     assertEq(player.stats.counts[4], 1, 'first chip missed');
     player.hit(5, perf());
     assertEq(player.stats.counts[0], 1, 'second chip perfect');
     const gauge = player.stats.gauge;
-    // 4000 を超えると折り返し → START IN
+    // 4000 を超えると折り返し → START IN(助走の始めで待つ)
     audio.advance(1600);
     player.update(perf(), null);
     assertEq(player.state, PLAYER_STATE.START_IN);
-    assertEq(player.startMs, 2000);
+    assertEq(player.startMs, 0);
     assertEq(player.stats.counts[0], 0, 'counts reset on loop');
     assertEq(player.stats.counts[4], 0, 'miss count reset on loop');
     assertEq(player.stats.gauge, gauge, 'gauge kept on loop');
@@ -340,6 +351,68 @@ test('player: loop turnaround resets counts/score but keeps gauge; wait re-enter
     audio.advance(400);
     player.update(perf(), null);
     assertEq(player.state, PLAYER_STATE.PLAYING);
+  } finally {
+    performance.now = origPerfNow;
+  }
+});
+
+test('player: a loop starts one bar early; the lead-in chips play automatically and are not counted', async () => {
+  // BPM 120(1 小節 2000 ms)。SD 4000〜5500 の 4 分(助走)、6000・6500(ループ 6000〜8000)
+  const { audio, player, chart, settings } = makePlayer('#BPM: 120\n#00112: 01010101\n#00212: 01010000\n');
+  await player.load({ resolve() { return null; }, readBytes() {} }, chart);
+  settings.loop = true;
+  settings.loopBeginMs = 6000;
+  settings.loopEndMs = 8000;
+  const perf = () => audio.ctx.currentTime * 1000;
+  const origPerfNow = performance.now;
+  performance.now = perf;
+  try {
+    player.update(perf(), null);
+    assertEq(player.startMs, 4000, 'stands by one bar before the loop begin');
+    assertEq(player.judged[0], false, 'the lead-in chips are shown');
+    player.command('startStop');
+    player.update(perf(), null);
+    assertEq(player.state, PLAYER_STATE.PLAYING);
+    assertNear(player.songMs, 4000, 1);
+    let t0 = perf() - player.songMs; // 譜面 0 の実時間(折り返すたびに置き直す)
+    const at = (ms) => {
+      audio.advance(t0 + ms - perf());
+      player.update(perf(), null);
+    };
+    at(5000);
+    assertDeepEq(player.judged.slice(0, 4), [true, true, true, false], 'the passed lead-in chips are played');
+    assertEq(player.judgeStr[3].auto, true, 'shown as AUTO');
+    const sd = audio.played.filter((p) => p.key === 'synth3' && p.when !== undefined);
+    assert(sd.length >= 3 && sd.every((p) => p.volume === 1), 'scheduled at the full chip volume like the auto play');
+    // 助走のチップ(5500)の手前で叩いても取らない(空打ち)
+    at(5480);
+    player.hit(3, perf());
+    assertEq(player.judged[3], false, 'a hit does not take a lead-in chip');
+    at(5500);
+    assertEq(player.judged[3], true);
+    assertDeepEq(player.stats.counts, [0, 0, 0, 0, 0], 'the lead-in is not counted');
+    assertDeepEq(player.stats.countsIncAuto, [0, 0, 0, 0, 0]);
+    assertEq(player.stats.gauge, GAUGE_INITIAL);
+    // ループのチップは今までどおり
+    at(6005);
+    player.hit(3, perf());
+    at(6505);
+    player.hit(3, perf());
+    assertDeepEq(player.stats.counts, [2, 0, 0, 0, 0]);
+    assertEq(player.stats.combo, 2);
+    // 折り返しも助走の始めへ。テイクは助走から
+    at(8010);
+    assertNear(player.songMs, 4000, 1, 'wraps to the lead-in');
+    assertEq(player.judged[0], true, 'the lead-in chip right at the wrap position is played at once');
+    assertEq(player.judged[1], false, 'the rest of the lead-in comes again');
+    const lap1 = player.lastTake;
+    assertEq(lap1.startMs, 4000);
+    assertEq(lap1.events.filter((e) => e.kind === 'lead').length, 4);
+    // 助走だけで止めたテイクは何も起きていない扱い(直前のテイクを残す)
+    t0 = perf() - player.songMs;
+    at(4600);
+    player.command('startStop');
+    assertEq(player.lastTake, lap1, 'a lap stopped in the lead-in does not replace the last take');
   } finally {
     performance.now = origPerfNow;
   }
@@ -373,10 +446,10 @@ test('player: seek while stopped moves the view silently and does not get pulled
   settings.loopBeginMs = 4000;
   settings.loopEndMs = 6000;
   player.update(32, null);
-  assertEq(Math.round(player.songMs), 4000, 'follows the loop begin when it changes');
+  assertEq(Math.round(player.songMs), 2000, 'follows the loop begin when it changes (from the lead-in, one bar before)');
 
   // 同じ位置へのシークは false(無駄な jumpTo を避ける)
-  assertEq(player.seekTo(4000), false);
+  assertEq(player.seekTo(2000), false);
   // 範囲外はクランプされる。閲覧はループ区間に縛らない
   player.seekTo(-500);
   assertEq(Math.round(player.songMs), 0, 'clamped to 0, not to the loop begin');
@@ -788,28 +861,28 @@ test('player: at a measure loop wrap the metronome keeps the loop-end click and 
   performance.now = perf;
   const times = () => clicks.map((c) => (c.accent ? 'A' : '') + Math.round(player.songAt(c.v.when * 1000)));
   try {
-    player.update(perf(), null); // 待機位置をループ開始へ
+    player.update(perf(), null); // 待機位置を助走の始め(ループ開始の 1 小節前 = 曲頭のリードイン)へ
     player.command('startStop');
     player.update(perf(), null);
     assertEq(player.state, PLAYER_STATE.PLAYING);
-    assertNear(player.songMs, 2000, 1);
-    audio.advance(1890);
+    assertNear(player.songMs, 0, 1);
+    audio.advance(3890);
     player.update(perf(), null); // 〜4090 まで予約: 終端(4000)の拍まで、その後ろ(4500)は予約しない
-    assertDeepEq(times(), ['A2000', '2500', '3000', '3500', 'A4000']);
-    const endClick = clicks[4].v;
+    assertDeepEq(times(), ['A0', '500', '1000', '1500', 'A2000', '2500', '3000', '3500', 'A4000']);
+    const endClick = clicks[8].v;
     audio.advance(120);
-    player.update(perf(), null); // 4010 → 折り返し
-    assertNear(player.songMs, 2000, 1, 'wrapped');
-    assertEq(clicks.length, 5, 'the loop-begin beat is not played again (the loop-end click is that beat)');
+    player.update(perf(), null); // 4010 → 折り返し(助走の始めへ)
+    assertNear(player.songMs, 0, 1, 'wrapped to the lead-in');
+    assertEq(clicks.length, 9, 'the beat it wraps to is not played again (the loop-end click is that beat)');
     assertEq(stopped.includes(endClick), false, 'the loop-end click is not cut off');
     audio.advance(400);
     player.update(perf(), null);
-    assertEq(clicks.length, 6);
-    assertEq(clicks[5].accent, false, 'next is the beat after the loop begin');
-    assertNear(player.songAt(clicks[5].v.when * 1000), 2500, 1);
+    assertEq(clicks.length, 10);
+    assertEq(clicks[9].accent, false, 'next is the beat after the wrap position');
+    assertNear(player.songAt(clicks[9].v.when * 1000), 500, 1);
     // 一時停止では止める
     player.command('pauseResume');
-    assert(stopped.includes(clicks[5].v), 'pause stops the clicks');
+    assert(stopped.includes(clicks[9].v), 'pause stops the clicks');
   } finally {
     performance.now = origPerfNow;
   }
@@ -836,7 +909,7 @@ test('metronome: the click sounds are synthesized once (the bar click is higher,
   assert(eng.clickBuffer(false) !== ca, 'two sounds');
 });
 
-test('player: with a start wait, the loop wrap keeps the loop-end click and starts again from the loop-begin beat', async () => {
+test('player: with a start wait, the loop wrap keeps the loop-end click and starts again from the beat it wraps to', async () => {
   const { audio, player, chart, settings } = makePlayer('#BPM: 120\n#00012: 01\n#00312: 01\n');
   const clicks = [];
   const stopped = [];
@@ -862,19 +935,19 @@ test('player: with a start wait, the loop wrap keeps the loop-end click and star
     audio.advance(500);
     player.update(perf(), null); // 開始待ちの後で演奏へ
     assertEq(player.state, PLAYER_STATE.PLAYING);
-    audio.advance(1890);
+    audio.advance(3890); // 助走(0〜2000)から始めて終端の手前まで
     player.update(perf(), null);
-    assertEq(clicks.length, 5, 'up to the loop-end click');
-    const endClick = clicks[4].v;
+    assertEq(clicks.length, 9, 'up to the loop-end click');
+    const endClick = clicks[8].v;
     audio.advance(120);
     player.update(perf(), null); // 折り返し → 開始待ち
     assertEq(player.state, PLAYER_STATE.START_IN);
     assertEq(stopped.includes(endClick), false, 'the loop-end click is not cut off by the start wait');
     audio.advance(500);
-    player.update(perf(), null); // 待ち終わり → 開始位置から
+    player.update(perf(), null); // 待ち終わり → 助走の始めから
     assertEq(player.state, PLAYER_STATE.PLAYING);
-    assertEq(clicks.length, 6, 'the loop-begin beat sounds again after the wait');
-    assertEq(clicks[5].accent, true);
+    assertEq(clicks.length, 10, 'the beat at the lead-in start sounds again after the wait');
+    assertEq(clicks[9].accent, true);
   } finally {
     performance.now = origPerfNow;
   }

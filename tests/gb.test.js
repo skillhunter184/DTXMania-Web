@@ -513,6 +513,51 @@ test('gb player: AUTO wailing gives no bonus; loop wrap resets stats like NX', a
   player.dispose();
 });
 
+test('gb player: the loop lead-in plays its chips and wailing automatically; a pick there takes nothing and is not BAD', async () => {
+  // BPM 120。R 4000・4500 とウェイリング 5000 が助走、R 6000 がループ(6000〜8000)
+  const text = ['#BPM: 120', '#WAV01: r.wav', '#00124: 01010000', '#00128: 00000100', '#00224: 01000000'].join('\n');
+  const { audio, player, settings } = await makeGb(text, INSTRUMENT.GUITAR);
+  settings.loop = true;
+  settings.loopBeginMs = 6000;
+  settings.loopEndMs = 8000;
+  player.config.light = false; // 空ピックは BAD
+  await withClock(audio, async (perf) => {
+    player.update(perf(), null);
+    assertEq(player.startMs, 4000, 'stands by one bar before the loop begin');
+    player.command('startStop');
+    player.update(perf(), null);
+    assertEq(player.state, PLAYER_STATE.PLAYING);
+    const t0 = perf() - player.songMs;
+    const at = (ms) => {
+      audio.advance(t0 + ms - perf());
+      player.update(perf(), null);
+    };
+    // 助走の R(4500)の手前で R を押さえてピック → 狙わない。区間のチップに届かないので BAD にもしない
+    at(4450);
+    player.fret(0, true, perf());
+    player.pick(perf());
+    at(4450 + PICK_SETTLE_MS.key + 1);
+    assertEq(player.judged[1], false, 'a pick does not take a lead-in chip');
+    assertEq(player.gbJudge.bad, false, 'no BAD in the lead-in');
+    player.fret(0, false, perf());
+    at(5100);
+    assertDeepEq([player.judged[0], player.judged[1]], [true, true], 'the lead-in chips are played');
+    assertEq(player.gbJudge.auto, true, 'shown as AUTO');
+    assertEq(player.wailHit[0], true, 'the lead-in wailing is done automatically');
+    assert(audio.played.some((p) => p.id === '01' && p.when !== undefined && p.volume === 1), 'the chip sound is scheduled at the full volume');
+    assertDeepEq(player.stats.counts, [0, 0, 0, 0, 0], 'the lead-in is not counted');
+    assertEq(player.stats.combo, 0);
+    assertEq(player.stats.trueScore, 0, 'no wailing bonus');
+    assertEq(player.stats.gauge, GAUGE_INITIAL);
+    // ループのチップは今までどおり
+    at(6000);
+    player.fret(0, true, perf());
+    player.pick(perf());
+    assertDeepEq(player.stats.counts, [1, 0, 0, 0, 0]);
+  });
+  player.dispose();
+});
+
 test('drum player: guitar and bass chips of a combined chart are accompaniment (mono per part)', async () => {
   const audio = fakeAudio();
   const settings = new TrainingSettings();

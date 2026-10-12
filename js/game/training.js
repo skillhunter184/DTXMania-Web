@@ -187,6 +187,25 @@ export class TrainingSettings {
 
 export { buildMeasureTimes, measureIndexAt };
 
+/** ループの助走の小節数(本アプリの追加。docs/architecture.md の「ループの助走」)。 */
+export const LOOP_LEAD_IN_MEASURES = 1;
+
+/**
+ * ループの助走の始め: 開始位置の measures 小節前。開始位置が小節の途中(秒単位のループ)なら、その小節の中の割合を
+ * 前の小節に写した位置。曲頭より前には出ない。
+ */
+export function loopLeadInStart(beginMs, measureTimes, measures = LOOP_LEAD_IN_MEASURES) {
+  const begin = Math.max(0, beginMs);
+  if (!measureTimes || measureTimes.length < 2 || measures <= 0) return begin;
+  const i = measureIndexAt(measureTimes, begin);
+  const k = i - measures;
+  if (k < 0) return 0;
+  // 最後の小節線より後ろは、長さが分からないので前の小節と同じ長さとみなす
+  const cur = i + 1 < measureTimes.length ? measureTimes[i + 1] - measureTimes[i] : measureTimes[i] - measureTimes[i - 1];
+  const frac = cur > 0 ? Math.min(1, (begin - measureTimes[i]) / cur) : 0;
+  return measureTimes[k] + frac * (measureTimes[k + 1] - measureTimes[k]);
+}
+
 /**
  * ループ位置を delta 段ぶん動かした時刻を返す。
  * 小節単位: 小節頭へスナップして ±1 小節(小節の途中での「−」はまずその小節頭へ寄せる)。

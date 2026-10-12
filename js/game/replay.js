@@ -74,9 +74,9 @@ export class Take {
     if (songMs > this.endMs) this.endMs = songMs;
   }
 
-  /** 何も起きなかった(叩く前に止めた)テイクは残さない。 */
+  /** 何も起きなかった(叩く前に止めた)テイクは残さない。ループの助走を自動で叩いただけ('lead')も何も起きていない扱い。 */
   get empty() {
-    return !this.events.length && !this.ghosts.length;
+    return !this.events.some((ev) => ev.kind !== 'lead') && !this.ghosts.length;
   }
 
   /** 締める: 終わりより後ろに予約した音を捨て、音とゴーストを時刻順に並べ、終わったときの成績と AUTO の状態を写す。 */

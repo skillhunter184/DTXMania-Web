@@ -108,11 +108,12 @@ export function fretsMatch(chipBits, pressedBits, autoMask) {
  * ピックで狙うチップ(NX r指定時刻に一番近いChip の「過去優先」。DTXManiaAI HandlePick)。
  * 窓(ms、譜面時刻差)の中に過去(時刻 ≤ inputMs)の未判定チップがあれば距離に関係なくいちばん新しい過去のチップ、
  * 無ければ窓の中の最初の未来のチップ。どちらも無ければ -1。notes は時刻順。
+ * fromMs より前のチップは見ない(ループの助走のチップ。自動で叩くので狙わせない)。
  */
-export function findPickTarget(notes, judged, inputMs, windowMs) {
+export function findPickTarget(notes, judged, inputMs, windowMs, fromMs = -Infinity) {
   let past = -1;
   for (let i = 0; i < notes.length; i++) {
-    if (judged[i]) continue;
+    if (judged[i] || notes[i].timeMs < fromMs) continue;
     const dt = notes[i].timeMs - inputMs;
     if (dt <= 0) {
       if (-dt <= windowMs) past = i; // 時刻順に見ているので、最後に残ったものがいちばん近い過去のチップ

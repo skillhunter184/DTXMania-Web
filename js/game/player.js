@@ -8,12 +8,13 @@
 // 状態: standby(待機) / startin(開始待ち) / playing / paused。
 // 自動発音(BGM・SE・AUTO チップ)は AudioContext に先読みスケジュールして正確に鳴らす。
 // 演奏の通しを記録し、リプレイで同じ順に当て直す(元実装に無い追加。js/game/replay.js)。
+// ループ演奏は開始位置の 1 小節前から流し、その助走のチップは自動で叩いて成績に数えない(元実装に無い追加)。
 
 import { LANE_COUNT, INSTRUMENT } from '../core/dtx.js';
 import { AudioEngine } from '../core/audio.js';
 import { HitRanges, JUDGE, searchLanes, tieHitsAll, applyChartDowngrade, LEFT_BASS_DRUM_CHANNEL } from './hitranges.js';
 import { PlayStats } from './judge.js';
-import { buildMeasureTimes, PLAY_SPEED_MIN, PLAY_SPEED_MAX, AUTO_LANE_LBD } from './training.js';
+import { buildMeasureTimes, loopLeadInStart, PLAY_SPEED_MIN, PLAY_SPEED_MAX, AUTO_LANE_LBD } from './training.js';
 import { Take, cloneStats } from './replay.js';
 import { isMutingSeChannel } from '../core/dtx.js';
 import { t } from '../i18n.js';
@@ -335,10 +336,23 @@ export class Player {
     }
   }
 
-  /** 待機位置(ループ ON なら開始位置、それ以外は曲頭)。 */
+  /** 待機位置(ループ ON なら助走の始め = 開始位置の 1 小節前、それ以外は曲頭)。 */
   get standbyPositionMs() {
     const s = this.settings;
-    return s.loop && s.loopRangeValid ? Math.max(0, s.loopBeginMs) : 0;
+    return s.loop && s.loopRangeValid ? this.leadInStartMs(s.loopBeginMs) : 0;
+  }
+
+  /**
+   * ループの助走の始め(本アプリの追加)。ループの開始位置でいきなり譜面が来ると構えられないので、演奏は開始位置の
+   * 1 小節前から流し(演奏開始・リスタート・折り返し)、開始位置より前のチップ(助走)は自動で叩いて成績に数えない。
+   */
+  leadInStartMs(loopBeginMs) {
+    return loopLeadInStart(loopBeginMs, this.measureTimes);
+  }
+
+  /** 助走の終わり(= ループの開始位置)。これより前の未判定のチップは助走のチップ。ループしていなければ -1。 */
+  get leadInEndMs() {
+    return this.loopBeginMs;
   }
 
   /**
@@ -398,15 +412,16 @@ export class Player {
   }
 
   /**
-   * 演奏を始められる位置へ寄せる。ループ中は区間内に収める
+   * 演奏を始められる位置へ寄せる。ループ中は助走の始めから区間の終わりまでに収める
    * (終了位置ちょうどだと最初のフレームで折り返しが走って成績が消えるので 1 ms 手前まで)。
    */
   clampStartMs(ms) {
     let v = Math.round(Math.max(0, Math.min(this.playableMaxMs, ms || 0)));
     const s = this.settings;
     if (s.loop && s.loopRangeValid) {
+      const lo = this.leadInStartMs(s.loopBeginMs);
       const hi = Math.max(s.loopBeginMs, s.loopEndMs - 1); // 区間が 1 ms 以下でも下限を割らない
-      v = Math.max(s.loopBeginMs, Math.min(hi, v));
+      v = Math.max(lo, Math.min(hi, v));
     }
     return v;
   }
@@ -455,7 +470,7 @@ export class Player {
     const at = this.clampStartMs(want);
     if (at !== want) {
       const s = this.settings;
-      const outOfLoop = s.loop && s.loopRangeValid && (want < s.loopBeginMs || want > s.loopEndMs - 1);
+      const outOfLoop = s.loop && s.loopRangeValid && (want < this.leadInStartMs(s.loopBeginMs) || want > s.loopEndMs - 1);
       this.showStatus(t(outOfLoop ? 'play.toLoop' : 'play.beforeEnd'));
     }
     this.enterStandby(true, at);
@@ -686,9 +701,9 @@ export class Player {
       return;
     }
 
-    // ループ折り返し(テイクは 1 周ごとに区切る)
+    // ループ折り返し(テイクは 1 周ごとに区切る)。戻るのは助走の始め(開始位置の 1 小節前)
     if (this.loopEndMs !== -1 && songMs > this.loopEndMs) {
-      const begin = this.loopBeginMs === -1 ? 0 : this.loopBeginMs;
+      const begin = this.leadInStartMs(this.loopBeginMs === -1 ? 0 : this.loopBeginMs);
       if (this._take) this._take.reach(this.loopEndMs);
       this._endTake();
       // 終端までに鳴らしたメトロノームのクリックは止めない(終端の拍線のクリックがそのまま継ぎ目の拍。短い音なので、
@@ -700,12 +715,12 @@ export class Player {
       this.stats.resetForLoop();
       songMs = begin;
       if (this.settings.startWaitMs > 0) {
-        this.beginStartWait(begin); // 待ったあとは開始位置の拍から鳴らす(beginPlaying が位置を合わせ直す)
+        this.beginStartWait(begin); // 待ったあとは戻った位置の拍から鳴らす(beginPlaying が位置を合わせ直す)
         for (const v of clicks) this._metroVoices.add(v);
         return;
       }
       for (const v of clicks) this._metroVoices.add(v);
-      // 終端の拍が鳴ったなら、開始位置の同じ拍は鳴らさない(小節単位のループでは終端と開始はどちらも小節線)
+      // 終端の拍が鳴ったなら、戻った位置の同じ拍は鳴らさない(小節単位のループでは終端と戻る位置はどちらも小節線)
       const next = this.metro[this._metroIndex];
       if (seamClick && next && next.timeMs === begin) this._metroIndex++;
       this._beginTake(begin);
@@ -833,16 +848,20 @@ export class Player {
     else this._scheduleNoteSounds(limit);
   }
 
-  /** 弾いている楽器の AUTO チップの音を limit(譜面時刻)まで予約する(判定は processJudgement で songMs 到達時に行う)。 */
+  /**
+   * 弾いている楽器の AUTO チップ(と助走のチップ)の音を limit(譜面時刻)まで予約する(判定は processJudgement で
+   * songMs 到達時に行う)。助走は自動演奏と同じ音量。
+   */
   _scheduleNoteSounds(limit) {
     while (this._autoSoundIndex < this.notes.length && this.notes[this._autoSoundIndex].timeMs <= limit) {
       const i = this._autoSoundIndex++;
       const n = this.notes[i];
       if (this.judged[i] || n.soundScheduled) continue;
       const laneAuto = this.laneAuto[n.lane];
-      if (!this.auto && !laneAuto) continue;
+      const leadIn = n.timeMs < this.leadInEndMs;
+      if (!this.auto && !laneAuto && !leadIn) continue;
       n.soundScheduled = true;
-      const vol = this.auto ? this.config.chipVolume : this.config.autoChipVolume;
+      const vol = this.auto || leadIn ? this.config.chipVolume : this.config.autoChipVolume;
       const v = this.playChipSound(n, vol, this.ctxTimeAt(n.timeMs));
       if (v) this._trackVoice(v);
     }
@@ -882,7 +901,7 @@ export class Player {
     return ms * this.ratio;
   }
 
-  /** 毎フレームの判定処理(ProcessJudgement): 不可視チップの消費 → AUTO → ミス検出。 */
+  /** 毎フレームの判定処理(ProcessJudgement): 不可視チップの消費 →(追加)助走 → AUTO → ミス検出。 */
   processJudgement(songMs, realNow, perfNow) {
     // 不可視チップ: 通過したら無音で消費
     for (let i = 0; i < this.hiddenNotes.length; i++) {
@@ -890,6 +909,7 @@ export class Player {
       if (this.hiddenNotes[i].timeMs < songMs) this.hiddenJudged[i] = true;
       else break;
     }
+    this._leadIn(songMs, perfNow);
     if (this.auto) {
       for (let i = 0; i < this.notes.length; i++) {
         if (this.judged[i]) continue;
@@ -1020,17 +1040,18 @@ export class Player {
   }
 
   /**
-   * レーン内でいちばん近い未判定チップ(判定窓内)。同じ |dt| なら早い方。
+   * レーン内でいちばん近い未判定チップ(判定窓内)。同じ |dt| なら早い方。助走のチップは自動で叩くので取らない。
    * @returns {{index:number, abs:number}}
    */
   _findNearest(list, judgedFlags, lane, inputMs, filter, hidden) {
     let best = -1;
     let bestAbs = Infinity;
     const globalWin = this._w(hidden ? HitRanges.default.searchWindowMs : this.searchWindowMs);
+    const leadInEnd = hidden ? -1 : this.leadInEndMs;
     for (let i = 0; i < list.length; i++) {
       if (judgedFlags[i]) continue;
       const n = list[i];
-      if (n.lane !== lane) continue;
+      if (n.lane !== lane || n.timeMs < leadInEnd) continue;
       if (filter && n.channel !== filter) continue;
       const dt = n.timeMs - inputMs;
       if (dt > globalWin) break;
@@ -1130,6 +1151,39 @@ export class Player {
     this._laneEffects(n.lane, perfNow);
     this.fireAt[n.lane] = perfNow;
     if (ev.all) this.comboJumpAt = perfNow;
+  }
+
+  /**
+   * ループの助走(leadInStartMs の注記): songMs までに来た助走のチップを自動で叩く。音と AUTO の演出だけで、成績
+   * (判定数・コンボ・スコア・ゲージ)には触れない。全部 AUTO・レーン別 AUTO より先に取る。
+   */
+  _leadIn(songMs, perfNow) {
+    const end = this.leadInEndMs;
+    for (let i = 0; i < this.notes.length; i++) {
+      const n = this.notes[i];
+      if (n.timeMs >= end || n.timeMs > songMs) break;
+      if (!this.judged[i]) this._leadInNote(i, perfNow);
+    }
+  }
+
+  /** 助走のチップ 1 個(ギター / ベースはパートの音とファイアにするので差し替える)。 */
+  _leadInNote(i, perfNow) {
+    const n = this.notes[i];
+    const ev = { kind: 'lead', i };
+    this._record(ev);
+    this._applyLeadIn(ev, perfNow);
+    if (!n.soundScheduled) {
+      n.soundScheduled = true;
+      this.playChipSound(n, this.config.chipVolume);
+    }
+  }
+
+  _applyLeadIn(ev, perfNow) {
+    const n = this.notes[ev.i];
+    this.judged[ev.i] = true;
+    this._startJudgeString(n.lane, JUDGE.PERFECT, 0, true, perfNow);
+    this._laneEffects(n.lane, perfNow);
+    this.fireAt[n.lane] = perfNow;
   }
 
   /** 不可視チップのヒット(HitHiddenNote): 音と演出のみ。 */
@@ -1289,6 +1343,7 @@ export class Player {
     switch (ev.kind) {
       case 'judge': this._applyJudge(ev.i, ev.judge, ev.lagMs, perfNow, ev.auto); break;
       case 'auto': this._applyAutoJudge(ev, perfNow); break;
+      case 'lead': this._applyLeadIn(ev, perfNow); break;
       case 'hidden': this._applyHidden(ev.i, ev.fire, perfNow); break;
       case 'empty': this._laneEffects(ev.lane, perfNow); break;
       default: break;

@@ -227,32 +227,33 @@ test('replay: loop laps and pause-seek recounts make separate takes; gauge carri
     settings.loop = true;
     settings.loopBeginMs = 2000;
     settings.loopEndMs = 4000;
-    player.update(0, null); // 待機位置がループの開始位置へ
+    player.update(0, null); // 待機位置がループの助走の始め(開始位置の 1 小節前 = 曲頭)へ
     player.command('startStop');
-    player.update(0, null); // 実時間 0 = 譜面 2000 から
+    player.update(0, null); // 実時間 0 = 譜面 0 から
     assertEq(player.state, PLAYER_STATE.PLAYING);
-    player.hit(3, 0); // SD 2000
-    stepTo(audio, player, 2010); // 譜面 4010 で折り返し(実時間 2010 = 譜面 2000)
+    stepTo(audio, player, 2000);
+    player.hit(3, 2000); // SD 2000
+    stepTo(audio, player, 4010); // 譜面 4010 で折り返し(実時間 4010 = 譜面 0)
     const lap1 = player.lastTake;
     assert(lap1, 'the first lap is a take');
-    assertEq(lap1.startMs, 2000);
+    assertEq(lap1.startMs, 0);
     assertEq(lap1.endMs, 4000);
     assertEq(lap1.ghosts.length, 1);
     const gaugeAfterLap1 = player.stats.gauge;
-    stepTo(audio, player, 2510);
-    player.hit(3, 2510); // 2 周目の 2500
-    stepTo(audio, player, 3010);
-    player.hit(3, 3010); // 3000
+    stepTo(audio, player, 6510);
+    player.hit(3, 6510); // 2 周目の 2500
+    stepTo(audio, player, 7010);
+    player.hit(3, 7010); // 3000
     player.command('startStop'); // 2 周目の途中で止める
     const lap2 = player.lastTake;
     assert(lap2 !== lap1, 'the stopped lap replaces it');
-    assertEq(lap2.startMs, 2000);
+    assertEq(lap2.startMs, 0);
     assertEq(lap2.ghosts.length, 2);
     assertEq(lap2.stats0.gauge, gaugeAfterLap1, 'the take starts with the gauge carried over');
     const final = statsOf(player.stats);
     player.command('replay');
     player.update(audio.ctx.currentTime * 1000, null);
-    assertNear(player.songMs, 2000, 1, 'the replay starts at the loop start');
+    assertNear(player.songMs, 0, 1, 'the replay starts at the lead-in of the lap');
     assertNear(player.stats.gauge, gaugeAfterLap1, 1e-12);
     stepTo(audio, player, audio.ctx.currentTime * 1000 + 3100);
     assertEq(player.replay, null, 'ends where the lap was stopped (no loop wrap in a replay)');
