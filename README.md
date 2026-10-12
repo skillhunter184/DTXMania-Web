@@ -141,8 +141,8 @@ Ctrl で 50 %)。AudioEngine 側で種類ごとの音量バスに分けている
 他レーンが持っているキーを割り当てると、追加なら取り上げ・差し替えなら 1:1 で入れ替える(DTXManiaAI / NX と同じ)。
 `↑↓←→ / Enter / Esc / Tab / F1` はメニュー操作に使うため割り当てできない。
 
-電子ドラム(USB / MIDI インターフェース経由)は設定パネルの「電子ドラム(MIDI)」で「電子ドラムを使う」を押して開く
-(PC の Chrome / Edge / Firefox。Safari は Web MIDI 非対応。iPhone / iPad は Safari も Chrome も非対応で、Web MIDI 付きのブラウザアプリで開く)。DTXManiaAI の CONFIG > MIDI Setup(GITADORA コナステの
+電子ドラム(USB / MIDI インターフェース経由)は画面上部か、設定パネルの「電子ドラム(MIDI)」の「電子ドラムを使う」を押して開く
+(上部のボタンは接続の状態を出し、つながると「電子ドラム: 1 台接続中」のようになる。PC の Chrome / Edge / Firefox。Safari は Web MIDI 非対応。iPhone / iPad は Safari も Chrome も非対応で、Web MIDI 付きのブラウザアプリで開く)。DTXManiaAI の CONFIG > MIDI Setup(GITADORA コナステの
 MIDI 設定画面の移植)と同じ考え方で:
 
 - 見つかった MIDI 入力を全部開き、機器ごとの打鍵数・最後のノートと、直近 6 打の行き先レーン(`--` は未割り当て、

@@ -25,8 +25,13 @@ html.i18n-wait #app { visibility: hidden; }
 .home-title { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
 .home-header h1 { margin: 8px 0 4px; font-size: 1.8em; letter-spacing: 0.04em; }
 .home-header p { margin: 0 0 16px; color: var(--muted); }
+/* ホームの上部の右側(電子ドラムのボタンと表示言語) */
+.home-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 4px 0 8px; }
+.midi-top[disabled] { opacity: 0.6; cursor: default; }
+body.touch .midi-top { min-height: 44px; }
 /* 表示言語(日本語 / English)の切り替え */
 .lang-switch { display: inline-flex; flex: none; margin: 4px 0 8px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.home-tools .lang-switch { margin: 0; }
 .lang-switch button { background: transparent; color: var(--muted); border: 0; padding: 6px 12px; font-size: 0.9em; cursor: pointer; }
 .lang-switch button + button { border-left: 1px solid var(--line); }
 .lang-switch button:hover { color: var(--text); background: #222a3c; }

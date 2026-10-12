@@ -6,6 +6,7 @@ import {
   findPreset, matchDevicePreset, autoPreset, laneNotesText,
 } from '../js/ui/midibind.js';
 import { MidiInput, MIDI_MERGE_MS, RECENT_HIT_COUNT, parseNoteOn } from '../js/ui/midi.js';
+import { MidiPanel } from '../js/ui/midipanel.js';
 
 // レーン: 0 LC / 1 HH / 2 LP / 3 SD / 4 HT / 5 BD / 6 LT / 7 FT / 8 CY / 9 RD
 const notesOf = (notes) => notes.map((lane) => lane.map((b) => b.note));
@@ -362,4 +363,38 @@ test('midi: setBindings resolves duplicate notes to the younger lane', () => {
   assertEq(midi.laneOfNote(49), 0);
   assertEq(midi.laneOfNote(51), 9);
   assertEq(midi.laneOfNote(100), -1);
+});
+
+test('midi panel: the button at the top of the home screen follows the connection state', () => {
+  // renderTop はこのボタンだけを見る(設定の節が閉じていても描く)
+  const btn = document.createElement('button');
+  btn.id = 'btn-midi-top';
+  document.body.appendChild(btn);
+  try {
+    const midi = { state: 'off', devices: [], openCount: 0, error: '' };
+    const panel = new MidiPanel({ config: {}, midi, onChange() {}, visible: () => false });
+    const view = () => ({ text: btn.textContent, hidden: btn.hidden, disabled: btn.disabled, quiet: btn.classList.contains('secondary') });
+    panel.renderTop();
+    assertDeepEq(view(), { text: '電子ドラムを使う', hidden: false, disabled: false, quiet: false });
+    assertEq(btn.title, '未接続。押すとブラウザが MIDI 機器の使用許可を尋ねます。', 'the tooltip is the state text from Settings');
+    midi.state = 'requesting';
+    panel.renderTop();
+    assertDeepEq(view(), { text: '接続中…', hidden: false, disabled: true, quiet: false });
+    midi.state = 'denied';
+    panel.renderTop();
+    assertEq(view().text, '電子ドラム: もう一度試す');
+    midi.state = 'ready';
+    panel.renderTop();
+    assertDeepEq(view(), { text: '電子ドラム: 機器なし', hidden: false, disabled: false, quiet: true });
+    midi.devices = [{ name: 'TD-1', opened: true }];
+    midi.openCount = 1;
+    panel.renderDevices(); // 設定が閉じていても上部のボタンは描き直す
+    assertEq(view().text, '電子ドラム: 1 台接続中');
+    assertEq(btn.title, '1 / 1 台を開いています。');
+    midi.state = 'unsupported';
+    panel.renderTop();
+    assertEq(btn.hidden, true, 'hidden without Web MIDI (Settings explains why)');
+  } finally {
+    btn.remove();
+  }
 });

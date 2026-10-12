@@ -98,6 +98,7 @@ export class MidiPanel {
       this._localizeRow(row, lane);
     }
     $('btn-midi-connect').onclick = () => this.connect();
+    $('btn-midi-top').onclick = () => this.connect();
     $('midi-preset').onchange = () => { this._preset = $('midi-preset').value; };
     $('btn-midi-apply').onclick = () => this.applyPresetSelected();
     $('midi-undo').onclick = () => this.undo();
@@ -124,6 +125,7 @@ export class MidiPanel {
       if (row) this._localizeRow(row, lane);
     }
     this.renderAll();
+    this.renderTop();
     this._dirty = true; // デバイス一覧とモニタは見えていれば今すぐ、隠れていれば開いたときに描く
     this.refresh();
     this.setStatus(this._status);
@@ -299,45 +301,65 @@ export class MidiPanel {
     return box;
   }
 
-  /** 接続状態・デバイス一覧・プリセットの AUTO 表示(元実装の MIDI Device / Preset 行とモニタの上段)。 */
-  renderDevices() {
-    if (!this.visible()) { this._dirty = true; return; }
+  /** 接続状態の説明(設定のボタンの横と、ホームの上部のボタンのツールチップ)。 */
+  _stateText() {
     const m = this.midi;
-    const btn = $('btn-midi-connect');
-    const st = $('midi-state');
-    btn.hidden = m.state === 'unsupported';
-    btn.disabled = m.state === 'requesting';
-    let text = '';
     switch (m.state) {
       case 'unsupported':
         // Web MIDI は HTTPS か localhost でしか出てこない。serve.bat で LAN のアドレスから開くと Chrome でも無い。
         // iPhone / iPad はどのブラウザも WebKit で非対応。Web MIDI を差し込むブラウザアプリなら出てくる
-        text = t(globalThis.isSecureContext === false ? 'midi.unsupportedHttp' : 'midi.unsupported');
-        break;
-      case 'off':
-        btn.textContent = t('midi.connect');
-        text = t('midi.stateOff');
-        break;
-      case 'requesting':
-        btn.textContent = t('midi.connecting');
-        text = t('midi.stateRequesting');
-        break;
-      case 'denied':
-        btn.textContent = t('midi.retry');
-        text = t('midi.stateDenied');
-        break;
-      case 'error':
-        btn.textContent = t('midi.retry');
-        text = t('midi.stateError', { error: m.error });
-        break;
+        return t(globalThis.isSecureContext === false ? 'midi.unsupportedHttp' : 'midi.unsupported');
+      case 'off': return t('midi.stateOff');
+      case 'requesting': return t('midi.stateRequesting');
+      case 'denied': return t('midi.stateDenied');
+      case 'error': return t('midi.stateError', { error: m.error });
       default: {
-        btn.textContent = t('midi.reconnect');
         const found = m.devices.length;
-        text = found ? t('midi.stateReady', { open: m.openCount, found }) : t('midi.stateNoDevice');
-        break;
+        return found ? t('midi.stateReady', { open: m.openCount, found }) : t('midi.stateNoDevice');
       }
     }
-    st.textContent = text;
+  }
+
+  /**
+   * ホームの上部の電子ドラムのボタン(本アプリの追加。設定を開かなくても接続できるように)。押すと設定のボタンと同じく
+   * 接続する(開いていれば開き直す)。文言は接続の状態、ツールチップは設定に出す説明。設定が閉じていても描く。
+   */
+  renderTop() {
+    const btn = $('btn-midi-top');
+    if (!btn) return;
+    const m = this.midi;
+    btn.hidden = m.state === 'unsupported'; // 理由は設定の「電子ドラム(MIDI)」に出る
+    btn.disabled = m.state === 'requesting';
+    switch (m.state) {
+      case 'off': btn.textContent = t('midi.connect'); break;
+      case 'requesting': btn.textContent = t('midi.connecting'); break;
+      case 'denied':
+      case 'error': btn.textContent = t('midi.topRetry'); break;
+      default:
+        btn.textContent = m.openCount ? t('midi.topReady', { n: m.openCount }) : t('midi.topNoDevice');
+        break;
+    }
+    btn.title = this._stateText();
+    btn.classList.toggle('secondary', m.state === 'ready'); // つながったら目立たせない
+  }
+
+  /** 接続状態・デバイス一覧・プリセットの AUTO 表示(元実装の MIDI Device / Preset 行とモニタの上段)。 */
+  renderDevices() {
+    this.renderTop();
+    if (!this.visible()) { this._dirty = true; return; }
+    const m = this.midi;
+    const btn = $('btn-midi-connect');
+    btn.hidden = m.state === 'unsupported';
+    btn.disabled = m.state === 'requesting';
+    switch (m.state) {
+      case 'unsupported': break;
+      case 'off': btn.textContent = t('midi.connect'); break;
+      case 'requesting': btn.textContent = t('midi.connecting'); break;
+      case 'denied':
+      case 'error': btn.textContent = t('midi.retry'); break;
+      default: btn.textContent = t('midi.reconnect'); break;
+    }
+    $('midi-state').textContent = this._stateText();
 
     const ul = $('midi-devices');
     ul.textContent = '';

@@ -189,10 +189,10 @@ export const STRINGS = {
     '(change them in Settings → Key Bindings; each lane can have several keys)',
   ],
   'help.midi': [
-    '<b>電子ドラム</b>: 設定の「電子ドラム(MIDI)」で「電子ドラムを使う」を押して開く。パッドの割り当ては叩いて登録するか、'
+    '<b>電子ドラム</b>: 画面上部か、設定の「電子ドラム(MIDI)」の「電子ドラムを使う」を押して開く。パッドの割り当ては叩いて登録するか、'
       + '機種のプリセットを適用。叩いたパッドの行き先は同じ欄のモニタで確かめられます。',
-    '<b>Electronic drums</b>: In Settings → "Electronic Drums (MIDI)", press "Use E-Drums" to connect. Assign pads by hitting them, '
-      + 'or apply the preset for your kit. The monitor in the same section shows where each hit goes.',
+    '<b>Electronic drums</b>: Press "Use E-Drums" at the top of the page or in Settings → "Electronic Drums (MIDI)" to connect. '
+      + 'Assign pads by hitting them, or apply the preset for your kit. The monitor in the Settings section shows where each hit goes.',
   ],
   'help.menu': [
     '<b>トレーニングメニュー</b>: ↑↓ 項目 / ←→ 変更(Ctrl で 10 段) / Enter 決定 / Esc 戻る・終了 / F1 AUTO 切替',
@@ -471,6 +471,10 @@ export const STRINGS = {
     'MIDI 機器が見つかりません。電子ドラムをつないで電源を入れてください(つなげば自動で開きます)。',
     'No MIDI devices found. Connect your electronic drums and turn them on (they open automatically once connected).',
   ],
+  // ホームの上部のボタン(押すと接続・開き直す。詳しい状態はツールチップ)
+  'midi.topRetry': ['電子ドラム: もう一度試す', 'E-Drums: Try Again'],
+  'midi.topReady': ['電子ドラム: {n} 台接続中', 'E-Drums: {n} connected'],
+  'midi.topNoDevice': ['電子ドラム: 機器なし', 'E-Drums: No Device'],
   'midi.devFailed': [
     '(開けません。DTXMania などほかのアプリが使っていないか確認してください)',
     ' (cannot open; make sure no other app such as DTXMania is using it)',
