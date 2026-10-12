@@ -29,6 +29,10 @@ export const RESERVED_CODES = [
   'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
   'Enter', 'NumpadEnter', 'Escape', 'Tab', 'F1',
 ];
+// ギター / ベースは F1 とテンキーの Enter も割り当てられる(NX の既定: ギターの R が F1、ベースのピックがテンキーの Enter)。
+// 割り当てたキーは GuitarInput がアプリのホットキー(F1 の AUTO 切替・テンキー Enter の決定)より先に取る
+// (js/ui/gbinput.js の _onKeyDown)。AUTO はメニューの「自動演奏」、決定は Enter でもできる。
+export const GB_RESERVED_CODES = RESERVED_CODES.filter((c) => c !== 'F1' && c !== 'NumpadEnter');
 
 const MODIFIER_RE = /^(Control|Shift|Alt|Meta|OS)(Left|Right)?$/;
 
@@ -41,11 +45,22 @@ export function isModifierCode(code) {
   return MODIFIER_RE.test(code || '');
 }
 
-/** レーンに割り当ててよいキーか。 */
+/**
+ * レーンに割り当ててよいキーか。修飾キー(Ctrl・Shift・Alt など)は割り当てない: 押し途中のことがあるうえ、
+ * Ctrl を押したまま F4 / W を押すとブラウザがタブを閉じる(ページからは止められない)。NX の既定の右 Ctrl
+ * (ギターのウェイリング)はこのため使わない。
+ */
 export function isAssignableCode(code) {
   if (!code || typeof code !== 'string') return false;
   if (isModifierCode(code)) return false;
   return RESERVED_CODES.indexOf(code) < 0;
+}
+
+/** ギター / ベースのボタンに割り当ててよいキーか(F1 とテンキーの Enter も可)。 */
+export function isGbKeyCode(code) {
+  if (!code || typeof code !== 'string') return false;
+  if (isModifierCode(code)) return false;
+  return GB_RESERVED_CODES.indexOf(code) < 0;
 }
 
 /** 既定の割り当ての新しい配列(defaults を省くとドラムの 10 レーン。ギター / ベースは js/ui/gbinput.js の既定を渡す)。 */
@@ -117,8 +132,8 @@ export function normalizeBindings(raw, defaults = LANE_KEY_DEFAULTS, isValid = i
  * @returns {{bindings:string[][], ok:boolean, reason:?string, stolenFrom:?number, stolenEmptied:boolean}}
  *          reason は 'reserved' | 'already' | 'full'
  */
-export function addKey(bindings, lane, code) {
-  if (!isAssignableCode(code)) return { bindings, ok: false, reason: 'reserved', stolenFrom: null, stolenEmptied: false };
+export function addKey(bindings, lane, code, isValid = isAssignableCode) {
+  if (!isValid(code)) return { bindings, ok: false, reason: 'reserved', stolenFrom: null, stolenEmptied: false };
   if (bindings[lane].indexOf(code) >= 0) return { bindings, ok: false, reason: 'already', stolenFrom: null, stolenEmptied: false };
   if (bindings[lane].length >= MAX_KEYS_PER_LANE) return { bindings, ok: false, reason: 'full', stolenFrom: null, stolenEmptied: false };
   const next = copyBindings(bindings);
@@ -140,8 +155,8 @@ export function addKey(bindings, lane, code) {
  * @returns {{bindings:string[][], ok:boolean, reason:?string, swappedWith:?number}}
  *          reason は 'reserved' | 'missing' | 'same'
  */
-export function replaceKey(bindings, lane, index, code) {
-  if (!isAssignableCode(code)) return { bindings, ok: false, reason: 'reserved', swappedWith: null };
+export function replaceKey(bindings, lane, index, code, isValid = isAssignableCode) {
+  if (!isValid(code)) return { bindings, ok: false, reason: 'reserved', swappedWith: null };
   const old = bindings[lane][index];
   if (old === undefined) return { bindings, ok: false, reason: 'missing', swappedWith: null };
   if (old === code) return { bindings, ok: false, reason: 'same', swappedWith: null };

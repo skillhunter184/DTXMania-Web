@@ -36,6 +36,11 @@ const KEY_TEXT = {
 /** キーボードの入力元(既定)。capture が無いので、待ち受けは keydown で行う。 */
 const KEYBOARD = { label: keyLabel, glyph: '⌨', isAssignable: isAssignableCode, capture: null, text: null };
 
+/** 割り当ててよいキーの決まりを差し替えたキーボードの入力元(ギター / ベースは F1 とテンキーの Enter も可)。 */
+export function keyboardDevice(isAssignable) {
+  return { ...KEYBOARD, isAssignable };
+}
+
 export class KeyBindPanel {
   /**
    * @param {{
@@ -412,11 +417,15 @@ export class KeyBindPanel {
         }
         return;
       }
-      if (isModifierCode(code)) return; // 修飾キー単体は押し途中なので無視
+      if (isModifierCode(code)) {
+        // 修飾キー単体は押し途中かもしれないので待ち続けるが、割り当てできない理由は出す(右 Ctrl など)
+        this.setStatus(msg('keys.modifier'));
+        return;
+      }
       e.preventDefault();
       e.stopPropagation(); // 待ち受け中はアプリのホットキーもブラウザの既定も通さない
       if (code === 'Escape') { this.cancelAssign(msg('common.canceled')); return; }
-      if (!isAssignableCode(code)) {
+      if (!device.isAssignable(code)) {
         this.setStatus(msg('keys.reserved', { key: keyLabel(code) }));
         return; // 待ち受けは続ける
       }
@@ -463,7 +472,8 @@ export class KeyBindPanel {
     const bindings = this.getBindings();
     const before = this._snapshot();
     const old = mode === 'replace' ? bindings[lane][index] : null;
-    const r = mode === 'add' ? addKey(bindings, lane, code) : replaceKey(bindings, lane, index, code);
+    const valid = this.device.isAssignable;
+    const r = mode === 'add' ? addKey(bindings, lane, code, valid) : replaceKey(bindings, lane, index, code, valid);
 
     if (!r.ok) {
       if (r.reason === 'already') {

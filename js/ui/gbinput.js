@@ -1,8 +1,9 @@
 // ギター / ベースの入力: キーボード(ネックの R G B Y P は押している間だけ、ピックとウェイリングは押した瞬間)と
 // タッチ(レーンの列を押す = そのボタンを押さえてピック、レーンの外を押す = 何も足さずにピック)。
 // 時刻は event.timeStamp(performance.now() と同じ時間軸)で渡し、player 側で演奏時刻へ変換する(ドラムの js/ui/input.js と同じ)。
-// 元実装の既定キー(NX のギター R〜P = F1〜F5 / Pick = ] : / Wail = 右 Ctrl)はブラウザでは使えない
-// (F1 は AUTO 切替、F5 は再読み込み、Ctrl は割り当て不可)ので、本アプリで決めた既定を置く。
+// 既定のキーは NX のギターと同じ(R〜P = F1〜F5 / Pick = ] と :。US の配列の名前では ] と ')。割り当てたキーはアプリのホットキー(F1 の AUTO 切替)
+// より先に取り、ブラウザの既定の動作(F1 のヘルプ・F3 の検索・F5 の再読み込み)も止める。NX のウェイリングの右 Ctrl は、
+// Ctrl を押したまま F4 を押すとブラウザがタブを閉じる(ページからは止められない)ので使わず、/ にする。
 
 import { eventCode } from './input.js';
 
@@ -12,10 +13,37 @@ export const GB_BUTTON_COUNT = 7;
 export const GB_BUTTON_NAMES = ['R', 'G', 'B', 'Y', 'P', 'PICK', 'WAIL'];
 
 /**
- * 既定のキー(本アプリで決めたもの)。左手でネックをホームポジションの A S D F G、右手で J / K を交互に押してピック、
- * L でウェイリング。ドラムの割り当て(config.bindings)とは別に持つので、同じキーがあってもぶつからない。
+ * 既定のキー(NX のギターの既定。docs/spec/gb-config.md §1.2)。ネックは F1〜F5、ピックは ] と :(code は場所で決まり、
+ * JIS では [ と : のキー、US では ] と ' のキー。NX は ] をキャンセルにも使うので重複を除いて : だけになるが、Web 版には
+ * キャンセルが無いので DTXManiaAI と同じく両方)、ウェイリングは /(NX は右 Ctrl。上の注記)。ドラムの割り当て
+ * (config.bindings)とは別に持ち、ギターとベースで共有する。
  */
 export const GB_KEY_DEFAULTS = [
+  ['F1'], // R
+  ['F2'], // G
+  ['F3'], // B
+  ['F4'], // Y
+  ['F5'], // P
+  ['BracketRight', 'Quote'], // PICK
+  ['Slash'], // WAIL
+];
+
+/** テンキーの並び(NX のベースの既定。設定の「テンキーの並びにする」。ピックは . と Enter、ウェイリングは 0)。 */
+export const GB_KEY_NUMPAD = [
+  ['Numpad1'], // R
+  ['Numpad2'], // G
+  ['Numpad3'], // B
+  ['Numpad4'], // Y
+  ['Numpad5'], // P
+  ['NumpadDecimal', 'NumpadEnter'], // PICK
+  ['Numpad0'], // WAIL
+];
+
+/**
+ * ホームポジションの並び(本アプリの以前の既定。設定の「A S D F G の並びにする」)。左手でネックを A S D F G、
+ * 右手で J / K を交互に押してピック、L でウェイリング。
+ */
+export const GB_KEY_HOME = [
   ['KeyA'], // R
   ['KeyS'], // G
   ['KeyD'], // B
@@ -26,7 +54,22 @@ export const GB_KEY_DEFAULTS = [
 ];
 
 /**
- * 左利き用の並び(本アプリの追加。設定の「左利き用の並びにする」)。既定をキーボードの中央(G と H の間)で鏡に映したもの:
+ * 既定を NX の並びに変える前(設定の版 2 より前)に保存した割り当てが、以前の既定(GB_KEY_HOME)のままなら今の既定に替える。
+ * 一度だけ(版 2 以降の保存は、A S D F G の並びを選び直したものなのでそのまま)。手で変えた割り当てには触らない。
+ * @param {number} savedRev 保存されていた設定の版(config.configRev)
+ * @returns {{bindings: string[][], migrated: boolean}}
+ */
+export function migrateGbBindings(bindings, savedRev) {
+  if (Number(savedRev) >= 2) return { bindings, migrated: false };
+  const same = Array.isArray(bindings) && bindings.length === GB_KEY_HOME.length
+    && GB_KEY_HOME.every((codes, i) => Array.isArray(bindings[i]) && bindings[i].join(',') === codes.join(','));
+  if (!same) return { bindings, migrated: false };
+  return { bindings: GB_KEY_DEFAULTS.map((a) => a.slice()), migrated: true };
+}
+
+/**
+ * 左利き用の並び(本アプリの追加。設定の「左利き用の並びにする」)。ホームポジションの並びをキーボードの中央(G と H の間)で
+ * 鏡に映したもの:
  * 右手でネックを ; L K J H(LEFT で右端に描かれる R が右端のキー)、左手で F / D を交互に押してピック、S でウェイリング。
  * LEFT はボタンを描く列を入れ替えるだけでキーは変えない(NX と同じ)ので、左手でピックするときはこの並びにする。
  */
@@ -170,14 +213,14 @@ export class GuitarInput {
   _onKeyDown(e) {
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) return;
     const code = eventCode(e);
-    if (this.onKey && this.onKey(code, true, e)) {
-      e.preventDefault();
+    // 割り当てたキーはアプリのホットキー(F1 の AUTO 切替・テンキー Enter の決定)より先に取る(NX の既定の F1・テンキー Enter)。
+    // 矢印・Enter・Esc・Tab は割り当てられないので、メニューの操作はこれまでどおり onKey へ行く
+    const button = this.enabled ? this.buttonOfCode(code) : -1;
+    if (button < 0) {
+      if (this.onKey && this.onKey(code, true, e)) e.preventDefault();
       return;
     }
-    if (!this.enabled) return;
-    const button = this.buttonOfCode(code);
-    if (button < 0) return;
-    e.preventDefault();
+    e.preventDefault(); // ブラウザの既定の動作(F1 ヘルプ・F3 検索・F5 再読み込みなど)も止める。押しっぱなしのリピートも
     if (e.repeat || this._down.has(code)) return;
     this._down.add(code);
     const ts = e.timeStamp || performance.now();

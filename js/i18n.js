@@ -68,16 +68,24 @@ export const STRINGS = {
     '<b>R G B Y P</b>(ネック)は押している間だけ押さえた扱いで、<b>PICK</b> を押した瞬間に押さえ方とチップを照合します。'
       + '押さえ方はチップとちょうど同じにします(OPEN は何も押さえない)。<b>WAIL</b> はピックが当たった直後のウェイリング。'
       + 'ギターとベースで同じ割り当てを使い、ドラムの割り当てとは別です。操作は上のドラムのキー割り当てと同じです。'
-      + 'メニューの「LEFT(左利き)」はボタンの並びを左右反転して描くだけで、キーはボタンに付いたままです。'
+      + '既定は DTXMania(NX)のギターと同じく R〜P = F1〜F5、PICK = ] と \'(JIS の配列では [ と : のキー。NX の ] と : と同じ場所)。WAIL は NX の右 Ctrl の代わりに / です'
+      + '(Ctrl を押したまま F4 を押すとブラウザがタブを閉じるので、Ctrl などは割り当てできません)。F1 とテンキーの Enter も割り当てられ、'
+      + '演奏中はアプリの操作より先に効きます(AUTO の切り替えはメニューの「自動演奏」で)。ノートパソコンでは F1〜F5 に Fn キーが要ることがあります。'
+      + 'NX のベースの並びは「テンキーの並びにする」。メニューの「LEFT(左利き)」はボタンの並びを左右反転して描くだけで、キーはボタンに付いたままです。'
       + '左手でピックするなら「左利き用の並びにする」(R〜P = ; L K J H、PICK = F・D、WAIL = S)。',
     '<b>R G B Y P</b> (the neck) count as held while pressed, and pressing <b>PICK</b> checks the held buttons against the chip. '
       + 'Hold exactly the chip\'s buttons (nothing for OPEN). <b>WAIL</b> is the wailing right after a successful pick. '
       + 'Guitar and bass share these bindings, separate from the drum bindings. They work like the drum key bindings above. '
-      + 'Left (Lefty) in the menu only draws the buttons in mirrored order; keys stay with their buttons. '
+      + 'The default matches the DTXMania (NX) guitar: R–P = F1–F5, PICK = ] and \' (the [ and : keys on a JIS keyboard). WAIL is / instead of NX\'s Right Ctrl '
+      + '(Ctrl with F4 makes the browser close the tab, so Ctrl and similar keys cannot be assigned). F1 and Numpad Enter can be assigned too, '
+      + 'and while playing they take priority over the app\'s own keys (toggle AUTO from Auto Play in the menu). Laptops may need the Fn key for F1–F5. '
+      + 'For the NX bass layout, use Numpad Layout. Left (Lefty) in the menu only draws the buttons in mirrored order; keys stay with their buttons. '
       + 'To pick with your left hand, use Lefty Layout (R–P = ; L K J H, PICK = F / D, WAIL = S).',
   ],
   'settings.resetAllButtons': ['全ボタンを既定に戻す', 'Reset All Buttons'],
   'settings.gbLeftyKeys': ['左利き用の並びにする', 'Lefty Layout'],
+  'settings.gbNumpadKeys': ['テンキーの並びにする(NX のベース)', 'Numpad Layout (NX bass)'],
+  'settings.gbHomeKeys': ['A S D F G の並びにする', 'A S D F G Layout'],
   'settings.gbPad': ['ギターコントローラ(ゲームパッド)', 'Guitar Controller (Gamepad)'],
   'settings.gbPadNote': [
     'ギターコントローラやゲームパッドのボタン・スティック・十字キー(ストラムバー)を <b>R G B Y P / PICK / WAIL</b> と <b>START</b>(演奏開始・停止)に割り当てます。キーボードと同時に使えます。既定は Xbox 360 の Guitar Hero / Rock Band ギターの配置です(フレットの緑・赤・黄・青・オレンジを R G B Y P、ストラムの上下を PICK、チルトとスターパワーを WAIL)。ほかのコントローラは「＋ 追加」を押してから、ボタンを押すかスティック・ストラムバーを倒すと入ります(押したままのボタンは数えません)。ストラムの上下どちらでも弾くには、両方を PICK に入れます。ブラウザはボタンを押すまでゲームパッドを見せません。',
@@ -195,8 +203,10 @@ export const STRINGS = {
       + 'Assign pads by hitting them, or apply the preset for your kit. The monitor in the Settings section shows where each hit goes.',
   ],
   'help.menu': [
-    '<b>トレーニングメニュー</b>: ↑↓ 項目 / ←→ 変更(Ctrl で 10 段) / Enter 決定 / Esc 戻る・終了 / F1 AUTO 切替',
-    '<b>Training menu</b>: ↑↓ item / ←→ change (Ctrl: 10 steps) / Enter select / Esc back · exit / F1 toggle AUTO',
+    '<b>トレーニングメニュー</b>: ↑↓ 項目 / ←→ 変更(Ctrl で 10 段) / Enter 決定 / Esc 戻る・終了 / F1 AUTO 切替'
+      + '(ギター / ベースで F1 をボタンにしているとき(既定)はボタンが先。AUTO はメニューの「自動演奏」で)',
+    '<b>Training menu</b>: ↑↓ item / ←→ change (Ctrl: 10 steps) / Enter select / Esc back · exit / F1 toggle AUTO'
+      + ' (when F1 is a guitar / bass button, as by default, the button wins; use Auto Play in the menu)',
   ],
   'help.seek': [
     '<b>譜面の確認</b>: 停止中・一時停止中は画面上部(ギター / ベースの横画面は判定ラインが上にあるので画面下部。リバースでは上部)のシークバーで前後に送れます。'
@@ -313,6 +323,23 @@ export const STRINGS = {
   'keys.fullLabel': ['{lane} は上限の {max} キーです', '{lane} already has the maximum of {max} keys'],
   'keys.clearLabel': ['{lane} のキーをすべて外す', 'Remove all keys from {lane}'],
   'keys.resetAllDone': ['全レーンを既定に戻しました', 'Reset all lanes to the default'],
+  'keys.numpadDone': [
+    'テンキーの並び(R〜P = 1〜5、PICK = . と Enter、WAIL = 0)にしました',
+    'Switched to the numpad layout (R–P = 1–5, PICK = . and Enter, WAIL = 0)',
+  ],
+  'keys.homeDone': ['A S D F G の並び(PICK = J・K、WAIL = L)にしました', 'Switched to the A S D F G layout (PICK = J / K, WAIL = L)'],
+  'keys.gbDefaultsChangedShort': [
+    'ギター / ベースのキーは DTXMania と同じ F1〜F5 になりました(設定で戻せます)',
+    'Guitar / bass keys are now F1–F5, as in DTXMania (change them in the settings)',
+  ],
+  'keys.gbDefaultsChanged': [
+    'ギター / ベースのキーの既定を DTXMania(NX)と同じ F1〜F5 に変えました。前の並びは「A S D F G の並びにする」で戻せます。',
+    'The default guitar / bass keys are now F1–F5, as in DTXMania (NX). "A S D F G Layout" brings back the previous layout.',
+  ],
+  'keys.modifier': [
+    'Ctrl・Shift・Alt などは割り当てできません(Ctrl を押したまま F4 を押すとブラウザがタブを閉じるなど、ブラウザや OS の操作になるため)。別のキーを押してください。',
+    'Ctrl, Shift, Alt and similar keys cannot be assigned (for example, Ctrl with F4 makes the browser close the tab). Press another key.',
+  ],
   'keys.leftyDone': ['左利き用の並び(R〜P = ; L K J H、PICK = F・D、WAIL = S)にしました', 'Switched to the lefty layout (R–P = ; L K J H, PICK = F / D, WAIL = S)'],
   'keys.repaired': [
     '{lanes} の設定が使えないキーだったので、割り当て直しました。確認してください。',

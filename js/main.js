@@ -14,10 +14,12 @@ import { Renderer } from './ui/renderer.js';
 import { GuitarRenderer } from './ui/gbrenderer.js';
 import { FramePacer, IDLE_DRAW_FPS } from './ui/framepace.js';
 import { TrainingMenu, MENU_COMMAND } from './ui/menu.js';
-import { DrumInput, LANE_KEY_DEFAULTS } from './ui/input.js';
-import { GuitarInput, GB_KEY_DEFAULTS, GB_KEY_LEFTY, GB_BUTTON_NAMES } from './ui/gbinput.js';
-import { defaultBindings, normalizeBindings, laneKeysText } from './ui/keybind.js';
-import { KeyBindPanel } from './ui/keypanel.js';
+import { DrumInput, LANE_KEY_DEFAULTS, eventCode, loadKeyboardLayout } from './ui/input.js';
+import {
+  GuitarInput, GB_KEY_DEFAULTS, GB_KEY_LEFTY, GB_KEY_NUMPAD, GB_KEY_HOME, GB_BUTTON_NAMES, migrateGbBindings,
+} from './ui/gbinput.js';
+import { defaultBindings, normalizeBindings, laneKeysText, isGbKeyCode } from './ui/keybind.js';
+import { KeyBindPanel, keyboardDevice } from './ui/keypanel.js';
 import { GamepadInput, GB_PAD_DEFAULTS, PAD_BUTTON_NAMES, PAD_START, isPadCode, padCodeLabel, padDevice } from './ui/gamepad.js';
 import { MidiInput } from './ui/midi.js';
 import { defaultMidiNotes, defaultVelocityMin, normalizeMidiNotes, normalizeVelocityMin } from './ui/midibind.js';
@@ -61,8 +63,11 @@ const DEFAULT_CONFIG = {
   bdGroup: 0,
 };
 
-/** 保存する設定の版(config.configRev)。上げたら App の constructor に移し替えを足す。1: CY グループの既定を共通に変えた */
-const CONFIG_REV = 1;
+/**
+ * 保存する設定の版(config.configRev)。上げたら App の constructor に移し替えを足す。1: CY グループの既定を共通に変えた /
+ * 2: ギター / ベースのキーの既定を NX の並び(F1〜F5)に変えた
+ */
+const CONFIG_REV = 2;
 
 /** ミリ秒を m:ss.s で表す(シークバーの位置表示)。 */
 function clockText(ms) {
@@ -97,9 +102,18 @@ class App {
     const norm = normalizeBindings(this.config.bindings);
     this.config.bindings = norm.bindings;
     this._keysRepaired = norm.repaired; // 起動時に直したレーン(設定を開いたときに知らせる)
-    const gbNorm = normalizeBindings(this.config.gbBindings, GB_KEY_DEFAULTS);
-    this.config.gbBindings = gbNorm.bindings;
+    const gbNorm = normalizeBindings(this.config.gbBindings, GB_KEY_DEFAULTS, isGbKeyCode);
+    // 既定を NX の並び(F1〜F5)に変えた(版 2)。版 2 より前の保存で以前の既定(A S D F G)のままなら新しい既定へ移す
+    // (一度だけ。手で変えた割り当てはそのまま)。知らせは見てもらうまで残す(設定を開くか、ギター / ベースを弾いたとき)
+    const gbMig = migrateGbBindings(gbNorm.bindings, saved.configRev);
+    this.config.gbBindings = gbMig.bindings;
     this._gbKeysRepaired = gbNorm.repaired;
+    if (gbMig.migrated) {
+      this.config.gbKeysNotice = true;
+      this.saveConfig();
+    }
+    this._gbKeyGuard = null; // 曲の読み込み中にギター / ベースのキーでブラウザが動かないようにする(_guardGbKeys)
+    this._chartLoadSeq = 0; // 曲の読み込みの番号(startChart)
     this.config.gbLight = this.config.gbLight !== false;
     const padNorm = normalizeBindings(this.config.gbPadBindings, GB_PAD_DEFAULTS, isPadCode);
     this.config.gbPadBindings = padNorm.bindings;
@@ -159,6 +173,13 @@ class App {
     this.bindLanguage();
     this.bindHome();
     this.buildSettingsUi();
+    // キーの名前をキーボードの配列に合わせる(JIS なら : や [。読めたら描き直す)
+    loadKeyboardLayout().then((ok) => {
+      if (!ok) return;
+      if (this.keyPanel) this.keyPanel.relocalize();
+      if (this.gbKeyPanel) this.gbKeyPanel.relocalize();
+      this.updateHelpKeys();
+    });
     this.bindSeekBar();
     if (this.config.midiEnabled) this.autoConnectMidi();
     this.loadSkin();
@@ -438,7 +459,12 @@ class App {
       getBindings: () => this.config.gbBindings,
       setBindings: (next) => { this.config.gbBindings = next; this.saveConfig(); },
       onChange: () => this.updateHelpKeys(),
-      presets: [{ button: $('btn-gb-keys-lefty'), bindings: GB_KEY_LEFTY, done: 'keys.leftyDone' }],
+      device: keyboardDevice(isGbKeyCode), // F1 とテンキーの Enter も割り当てられる(NX の既定)
+      presets: [
+        { button: $('btn-gb-keys-numpad'), bindings: GB_KEY_NUMPAD, done: 'keys.numpadDone' },
+        { button: $('btn-gb-keys-home'), bindings: GB_KEY_HOME, done: 'keys.homeDone' },
+        { button: $('btn-gb-keys-lefty'), bindings: GB_KEY_LEFTY, done: 'keys.leftyDone' },
+      ],
     });
     this.gbKeyPanel.beforeAssign = others(this.gbKeyPanel);
     this.gbPadPanel = new KeyBindPanel({
@@ -456,6 +482,7 @@ class App {
     this.gbPadPanel.beforeAssign = others(this.gbPadPanel);
     this.keyPanel.build(this._keysRepaired || []);
     this.gbKeyPanel.build(this._gbKeysRepaired || []);
+    if (this.config.gbKeysNotice) this.gbKeyPanel.setStatus(msg('keys.gbDefaultsChanged'));
     this.gbPadPanel.build(this._gbPadRepaired || []);
     this.updateHelpKeys();
   }
@@ -591,6 +618,7 @@ class App {
     $('settings-panel').addEventListener('toggle', () => {
       this.midiPanel.refresh();
       this.syncPadWatch();
+      if ($('settings-panel').open) this.clearGbKeysNotice(); // 欄の状態表示で見てもらった
     });
     this.renderPadState();
     const badMidi = (this._midiRepaired || []).map((l) => LANE_NAMES[l]);
@@ -785,12 +813,14 @@ class App {
    */
   async startChart(song, chartRef, inst = INSTRUMENT.DRUMS) {
     const c = this.config;
+    const loadId = ++this._chartLoadSeq; // 戻ってから別の曲を始めたら、前の読み込みの失敗は画面に出さない
     this.cancelAssign();
     await this.audio.ensureContext();
     this.playInst = inst;
     this.applyVolumes();
     $('screen-home').hidden = true;
     this.syncPadWatch(); // ホームを隠したので設定の監視(すべての入力を 4 ms ごと)は止める。読み込みに失敗しても
+    this._guardGbKeys(inst !== INSTRUMENT.DRUMS);
     $('screen-play').hidden = false;
     $('loading').hidden = false;
     $('loading-text').textContent = t('load.chart');
@@ -852,13 +882,39 @@ class App {
       this.training.save();
     } catch (e) {
       console.error(e);
+      if (loadId !== this._chartLoadSeq) return;
+      this._guardGbKeys(false); // 読み込みは終わったので、F5 などはブラウザの動作に戻す
       $('loading-text').textContent = t('load.failed', { msg: e && e.message ? e.message : e });
       $('loading-sub').innerHTML = `<button class="btn small secondary" id="btn-loadfail-back">${t('common.back')}</button>`;
       $('btn-loadfail-back').onclick = () => this.leavePlay();
     }
   }
 
+  /**
+   * 曲を読み込んでいる間も、ギター / ベースに割り当てたキー(既定の F1〜F5 など)でブラウザが動かないようにする
+   * (F5 の再読み込みで読み込みが消えたり、F1 でヘルプが開いたりしないように)。演奏の入力ができたら外す
+   * (それからは GuitarInput が同じことをする)。
+   */
+  _guardGbKeys(on) {
+    if (this._gbKeyGuard) {
+      window.removeEventListener('keydown', this._gbKeyGuard, true);
+      this._gbKeyGuard = null;
+    }
+    if (!on) return;
+    const codes = new Set(this.config.gbBindings.flat());
+    this._gbKeyGuard = (e) => { if (codes.has(eventCode(e))) e.preventDefault(); };
+    window.addEventListener('keydown', this._gbKeyGuard, true);
+  }
+
+  /** 既定のキーを変えた知らせを見てもらったので消す。 */
+  clearGbKeysNotice() {
+    if (!this.config.gbKeysNotice) return;
+    this.config.gbKeysNotice = false;
+    this.saveConfig();
+  }
+
   setupPlayScreen() {
+    this._guardGbKeys(false);
     const player = this.player;
     const overlay = $('overlay');
     overlay.innerHTML = '';
@@ -903,6 +959,10 @@ class App {
       // ギターコントローラは演奏の間だけ 4 ms ごとに読む(ゲームパッドが無ければ 250 ms ごとに確かめるだけ)
       this.gamepad.setBindings(this.config.gbPadBindings);
       this.gamepad.activate('play');
+      if (this.config.gbKeysNotice) {
+        this.player.showStatus(t('keys.gbDefaultsChangedShort'), 6000);
+        this.clearGbKeysNotice();
+      }
     }
     this.input.hitTest = (x, y) => this.renderer.hitTestLane(x, y);
     this.input.attach($('canvas'));
@@ -1227,6 +1287,8 @@ class App {
 
   leavePlay() {
     cancelAnimationFrame(this.raf);
+    this._chartLoadSeq++; // 読み込み中に戻ったら、その読み込みの失敗は出さない
+    this._guardGbKeys(false);
     this.endSeekDrag();
     $('seekbar').hidden = true;
     if (this._seek) this._seek.shown = false;

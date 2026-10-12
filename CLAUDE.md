@@ -71,7 +71,9 @@ build.bat
   `data-i18n` などでキーを付ける)。index.html の日本語を変えたら `STRINGS` も揃え、隣の英語も直す(`tests/i18n.test.js` が
   突き合わせる)。console にだけ出す文言は訳さない。既定の言語は日本語。
 - 演奏中にアプリが消費するキー(矢印 / Enter / NumpadEnter / Esc / F1)はレーンに割り当てられない
-  (`js/ui/keybind.js` の `RESERVED_CODES`)。増やすときは両方を合わせる。
+  (`js/ui/keybind.js` の `RESERVED_CODES`)。増やすときは両方を合わせる。ギター / ベースだけは NX の既定に合わせて
+  F1 とテンキーの Enter も割り当てられ(`GB_RESERVED_CODES`)、割り当てたキーはアプリの操作より先に取る(`GuitarInput._onKeyDown`)。
+  Ctrl などの修飾キーは割り当てない(Ctrl を押したまま F4 / W でブラウザがタブを閉じ、ページからは止められない)。
 - 時計は「譜面時刻を不変にして時計の進み方を変える」モデル。詳細は `docs/architecture.md`。
 - 絵はスキンの画像(6 枚の組。ドラムの 4 枚とギター / ベースの 2 枚。`skins/README.md`)で描く。既定のスキン `skins/default/` は `tools/skinart/` の描画から
   `python tools/make_skin.py` で作る画像で、絵を変えたら画像も作り直してコミットする。アプリは描画コードを読まない。

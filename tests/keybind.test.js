@@ -1,11 +1,14 @@
 import { test, assert, assertEq, assertDeepEq } from './runner.js';
 import {
-  LANE_COUNT, MAX_KEYS_PER_LANE, RESERVED_CODES, addKey, replaceKey, removeKey, clearLane, resetLane,
-  defaultBindings, normalizeBindings, isAssignableCode, isModifierCode, findCode, laneKeysText,
+  LANE_COUNT, MAX_KEYS_PER_LANE, RESERVED_CODES, GB_RESERVED_CODES, addKey, replaceKey, removeKey, clearLane, resetLane,
+  defaultBindings, normalizeBindings, isAssignableCode, isGbKeyCode, isModifierCode, findCode, laneKeysText,
 } from '../js/ui/keybind.js';
 import { DrumInput, LANE_KEY_DEFAULTS } from '../js/ui/input.js';
-import { GB_KEY_DEFAULTS, GB_KEY_LEFTY, GB_BUTTON_NAMES } from '../js/ui/gbinput.js';
-import { KeyBindPanel } from '../js/ui/keypanel.js';
+import {
+  GuitarInput, GB_KEY_DEFAULTS, GB_KEY_LEFTY, GB_KEY_NUMPAD, GB_KEY_HOME, GB_BUTTON_NAMES, migrateGbBindings,
+} from '../js/ui/gbinput.js';
+import { KeyBindPanel, keyboardDevice } from '../js/ui/keypanel.js';
+import { keyLabel, setKeyboardLayout } from '../js/ui/input.js';
 import { t } from '../js/i18n.js';
 
 // レーン: 0 LC / 1 HH / 2 LP / 3 SD / 4 HT / 5 BD / 6 LT / 7 FT / 8 CY / 9 RD
@@ -241,31 +244,203 @@ test('input: multiple keys on one lane all fire, and each is a separate hit', ()
   assertEq(hits.length, 3);
 });
 
-test('keybind: guitar / bass bindings use their own defaults (7 buttons)', () => {
+test('keybind: guitar / bass defaults follow NX (F1–F5 / ] : / slash); F1 and Numpad Enter are allowed only there', () => {
   const b = defaultBindings(GB_KEY_DEFAULTS);
   assertEq(b.length, 7);
-  assertDeepEq(b[5], ['KeyJ', 'KeyK'], 'two pick keys for alternate picking');
-  for (const codes of GB_KEY_DEFAULTS) for (const code of codes) assertEq(isAssignableCode(code), true, code + ' must be assignable');
-  const norm = normalizeBindings([['KeyA'], 'broken', ['KeyD'], ['KeyF'], ['KeyG'], ['KeyJ', 'KeyK'], ['KeyL']], GB_KEY_DEFAULTS);
+  assertDeepEq(b.slice(0, 5).flat(), ['F1', 'F2', 'F3', 'F4', 'F5'], 'NX guitar frets');
+  assertDeepEq(b[5], ['BracketRight', 'Quote'], 'NX pick keys ] and : (two keys for alternate picking)');
+  assertDeepEq(b[6], ['Slash'], 'wail on / instead of NX Right Ctrl');
+  for (const layout of [GB_KEY_DEFAULTS, GB_KEY_NUMPAD, GB_KEY_HOME, GB_KEY_LEFTY]) {
+    for (const codes of layout) for (const code of codes) assertEq(isGbKeyCode(code), true, code + ' must be assignable');
+    const all = layout.flat();
+    assertEq(new Set(all).size, all.length, 'no key on two buttons');
+  }
+  // F1 とテンキーの Enter はギター / ベースだけ。矢印・Enter・Esc・Tab・修飾キー(右 Ctrl など)はどちらも不可
+  assertEq(isGbKeyCode('F1'), true);
+  assertEq(isAssignableCode('F1'), false, 'drums keep F1 for AUTO');
+  assertEq(isGbKeyCode('NumpadEnter'), true);
+  assertEq(isAssignableCode('NumpadEnter'), false);
+  for (const code of ['Enter', 'Escape', 'Tab', 'ArrowUp', 'ArrowLeft', 'ControlRight', 'ControlLeft', 'ShiftRight', 'AltRight', 'MetaLeft', '', null]) {
+    assertEq(isGbKeyCode(code), false, String(code));
+  }
+  assertDeepEq(GB_RESERVED_CODES.slice().sort(), RESERVED_CODES.filter((c) => c !== 'F1' && c !== 'NumpadEnter').sort());
+  // 保存の読み直し: ギター / ベースの検査なら F1・テンキー Enter を残す(ドラムの検査だと落ちる)
+  const norm = normalizeBindings([['F1'], 'broken', ['F3'], ['F4'], ['F5'], ['NumpadEnter'], ['Slash']], GB_KEY_DEFAULTS, isGbKeyCode);
   assertDeepEq(norm.repaired, [1]);
-  assertDeepEq(norm.bindings[1], ['KeyS']);
-  assertEq(normalizeBindings(null, GB_KEY_DEFAULTS).bindings.length, 7);
-  const moved = addKey(b, 0, 'KeyL').bindings; // WAIL の L を R へ
+  assertDeepEq(norm.bindings[0], ['F1']);
+  assertDeepEq(norm.bindings[1], ['F2']);
+  assertDeepEq(norm.bindings[5], ['NumpadEnter']);
+  assertDeepEq(normalizeBindings(defaultBindings(GB_KEY_DEFAULTS), GB_KEY_DEFAULTS).repaired, [0], 'the drum rule drops F1');
+  assertEq(normalizeBindings(null, GB_KEY_DEFAULTS, isGbKeyCode).bindings.length, 7);
+  // 追加・差し替えも、ギター / ベースの検査を渡せば F1・テンキー Enter を受ける。右 Ctrl はいつも不可
+  assertEq(addKey(defaultBindings(GB_KEY_HOME), 0, 'F1').ok, false, 'drum rule');
+  const added = addKey(defaultBindings(GB_KEY_HOME), 0, 'F1', isGbKeyCode);
+  assert(added.ok);
+  assertDeepEq(added.bindings[0], ['KeyA', 'F1']);
+  assertEq(replaceKey(defaultBindings(GB_KEY_HOME), 5, 0, 'NumpadEnter', isGbKeyCode).ok, true);
+  assertEq(replaceKey(defaultBindings(GB_KEY_HOME), 5, 0, 'ControlRight', isGbKeyCode).ok, false, 'Right Ctrl is never assignable');
+  const moved = addKey(b, 0, 'Slash', isGbKeyCode).bindings; // WAIL の / を R へ
   assertDeepEq(moved[6], []);
   const back = resetLane(moved, 6, GB_KEY_DEFAULTS);
-  assertDeepEq(back.bindings[6], ['KeyL']);
+  assertDeepEq(back.bindings[6], ['Slash']);
   assertDeepEq(back.stolenFrom, [0]);
-  assertEq(laneKeysText(b[5]), 'J / K');
+  assertEq(laneKeysText(b[5]), "] / '", 'US names when the layout is unknown');
 });
 
-test('keybind: the lefty layout mirrors the guitar defaults across the keyboard centre', () => {
+test('keybind: the NX bass numpad layout, and moving the old default (A S D F G) to the NX one', () => {
+  assertDeepEq(GB_KEY_NUMPAD.flat(), ['Numpad1', 'Numpad2', 'Numpad3', 'Numpad4', 'Numpad5', 'NumpadDecimal', 'NumpadEnter', 'Numpad0']);
+  for (const rev of [undefined, 1]) {
+    const m = migrateGbBindings(defaultBindings(GB_KEY_HOME), rev);
+    assertEq(m.migrated, true, 'saved before rev 2: ' + rev);
+    assertDeepEq(m.bindings, defaultBindings(GB_KEY_DEFAULTS));
+  }
+  // 版 2 以降に保存した A S D F G は、選び直したものなのでそのまま(読み直すたびに戻さない)
+  const chosen = defaultBindings(GB_KEY_HOME);
+  assertEq(migrateGbBindings(chosen, 2).migrated, false);
+  assertEq(migrateGbBindings(chosen, 2).bindings, chosen);
+  const custom = defaultBindings(GB_KEY_HOME);
+  custom[6] = ['KeyP'];
+  assertEq(migrateGbBindings(custom, 1).migrated, false, 'a layout the user changed is kept');
+  assertEq(migrateGbBindings(custom, 1).bindings, custom);
+  assertEq(migrateGbBindings(defaultBindings(GB_KEY_DEFAULTS), 1).migrated, false);
+  assertEq(migrateGbBindings(null, 1).migrated, false);
+});
+
+test('keybind: guitar keys win over the app hotkeys (F1 AUTO, Numpad Enter decide) and stop the browser defaults (F1 / F3 / F5)', () => {
+  const ev = [];
+  const appKeys = [];
+  const input = new GuitarInput({
+    onFret: (lane, down) => ev.push(['fret', lane, down]),
+    onPick: () => ev.push(['pick']),
+    onWail: () => ev.push(['wail']),
+    onKey: (code, down) => { appKeys.push([code, down]); return down && (code === 'F1' || code === 'Enter' || code === 'NumpadEnter'); },
+  });
+  input.setBindings(defaultBindings(GB_KEY_DEFAULTS));
+  const key = (code, down, repeat = false) => {
+    const e = { code, key: '', repeat, timeStamp: 1, target: document.body, prevented: false, preventDefault() { this.prevented = true; } };
+    if (down) input._onKeyDown(e);
+    else input._onKeyUp(e);
+    return e;
+  };
+  for (const code of ['F1', 'F2', 'F3', 'F4', 'F5']) {
+    assertEq(key(code, true).prevented, true, code + ' default action stopped');
+    assertEq(key(code, true, true).prevented, true, code + ' auto-repeat stopped too');
+  }
+  assertDeepEq(ev, [['fret', 0, true], ['fret', 1, true], ['fret', 2, true], ['fret', 3, true], ['fret', 4, true]]);
+  assertEq(appKeys.filter(([, down]) => down).length, 0, 'F1 did not reach the AUTO toggle');
+  for (const code of ['F1', 'F2', 'F3', 'F4', 'F5']) key(code, false);
+  assertEq(ev.filter((x) => x[0] === 'fret' && !x[2]).length, 5);
+  assertEq(appKeys.length, 5, 'keyups still go to the app (menu key repeat state)');
+  // 割り当てていないキーはアプリへ(Enter はメニューの決定)
+  appKeys.length = 0;
+  assertEq(key('Enter', true).prevented, true);
+  assertDeepEq(appKeys, [['Enter', true]]);
+  // テンキーの並び: テンキーの Enter が PICK(メニューの決定より先)
+  input.setBindings(defaultBindings(GB_KEY_NUMPAD));
+  ev.length = 0;
+  appKeys.length = 0;
+  key('NumpadEnter', true);
+  assertDeepEq(ev, [['pick']]);
+  assertEq(appKeys.length, 0);
+  // F1 を割り当てていなければ、これまでどおり AUTO 切替へ
+  key('F1', true);
+  assertDeepEq(appKeys, [['F1', true]]);
+  input.releaseAll(2);
+});
+
+test('keybind: the guitar key panel takes F1 and refuses Ctrl with the reason; the drum panel keeps F1 reserved', () => {
+  const host = document.createElement('div');
+  host.innerHTML = '<div class="list"></div><span class="status"></span><button class="undo" hidden></button><button class="reset"></button>';
+  document.body.appendChild(host);
+  let gb = defaultBindings(GB_KEY_HOME);
+  const panel = new KeyBindPanel({
+    list: host.querySelector('.list'),
+    statusText: host.querySelector('.status'),
+    undoButton: host.querySelector('.undo'),
+    resetAllButton: host.querySelector('.reset'),
+    names: GB_BUTTON_NAMES,
+    defaults: GB_KEY_DEFAULTS,
+    getBindings: () => gb,
+    setBindings: (next) => { gb = next; },
+    device: keyboardDevice(isGbKeyCode),
+  });
+  const press = (code) => window.dispatchEvent(new KeyboardEvent('keydown', { code, key: '', bubbles: true, cancelable: true }));
+  try {
+    panel.build();
+    panel.startAssign(0, 'replace', 0);
+    press('ControlRight');
+    assertEq(host.querySelector('.status').textContent, t('keys.modifier'), 'Right Ctrl explains why it cannot be assigned');
+    assertEq(panel.assigning, true, 'still waiting');
+    press('F1');
+    assertDeepEq(gb[0], ['F1'], 'F1 assigned to R');
+    assertEq(panel.assigning, false);
+    panel.startAssign(5, 'add', -1);
+    press('NumpadEnter');
+    assertDeepEq(gb[5], ['KeyJ', 'KeyK', 'NumpadEnter']);
+  } finally {
+    panel.cancelAssign();
+    host.remove();
+  }
+  // ドラムの欄(既定の入力元)では F1 は予約のまま
+  const host2 = document.createElement('div');
+  host2.innerHTML = '<div class="list"></div><span class="status"></span><button class="undo" hidden></button><button class="reset"></button>';
+  document.body.appendChild(host2);
+  let drum = defaultBindings();
+  const dp = new KeyBindPanel({
+    list: host2.querySelector('.list'),
+    statusText: host2.querySelector('.status'),
+    undoButton: host2.querySelector('.undo'),
+    resetAllButton: host2.querySelector('.reset'),
+    names: GB_BUTTON_NAMES.slice(0, 1).concat(['x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x']),
+    defaults: defaultBindings(),
+    getBindings: () => drum,
+    setBindings: (next) => { drum = next; },
+  });
+  try {
+    dp.build();
+    dp.startAssign(0, 'add', -1);
+    press('F1');
+    assertEq(host2.querySelector('.status').textContent, t('keys.reserved', { key: 'F1' }));
+    assertEq(drum[0].includes('F1'), false);
+  } finally {
+    dp.cancelAssign();
+    host2.remove();
+  }
+});
+
+test('keybind: key names follow the keyboard layout when the browser tells it (JIS : and [)', () => {
+  try {
+    setKeyboardLayout(new Map([['Quote', ':'], ['BracketRight', '['], ['Slash', '/'], ['KeyA', 'a'], ['F1', 'x'], ['Numpad1', '1']]));
+    assertEq(keyLabel('Quote'), ':');
+    assertEq(keyLabel('BracketRight'), '[');
+    assertEq(laneKeysText(GB_KEY_DEFAULTS[5]), '[ / :');
+    assertEq(keyLabel('KeyA'), 'A');
+    assertEq(keyLabel('F1'), 'F1', 'function keys keep their names');
+    assertEq(keyLabel('Space'), 'Space');
+    assertEq(keyLabel('Numpad1'), 'Num1', 'numpad keys keep their names');
+    assertEq(keyLabel('Backslash'), '\\', 'not in the map → US name');
+    // AZERTY: 文字のキーも配列の文字にする(Semicolon と KeyM が同じ M にならない)。ß は SS にしない
+    setKeyboardLayout(new Map([['Semicolon', 'm'], ['KeyM', ','], ['KeyQ', 'a'], ['KeyA', 'q'], ['Minus', 'ß'], ['Digit1', '&']]));
+    assertEq(keyLabel('Semicolon'), 'M');
+    assertEq(keyLabel('KeyM'), ',');
+    assert(keyLabel('Semicolon') !== keyLabel('KeyM'), 'two keys never share a name');
+    assertEq(keyLabel('KeyA'), 'Q');
+    assertEq(keyLabel('Minus'), 'ß');
+    assertEq(keyLabel('Digit1'), '1', 'digits keep their names');
+  } finally {
+    setKeyboardLayout(null);
+  }
+  assertEq(keyLabel('Quote'), "'");
+});
+
+test('keybind: the lefty layout mirrors the A S D F G layout across the keyboard centre', () => {
   const mirror = { KeyA: 'Semicolon', KeyS: 'KeyL', KeyD: 'KeyK', KeyF: 'KeyJ', KeyG: 'KeyH', KeyJ: 'KeyF', KeyK: 'KeyD', KeyL: 'KeyS' };
   assertEq(GB_KEY_LEFTY.length, 7);
-  for (let i = 0; i < 7; i++) assertDeepEq(GB_KEY_LEFTY[i], GB_KEY_DEFAULTS[i].map((c) => mirror[c]), GB_BUTTON_NAMES[i]);
+  for (let i = 0; i < 7; i++) assertDeepEq(GB_KEY_LEFTY[i], GB_KEY_HOME[i].map((c) => mirror[c]), GB_BUTTON_NAMES[i]);
   for (const codes of GB_KEY_LEFTY) for (const code of codes) assertEq(isAssignableCode(code), true, code + ' must be assignable');
   const all = GB_KEY_LEFTY.flat();
   assertEq(new Set(all).size, all.length, 'no key on two buttons');
-  assertEq(normalizeBindings(GB_KEY_LEFTY, GB_KEY_DEFAULTS).repaired.length, 0, 'a valid saved layout');
+  assertEq(normalizeBindings(GB_KEY_LEFTY, GB_KEY_DEFAULTS, isGbKeyCode).repaired.length, 0, 'a valid saved layout');
 });
 
 test('keybind: a preset button replaces all bindings and can be undone', () => {

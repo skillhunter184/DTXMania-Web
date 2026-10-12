@@ -110,6 +110,7 @@ The raw string is at CI:4196-4248 and is parsed through `tReadFromString` (CI:42
   - **[AI-diff]** There is no in-app key-assign UI for GB. Keys are edited in Config.ini only (CS:1286; AIdoc20:175-176). **[FIX]** The draft cited CS:1287.
 
 ### 1.4 Web constraints (this repo, HEAD 26de61f)
+- **[ADD] Resolved later:** guitar / bass use `GB_RESERVED_CODES` (the list below without `F1` and `NumpadEnter`), a bound guitar key is taken before the app hotkeys (`GuitarInput._onKeyDown`), and the defaults follow NX (F1–F5 / `]` `:` / `/` instead of Right Ctrl). See docs/spec/guitar-bass.md (既定のキー).
 - `RESERVED_CODES = ArrowUp/Down/Left/Right, Enter, NumpadEnter, Escape, Tab, F1` (js/ui/keybind.js:21-30).
 - `F1` toggles AUTO (js/main.js:1102-1108 at HEAD).
 - Arrows, Enter and NumpadEnter drive the training menu. `F11` is intentionally not reserved (keybind.js:26).

@@ -32,9 +32,39 @@ export function eventCode(e) {
   return k; // ArrowDown / Enter / Escape / F1 などはそのまま code と同じ綴り
 }
 
-/** KeyboardEvent.code の表示名。 */
+// 記号のキーの表示名は、読めればキーボードの配列のもの(navigator.keyboard.getLayoutMap。Chrome / Edge)にする。
+// code はキーの場所で決まるので、JIS のキーボードでは Quote が : のキー、BracketRight が [ のキー(US の名前では ' と ])。
+let layoutMap = null;
+
+/** キーボードの配列を読む(読めたら true。読めないブラウザでは US の名前のまま)。 */
+export async function loadKeyboardLayout() {
+  try {
+    const kb = typeof navigator !== 'undefined' ? navigator.keyboard : null;
+    layoutMap = kb && kb.getLayoutMap ? await kb.getLayoutMap() : null;
+  } catch (e) {
+    layoutMap = null; // 枠の中など、使えないところ
+  }
+  return !!layoutMap;
+}
+
+/** 配列を差し替える(テスト用。null で US の名前に戻す)。 */
+export function setKeyboardLayout(map) {
+  layoutMap = map || null;
+}
+
+/**
+ * KeyboardEvent.code の表示名。配列が読めていれば文字・記号のキーはその配列の文字(同じ配列から引くので、AZERTY の
+ * KeyM と Semicolon のように別のキーが同じ名前になることがない)。数字・テンキー・F キー・Space は決まった名前。
+ */
 export function keyLabel(code) {
   if (!code) return '';
+  if (layoutMap && !code.startsWith('Digit') && !code.startsWith('Numpad') && !/^F\d+$/.test(code) && code !== 'Space') {
+    const ch = layoutMap.get(code);
+    if (typeof ch === 'string' && ch.length === 1 && ch.trim()) {
+      const up = ch.toUpperCase();
+      return up.length === 1 ? up : ch; // ß は SS にしない
+    }
+  }
   if (code.startsWith('Key')) return code.slice(3);
   if (code.startsWith('Digit')) return code.slice(5);
   const map = { Space: 'Space', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', BracketLeft: '[', BracketRight: ']', Backslash: '\\', Minus: '-', Equal: '=', Backquote: '`' };

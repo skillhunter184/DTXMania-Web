@@ -629,6 +629,7 @@ actScore.Add(part, (long)d)                    // no isAuto gate: AUTO chips sco
 ## 13. Notes for the web port (recommendations, not NX behaviour)
 
 - NX's default fret keys conflict with this repo's `RESERVED_CODES`, which contains `F1`, `Enter`, `NumpadEnter`, `Tab` and others (`js/ui/keybind.js:27-30`). The defaults F1 (Guitar R) and NumpadEnter (Bass Pick #2) must change, and CLAUDE.md requires `RESERVED_CODES` and docs to be kept in sync.
+  - **[ADD] Resolved:** guitar / bass allow F1 and NumpadEnter (`GB_RESERVED_CODES`) and a bound key wins over the app hotkeys, so the NX defaults are used as they are, except Right Ctrl (Wail → `/`). See docs/spec/guitar-bass.md.
 - Use `KeyboardEvent.timeStamp` per keydown to keep NX's per-event pick timing. That fixes DTXManiaAI's frame-timing and one-pick-per-frame deviations at low cost.
   - **[ADD]** Process the queued pick events **before** the per-frame Miss sweep, or sweep per event time. This avoids NX's lost late-edge frame (§5).
 - Decide explicitly on each **[NX quirk]**. Recommended:
