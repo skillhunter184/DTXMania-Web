@@ -254,6 +254,10 @@ export const STRINGS = {
   'play.pause': ['一時停止 / 再開', 'Pause / Resume'],
   'play.fullscreen': ['全画面', 'Full screen'],
   'play.menu': ['トレーニングメニュー', 'Training menu'],
+  'play.fpsTitle': [
+    '1 秒あたりに描いた回数(画面の更新は {hz} Hz)。待機中・一時停止中は省電力のため 60 fps 前後に間引きます。',
+    'Frames drawn per second (the display refreshes at {hz} Hz). While stopped or paused, drawing is reduced to about 60 fps to save power.',
+  ],
   'play.replay': ['リプレイ', 'Replay'],
   'play.replayTitle': ['直前の演奏をリプレイ / 停止', 'Replay the last run / Stop'],
   'seek.prev10': ['10 戻る', 'Back 10'],

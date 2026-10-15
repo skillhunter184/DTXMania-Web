@@ -1,5 +1,5 @@
 import { test, assert, assertEq, assertNear } from './runner.js';
-import { estimateHz, frameDivisor, FramePacer, IDLE_DRAW_FPS } from '../js/ui/framepace.js';
+import { estimateHz, frameDivisor, FramePacer, FpsMeter, IDLE_DRAW_FPS } from '../js/ui/framepace.js';
 
 /** hz の画面の rAF の時刻を n 個(q ms に切り捨て。Chrome は 0.1 ms、Firefox / Safari は 1 ms)。 */
 function rafTimes(hz, n, q, t0 = 1000) {
@@ -64,4 +64,22 @@ test('framepace: about 60 draws per second at 360 Hz while idle, every frame oth
   let slow = 0;
   for (let i = 1; i <= 20; i++) if (p.shouldDraw(t + 2.8 + i * 16.7, IDLE_DRAW_FPS)) slow++;
   assertEq(slow, 20, 'time-based, not count-based');
+});
+
+test('framepace: the FPS readout counts drawn frames every 500 ms and reports only changes', () => {
+  const m = new FpsMeter();
+  assertEq(m.fps, 0, 'nothing until the first count');
+  const changed = [];
+  // 144 Hz で 2 秒描く(Chrome の 0.1 ms 丸め)
+  for (const t of rafTimes(144, 288, 0.1)) if (m.frame(t)) changed.push(m.fps);
+  assertEq(m.fps, 144);
+  assertEq(changed.length, 1, 'the same value is not written again');
+  // 1 回おき(72 fps)に描く: 停止中の間引きは描いた回数で見える
+  const t1 = 1000 + 2000;
+  for (const [i, t] of rafTimes(144, 288, 0.1, t1).entries()) if (i % 2 === 0 && m.frame(t)) changed.push(m.fps);
+  assertNear(m.fps, 72, 1);
+  assertEq(changed.length, 2);
+  m.reset();
+  assertEq(m.fps, 0, 'reset when entering the play screen');
+  assertEq(m.frame(5000), false, 'the first frame only starts the count');
 });

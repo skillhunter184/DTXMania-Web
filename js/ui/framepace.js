@@ -3,6 +3,7 @@
 // frameDivisor と同じ考え方。あちらのリポジトリの docs/譜面シミュレータ.md §7.13)。描く速さは画面の Hz を整数で
 // 割った値なので、ちょうど 60 にはならない(144 Hz → 72、165 Hz → 55、90 Hz → 45)。
 // 演奏中は間引かない(間引くと時計が滑らかでもチップの 1 フレームの移動が k 倍になり、見た目が粗くなる)。
+// 演奏画面の FPS の表示(FpsMeter)もここに置く。
 
 /** 停止中の描画の目安(fps)。画面の Hz を割って、これに比で最も近くする。 */
 export const IDLE_DRAW_FPS = 60;
@@ -88,5 +89,43 @@ export class FramePacer {
   /** 次のフレームは必ず描く(キャンバスの大きさを変えると中身が消えるので、resize の後など)。 */
   forceNext() {
     this._lastDrawn = -Infinity;
+  }
+}
+
+/** FPS の表示を数え直す間隔(ms)。短いと数字が読めないほど揺れる。 */
+export const FPS_WINDOW_MS = 500;
+
+/**
+ * 演奏画面の FPS の表示(本アプリの追加)。描いたフレームの数を FPS_WINDOW_MS ごとに経過時間で割る(rAF の回数ではなく
+ * 描いた回数なので、停止中は間引いた後の値になる)。
+ */
+export class FpsMeter {
+  constructor(windowMs = FPS_WINDOW_MS) {
+    this.windowMs = windowMs;
+    this.reset();
+  }
+
+  /** 数え直す(演奏画面に入ったとき)。値は数え終わるまで 0。 */
+  reset() {
+    this.fps = 0;
+    this._t0 = -1;
+    this._frames = 0;
+  }
+
+  /** 描いたフレームごとに呼ぶ(t は rAF の時刻)。数え終わって値が変わったら true。 */
+  frame(t) {
+    if (this._t0 < 0) {
+      this._t0 = t;
+      return false;
+    }
+    this._frames++;
+    const dt = t - this._t0;
+    if (dt < this.windowMs) return false;
+    const fps = Math.round((this._frames * 1000) / dt);
+    this._t0 = t;
+    this._frames = 0;
+    if (fps === this.fps) return false;
+    this.fps = fps;
+    return true;
   }
 }

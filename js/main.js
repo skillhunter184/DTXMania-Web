@@ -12,7 +12,7 @@ import { HitRanges } from './game/hitranges.js';
 import { Skin, PANELS, LEGACY_SKIN_BASE, collectSkinFiles, normalizeSkinPath } from './ui/skin.js';
 import { Renderer } from './ui/renderer.js';
 import { GuitarRenderer } from './ui/gbrenderer.js';
-import { FramePacer, IDLE_DRAW_FPS } from './ui/framepace.js';
+import { FramePacer, FpsMeter, IDLE_DRAW_FPS } from './ui/framepace.js';
 import { TrainingMenu, MENU_COMMAND } from './ui/menu.js';
 import { DrumInput, LANE_KEY_DEFAULTS, eventCode, loadKeyboardLayout } from './ui/input.js';
 import {
@@ -154,6 +154,7 @@ class App {
     this.input = null;
     this.raf = 0;
     this.pacer = new FramePacer(); // 停止中の描画の間引き(画面の Hz は曲をまたいで持ち越す)
+    this.fpsMeter = new FpsMeter(); // 演奏画面の上部の FPS の表示
     this._loadGen = 0;
     this.keyPanel = null; // 設定の「キー割り当て」(js/ui/keypanel.js)
     this.gbKeyPanel = null; // 同じくギター / ベース
@@ -982,6 +983,8 @@ class App {
     this.requestWakeLock();
     cancelAnimationFrame(this.raf);
     this.pacer.forceNext();
+    this.fpsMeter.reset();
+    $('play-fps').textContent = '';
     const loop = (now) => {
       if (!this.player) return;
       this.pacer.tick(now);
@@ -1007,6 +1010,7 @@ class App {
       this.renderer.draw(now);
       this.updateSeekBar();
       this.syncReplayButton();
+      if (this.fpsMeter.frame(now)) this.showFps();
       this.raf = requestAnimationFrame(loop);
     };
     this.raf = requestAnimationFrame(loop);
@@ -1042,6 +1046,13 @@ class App {
     if (b.hidden === show) b.hidden = !show;
     if (b.disabled === enabled) b.disabled = !enabled;
     b.classList.toggle('on', !!(p && p.replay));
+  }
+
+  /** 上部のバーの FPS(描いた回数。数え直したときだけ書く)。ツールチップに画面の Hz と停止中の間引きを出す。 */
+  showFps() {
+    const el = $('play-fps');
+    el.textContent = this.fpsMeter.fps + ' fps';
+    el.title = t('play.fpsTitle', { hz: Math.round(this.pacer.hz) || '?' });
   }
 
   toggleMenu() {

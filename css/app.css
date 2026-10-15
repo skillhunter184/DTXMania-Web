@@ -149,6 +149,8 @@ footer.note { margin-top: 24px; }
 #playbar .pb:disabled { color: var(--muted); cursor: default; }
 #playbar .pb.on { background: rgba(110, 60, 20, 0.85); border-color: rgb(255, 170, 90); color: rgb(255, 200, 150); }
 #play-title { flex: 1; min-width: 0; color: var(--muted); font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 4px #000; }
+/* FPS(数が変わっても幅を変えない) */
+#play-fps { flex: none; min-width: 4.5em; color: var(--muted); font-size: 0.8em; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; text-shadow: 0 0 4px #000; }
 body.desktop #playbar .pb { opacity: 0.35; }
 body.desktop #playbar:hover .pb { opacity: 1; }
 
