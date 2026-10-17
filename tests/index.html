@@ -18,20 +18,11 @@
   const v = 'v=' + Date.now();
   // runner は各テストが './runner.js' として読む同じインスタンスを使う(クエリを付けると別モジュールになる)
   const { run } = await import('./runner.js');
-  await import('./core.test.js?' + v);
-  await import('./game.test.js?' + v);
-  await import('./clock.test.js?' + v);
-  await import('./menu.test.js?' + v);
-  await import('./renderer.test.js?' + v);
-  await import('./gbrenderer.test.js?' + v);
-  await import('./framepace.test.js?' + v);
-  await import('./keybind.test.js?' + v);
-  await import('./midi.test.js?' + v);
-  await import('./gb.test.js?' + v);
-  await import('./gamepad.test.js?' + v);
-  await import('./replay.test.js?' + v);
-  await import('./integration.test.js?' + v);
-  await import('./i18n.test.js?' + v);
+  const files = ['core', 'game', 'clock', 'menu', 'renderer', 'gbrenderer', 'framepace', 'keybind', 'midi', 'gb', 'gamepad',
+    'replay', 'integration', 'edit', 'i18n'];
+  // ?only=edit,core で一部のファイルだけ回す(作業中の確かめ用。全体は何も付けずに開く)
+  const only = new URLSearchParams(location.search).get('only');
+  for (const f of only ? files.filter((n) => only.split(',').includes(n)) : files) await import('./' + f + '.test.js?' + v);
   run();
 </script>
 </body>

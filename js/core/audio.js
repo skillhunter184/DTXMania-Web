@@ -214,15 +214,21 @@ export class AudioEngine {
 
   /**
    * 譜面が必要とする音源をすべて読み込む。
+   * (追加) 同じ曲パックの前の読み込みで復号できたファイルは復号し直さない(譜面の編集からテストプレイ・
+   * 編集画面へ戻るたびに長い BGM を復号し直さないように)。今の譜面が使わなくなったファイルは手放す。
    * @param {import('./song.js').SongPackage} pkg
    * @param {any} chart parseDTX の結果
    * @param {(done:number, total:number, name:string)=>void} [onProgress]
+   * @param {{keepVoices?: boolean}} [opts] keepVoices: 鳴っている音を止めない(編集画面で WAV を足したとき)
    */
-  async loadChartSounds(pkg, chart, onProgress) {
+  async loadChartSounds(pkg, chart, onProgress, opts = {}) {
     await this.ensureContext();
-    this.stopAll();
-    this.buffers = new Map();
-    this.failed = [];
+    if (!opts.keepVoices) this.stopAll();
+    const gen = (this._soundLoadGen = (this._soundLoadGen || 0) + 1); // 後から始まった読み込みがあれば、こちらの結果は使わない
+    const reuse = this._decodedPkg === pkg && this._decoded ? this._decoded : new Map();
+    const decoded = new Map(); // ファイル(小文字のパス)→ 復号した AudioBuffer(この読み込みで使うものだけ持ち続ける)
+    const buffers = new Map();
+    const failed = [];
     const ids = requiredWavIds(chart);
     const byPath = new Map(); // 同じファイルを指す id は一度だけ復号する
     let done = 0;
@@ -235,7 +241,7 @@ export class AudioEngine {
         if (ent) {
           const key = ent.name.toLowerCase();
           if (!byPath.has(key)) {
-            byPath.set(key, (async () => {
+            byPath.set(key, reuse.has(key) ? Promise.resolve(reuse.get(key)) : (async () => {
               try {
                 return await this.decode(await pkg.readBytes(ent), ent.name);
               } catch (e) {
@@ -245,10 +251,11 @@ export class AudioEngine {
             })());
           }
           buf = await byPath.get(key);
+          if (buf) decoded.set(key, buf);
         }
-        if (!buf) this.failed.push({ id, file });
+        if (!buf) failed.push({ id, file });
       }
-      this.buffers.set(id, buf);
+      buffers.set(id, buf);
       done++;
       if (onProgress) onProgress(done, total, file || id);
     };
@@ -260,6 +267,12 @@ export class AudioEngine {
       })());
     }
     await Promise.all(runners);
+    // 読み込み中も前のバッファで鳴らせるよう、揃ってから差し替える
+    if (gen !== this._soundLoadGen) return buffers;
+    this.buffers = buffers;
+    this.failed = failed;
+    this._decoded = decoded;
+    this._decodedPkg = pkg;
     return this.buffers;
   }
 

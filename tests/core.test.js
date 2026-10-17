@@ -1,6 +1,6 @@
 import { test, assert, assertEq, assertNear, assertDeepEq, fetchBytes } from './runner.js';
-import { decodeText } from '../js/core/encoding.js';
-import { ZipArchive, inflateRawSync, crc32 } from '../js/core/zip.js';
+import { decodeText, decodeTextInfo, encodeShiftJis, encodeText } from '../js/core/encoding.js';
+import { ZipArchive, ZipWriter, inflateRawSync, crc32 } from '../js/core/zip.js';
 import { decodeXA } from '../js/core/xa.js';
 import { parseDTX, parseDTXHeader, requiredWavIds, buildMeasureTimes, measureIndexAt, LANE_NAMES } from '../js/core/dtx.js';
 import { parseSetDef } from '../js/core/setdef.js';
@@ -21,6 +21,41 @@ test('encoding: UTF-8 BOM and plain UTF-8', () => {
   const enc = new TextEncoder();
   assertEq(decodeText(new Uint8Array([0xef, 0xbb, 0xbf, ...enc.encode('道場')])), '道場');
   assertEq(decodeText(enc.encode('道場テスト 譜面')), '道場テスト 譜面');
+});
+
+test('encoding: decodeTextInfo reports the encoding and BOM', () => {
+  const enc = new TextEncoder();
+  assertDeepEq(decodeTextInfo(new Uint8Array([0x23, 0x8a, 0x47])), { text: '#絵', encoding: 'shift_jis', bom: false });
+  assertDeepEq(decodeTextInfo(new Uint8Array([0xff, 0xfe, 0x23, 0x00])), { text: '#', encoding: 'utf-16le', bom: true });
+  assertDeepEq(decodeTextInfo(new Uint8Array([0xef, 0xbb, 0xbf, ...enc.encode('道')])), { text: '道', encoding: 'utf-8', bom: true });
+  assertDeepEq(decodeTextInfo(enc.encode('道場テスト')), { text: '道場テスト', encoding: 'utf-8', bom: false });
+  assertDeepEq(decodeTextInfo(enc.encode('#BPM: 120')), { text: '#BPM: 120', encoding: 'ascii', bom: false });
+});
+test('encoding: Shift-JIS encoder round-trips through the decoder (kanji, kana, half-width kana, NEC/IBM extensions)', () => {
+  const s = '#TITLE: 絵空事 ドラム ﾄﾞﾗﾑ ①Ⅲ㈱ 髙﨑 ～ \\ abc';
+  const b = encodeShiftJis(s);
+  assert(b !== null, 'encodable');
+  assertEq(decodeText(b), s);
+  // JIS X 0208 の側の波ダッシュ(macOS の IME など)は cp932 の ～ と同じ符号にする
+  assertEq(decodeText(encodeShiftJis('A〜B')), 'A～B');
+  // 「絵」= 8A47(既存のテストと同じ符号)、半角カナ「ﾄ」= C4
+  assertDeepEq([...encodeShiftJis('絵ﾄ')], [0x8a, 0x47, 0xc4]);
+  // 「髙」は NEC 選定 IBM 拡張(先頭 ED / EE)にもあるが、WHATWG と同じく IBM 拡張(先頭 FA〜FC)の符号を使う
+  const taka = encodeShiftJis('髙');
+  assert(taka[0] >= 0xfa && taka[0] <= 0xfc, 'IBM extension lead byte: ' + taka[0].toString(16));
+  assertEq(encodeShiftJis('😀'), null, 'emoji is not encodable');
+});
+test('encoding: encodeText keeps UTF-16 / UTF-8 BOM and falls back to UTF-8 BOM when Shift-JIS cannot hold the text', () => {
+  const le = encodeText('#あ', 'utf-16le', true);
+  assertDeepEq([...le.bytes], [0xff, 0xfe, 0x23, 0x00, 0x42, 0x30]);
+  assertEq(decodeText(encodeText('道場', 'utf-8', true).bytes), '道場');
+  assertDeepEq([...encodeText('#A', 'ascii').bytes], [0x23, 0x41]);
+  assertEq(encodeText('#A', 'ascii').encoding, 'ascii');
+  assertEq(encodeText('#絵', 'ascii').encoding, 'shift_jis');
+  const fb = encodeText('#😀', 'shift_jis');
+  assertEq(fb.encoding, 'utf-8');
+  assertEq(fb.bom, true);
+  assertEq(decodeText(fb.bytes), '#😀');
 });
 
 // ---- zip ----
@@ -55,6 +90,32 @@ test('zip: read deflate entry via DecompressionStream and pure-JS inflate', asyn
   assertEq(xaBytes.length, exp.xa_len);
   const stored = await pack.read(pack.find('utf8名前/readme.txt'));
   assertEq(decodeText(stored, { preferUtf8: true }), 'utf-8 名前のエントリ');
+});
+test('zip: ZipWriter copies entries untouched (Shift-JIS names, deflate data) and adds a stored file', async () => {
+  const src = await ZipArchive.open((await fetchBytes('fixtures/pack_sjis.zip')).buffer);
+  const w = new ZipWriter();
+  const target = src.find('道場テスト/譜面.dtx');
+  for (const e of src.entries) if (e !== target) await w.copyEntry(src, e);
+  const text = new TextEncoder().encode('#TITLE: edited\r\n');
+  w.addFile(target.name, text, { nameBytes: target.nameBytes, utf8: target.utf8 });
+  w.addFile('新しい/メモ.txt', new TextEncoder().encode('memo'));
+  const out = await ZipArchive.open(w.finish());
+  assertEq(out.entries.length, src.entries.length + 1, 'entry count');
+  for (const e of src.entries) {
+    const o = out.find(e.name);
+    assert(o, 'kept ' + e.name);
+    assertDeepEq([...o.nameBytes], [...e.nameBytes], 'name bytes ' + e.name);
+    assertEq(o.utf8, e.utf8, 'utf8 flag ' + e.name);
+    if (e === target || e.isDir) continue;
+    assertEq(o.method, e.method, 'method ' + e.name);
+    const a = await src.read(e);
+    const b = await out.read(o, { verifyCrc: true });
+    assertEq(crc32(b), crc32(a), 'data ' + e.name);
+  }
+  assertEq(decodeText(await out.read(out.find(target.name))), '#TITLE: edited\r\n');
+  const memo = out.find('新しい/メモ.txt');
+  assert(memo && memo.utf8, 'utf-8 name with flag');
+  assertEq(memo.crc, crc32(new TextEncoder().encode('memo')));
 });
 test('zip: inflateRawSync handles stored blocks', () => {
   // raw deflate stored block: BFINAL=1, BTYPE=00 → byte 0x01, LEN=5, NLEN=~5, "hello"

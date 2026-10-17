@@ -5,7 +5,7 @@
 //   .dtx から参照する #WAVxx は曲フォルダ基準の相対パス(区切りは '\' が多い)
 // ファイル名の大文字小文字・区切り文字・Unicode 正規化(macOS の NFD)の違いは吸収する。
 
-import { ZipArchive, FileSetArchive } from './zip.js';
+import { ZipArchive, FileSetArchive, ZipWriter, crc32 } from './zip.js';
 import { decodeText } from './encoding.js';
 import { parseSetDef, parseBoxDef } from './setdef.js';
 import { parseDTX, parseDTXHeader } from './dtx.js';
@@ -54,6 +54,79 @@ export class SongPackage {
     this.songs = [];
     this._blobUrls = [];
     this._imgCache = new Map();
+    /** (追加) 譜面の編集で書き換えたファイル: 正規化パス → {bytes, entry, added}(added = 元の ZIP に無いファイル) */
+    this._overrides = new Map();
+  }
+
+  /**
+   * (追加) 編集した譜面をパッケージに重ねる(元の ZIP は書き換えない)。以後 readBytes / loadChart / 曲の一覧はこの中身を読む。
+   * 元に無いパスなら新しいファイルとして足す。bytes が null なら重ねたものを外す。
+   * @param {string} path
+   * @param {Uint8Array|null} bytes
+   */
+  setOverride(path, bytes) {
+    const key = normKey(path);
+    const prev = this._overrides.get(key);
+    if (bytes === null) {
+      if (!prev) return;
+      this._overrides.delete(key);
+      if (prev.added) this.index.delete(key);
+      return;
+    }
+    let entry = this.index.get(key);
+    const added = prev ? prev.added : !entry;
+    if (!entry) {
+      entry = { name: path.replace(/\\/g, '/'), size: bytes.length, compressedSize: bytes.length, method: 0, crc: 0, localOffset: 0, isDir: false, utf8: true, flags: 0 };
+      this.index.set(key, entry);
+    }
+    this._overrides.set(key, { bytes, entry, added });
+  }
+
+  /** 重ねたファイルの中身(無ければ null)。 */
+  override(path) {
+    const o = this._overrides.get(normKey(path));
+    return o ? o.bytes : null;
+  }
+
+  /** 重ねたファイルがあるか。 */
+  get hasOverrides() {
+    return this._overrides.size > 0;
+  }
+
+  /** 曲の一覧を作り直す(重ねた譜面の題名・レベル・新しい譜面を一覧に出す)。 */
+  async rescan() {
+    await this._scan();
+  }
+
+  /**
+   * (追加) 重ねたファイルを入れた ZIP を作る。元の ZIP のエントリは圧縮されたまま写し(順番・名前のバイト列も同じ)、
+   * 書き換えた譜面は同じ名前で無圧縮で入れ、新しいファイルは末尾に足す。フォルダから読んだときはファイルを無圧縮で入れる。
+   * @returns {Promise<Blob>}
+   */
+  async exportZip() {
+    const w = new ZipWriter();
+    const zip = this.zip;
+    const seen = new Set();
+    for (const e of zip.entries) {
+      const key = normKey(e.name);
+      const o = this._overrides.get(key);
+      if (o && !e.isDir) {
+        // 正規化して同じ名前のエントリが 2 つあれば、重ねた中身を 1 つだけ入れる(読み込みは後勝ちなので古い方を残さない)
+        if (!seen.has(key)) w.addFile(e.name, o.bytes, e.nameBytes ? { nameBytes: e.nameBytes, utf8: e.utf8 } : {});
+        seen.add(key);
+        continue;
+      }
+      if (zip instanceof ZipArchive) {
+        await w.copyEntry(zip, e);
+      } else if (!e.isDir) {
+        const f = zip.fileOf(e);
+        w.addBlob(e.name, f, crc32(await zip.read(e)), { date: f && f.lastModified ? new Date(f.lastModified) : undefined });
+      }
+    }
+    for (const [key, o] of this._overrides) {
+      if (!seen.has(key) && o.added) w.addFile(o.entry.name, o.bytes);
+    }
+    return w.finish();
   }
 
   /**
@@ -108,6 +181,8 @@ export class SongPackage {
   async readBytes(pathOrEntry) {
     const e = typeof pathOrEntry === 'string' ? this.entry(pathOrEntry) : pathOrEntry;
     if (!e) throw new Error(t('zip.fileMissing', { path: pathOrEntry }));
+    const o = this._overrides.get(normKey(e.name));
+    if (o) return o.bytes.slice(); // 呼び出し側が手放す(decodeAudioData など)ことがあるので写しを渡す
     return this.zip.read(e);
   }
 

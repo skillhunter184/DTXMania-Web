@@ -235,7 +235,8 @@ export class IfStack {
   }
 }
 
-function splitHeader(body) {
+/** ヘッダ行の本体('#' の後ろ)をコマンドとパラメータに分ける(譜面の編集も同じ規則で行を読む)。 */
+export function splitHeader(body) {
   const colon = body.indexOf(':');
   const sp = body.search(/[ \t]/);
   let sep;
@@ -250,7 +251,7 @@ function splitHeader(body) {
 }
 
 /** データ行 "#mmmCC: ..." か(先頭 3 文字が数字)。C# 同様、数字 3 桁のみを小節番号として扱う。 */
-function isDataLine(body) {
+export function isDataLine(body) {
   return body.length >= 6 && /^[0-9]{3}/.test(body);
 }
 
@@ -271,6 +272,9 @@ function newChart() {
     bpmDefs: new Map(),
     notes: [], hiddenNotes: [], bgmEvents: [], seEvents: [], cheerEvents: [], fillInEvents: [],
     movieEvents: [], barLines: [], bpmChanges: [],
+    // 譜面の位置(pos)と時刻の対応。テンポか小節長が変わる位置ごとに {pos, ms(丸める前), msPerTick, bpm, barLen}(pos の順。先頭は pos 0)。
+    // 譜面の編集で、時刻 ↔ (小節, tick) を parseDTX と同じ計算で引く(posToMs / msToPos)
+    tempoMap: [],
     bonusChipCount: 0, durationMs: 0, lastNoteMs: 0,
     laneHasNotes: new Array(LANE_COUNT).fill(false),
     // ギター / ベース(INSTRUMENT.GUITAR / BASS で引く: gbPart(chart, inst))。ウェイリング音の切り替え(0x2F)はギターだけ
@@ -505,6 +509,13 @@ export function parseDTX(text, opts = {}) {
   let lastPos = 0;
   if (bpm <= 0) bpm = 120.0;
   chart.bpmChanges.push({ timeMs: 0, bpm });
+  const tempo = chart.tempoMap;
+  const pushTempo = (pos, ms) => {
+    const seg = { pos, ms, msPerTick: (625.0 * barLen) / bpm, bpm, barLen };
+    if (tempo.length && tempo[tempo.length - 1].pos === pos) tempo[tempo.length - 1] = seg;
+    else tempo.push(seg);
+  };
+  pushTempo(0, 0);
 
   for (const chip of chips) {
     const t = currMs + (625.0 * (chip.pos - lastPos) * barLen) / bpm;
@@ -512,14 +523,17 @@ export function parseDTX(text, opts = {}) {
     const ch = chip.channel;
     if (ch === CH_BAR_LENGTH) {
       lastPos = chip.pos; currMs = t; barLen = chip.value > 0 ? chip.value : 1.0;
+      pushTempo(lastPos, t);
     } else if (ch === CH_BPM) {
       lastPos = chip.pos; currMs = t; bpm = chart.baseBpm + chip.intVal; if (bpm <= 0) bpm = chart.bpm;
       chart.bpmChanges.push({ timeMs: chip.timeMs, bpm });
+      pushTempo(lastPos, t);
     } else if (ch === CH_BPM_EX) {
       lastPos = chip.pos; currMs = t;
       const exb = bpmMap.get(chip.wavId);
       if (exb !== undefined && chart.baseBpm + exb > 0) bpm = chart.baseBpm + exb;
       chart.bpmChanges.push({ timeMs: chip.timeMs, bpm });
+      pushTempo(lastPos, t);
     } else if (ch === CH_BAR_LINE || ch === CH_BEAT_LINE) {
       chart.barLines.push({ timeMs: chip.timeMs, isBeat: ch === CH_BEAT_LINE, visible: chip.visible !== false, measure: chip.measure, pos: chip.pos });
     } else if (ch === CH_BGM) {
@@ -705,6 +719,51 @@ export function buildMeasureTimes(chart) {
     }
   }
   return times;
+}
+
+/**
+ * 記録した乱数を順に返し、尽きたら 0 を返す(#RANDOM の分岐を再現する。0 は分岐 1)。
+ * 譜面の編集で、演奏していた分岐を表示し、テストプレイでも同じ分岐を流す。
+ * @param {number[]} rolls
+ */
+export function replayRandom(rolls) {
+  let i = 0;
+  return () => (rolls && i < rolls.length ? rolls[i++] : 0);
+}
+
+/** 位置 pos を含むテンポの区間 {pos, ms, msPerTick, bpm, barLen}(テンポ表が無ければ null)。 */
+export function tempoAt(chart, pos) {
+  const map = chart && chart.tempoMap;
+  return map && map.length ? tempoSegment(map, 'pos', pos) : null;
+}
+
+/** tempoMap の中で key(pos / ms)が v 以下の最後の区間(無ければ先頭)。 */
+function tempoSegment(map, key, v) {
+  let lo = 0;
+  let hi = map.length - 1;
+  let best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (map[mid][key] <= v) { best = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return map[best];
+}
+
+/** 位置 pos(リードイン込みの tick。小数も可)の時刻(ms、丸めない)。parseDTX と同じ計算。 */
+export function posToMs(chart, pos) {
+  const map = chart && chart.tempoMap;
+  if (!map || !map.length) return (625.0 * pos) / ((chart && chart.bpm) || 120);
+  const seg = tempoSegment(map, 'pos', pos);
+  return seg.ms + (pos - seg.pos) * seg.msPerTick;
+}
+
+/** 時刻 ms の位置 pos(小数)。posToMs の逆。 */
+export function msToPos(chart, ms) {
+  const map = chart && chart.tempoMap;
+  if (!map || !map.length) return (ms * ((chart && chart.bpm) || 120)) / 625.0;
+  const seg = tempoSegment(map, 'ms', ms);
+  return seg.pos + (ms - seg.ms) / seg.msPerTick;
 }
 
 /** timeMs を含む小節の添字(times[i] <= timeMs となる最大の i)。 */

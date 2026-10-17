@@ -497,3 +497,272 @@ Button `譜面プレビュー...` (always enabled). If the last pipeline run suc
 - lane_default is frozen at load; should the port recompute the most common (channel, chip id) after edits, and should the CY column ever default to RD (0x19) as the original can?
 - Save keeps space-separated drum object lines (`#00112 0202`) verbatim (regex requires a colon) and drops `;` comments on drum lines — replicate exactly or normalize?
 - Chip removal uses value equality (first equal chip); if the port keeps object identity instead, behavior differs only when two identical chips exist (possible after undo of a del following an add at the same cell).
+
+---
+
+## 12. Changes since this spec was written (vid2dtx 2026-10, after kitgen)
+
+This section was added when the browser chart editor was built (DTXMania Web, 2026-10). It records what changed in
+vid2dtx's preview editor after sections 1-11 were written. The sections above describe preview.py at commit 07f0de4
+(855 lines); the line numbers below refer to the current preview.py (932 lines, commit 2e84251).
+
+Root of every path below: `vid2dtx\`. Paths are shortened to `preview.py`, `gui.py`, `emit.py`, `audio.py`, `dtx.py`, `audio2dtx.py`, `kitgen/pipeline.py` (all under `vid2dtx\`), plus `README.md` and `experiments/kitgen_prod_checks.py`. Lines marked **INFERRED** are my own conclusions; everything else was read from the code.
+
+### 0. Which versions are being compared
+
+- **What the spec describes.** The spec's 855-line `preview.py` is the file as of commit `07f0de4` (2026-07-19). That file stayed unchanged through `1910c39`. Its `audio2dtx.py` citations (`SYNTH_CONF` at :69, the writer at 770-787) match commit `6aa27d9` (2026-08-12). So the spec describes roughly `6aa27d9`.
+- **What I read.** The current worktree (clean) is at merge `2e84251`.
+- **Commits since then that matter for the editor:**
+  - `132fb84` "Add vid2dtx.kitgen" (2026-10-16). This is the only commit that touched `preview.py`: 932 lines now, a 155-line diff. It also changed `audio.py`, `emit.py` and `gui.py`.
+  - `1910c39` (2026-10-02). Changes to `audio2dtx.py`: the confidence sidecar file and the LBD lane.
+  - `466f833` only moves data paths (`paths.OUT`). It has no effect on the editor.
+- **`dtx.py` is unchanged** since the first commit (`159fdd5`). Spec §10 still holds word for word.
+- **Code that did not change:** the edit math, the drawing and the save algorithm. All of it is still in the same functions with the same bodies; only the line numbers moved (§1).
+
+### 1. Where the spec's `preview.py` citations moved (function by function)
+
+| function / block | spec (old) | now |
+|---|---|---|
+| constants, `Skin`, `PreviewWindow.__init__` up to `SystemExit` | 1-195 | 1-195 (same) |
+| conf sidecar (was inline) | 196-208 | call at 196; `load_conf` 312-326 |
+| `lane_default` (was inline) | 212-223 | call at 204; `lane_defaults` 328-342 |
+| window title | 229-230 | `update_title()` at 210; method 384-389 |
+| control bar / speed / guide / audio / offset | 238-272 | 218-261 |
+| edit bar | 283-311 | 264-292 |
+| bindings | 313-320 | 294-301 |
+| `render_base` / `prepare_display` / `rebase` | 331-415 | 399-483 |
+| `scroll`, `on_slider`, `reanchor`, `start_audio`, `play_audio_now`, `on_offset_change` | 417-466 | 485-534 |
+| `begin_audio_build` / `poll_audio_build` | 468-501 | 536-579 (logic changed, §2.5) |
+| `stop_audio`, `on_audio_toggle`, `toggle_play`, `play_tick` | 503-544 | 581-622 |
+| `compose` / `redraw` / `snapshot` / `goto_next_suspect` | 547-666 | 625-744 |
+| `canvas_to_lane_time` / `time_to_mt` / `mt_to_time` / `find_chip_at` | 669-722 | 747-800 |
+| `on_click` | 724-754 | 802-834 |
+| `undo` | 756-767 | 836-847 |
+| `mark_modified` | 769-775 | 849-852 (body changed) |
+| `on_motion` / `hide_ghost` | 778-802 | 855-879 |
+| `save` / `append_status` / `on_close` / `main` | 805-855 | 882-932 |
+| **new:** `reload`, `set_locked`, `update_edit_buttons` | — | 344-372, 374-382, 391-396 |
+
+Other files:
+- **`emit.py`** (303 → 403 lines):
+  - `LANE_CHANNEL` 24-35
+  - `render_channel_line` 136-148 (body unchanged)
+  - `copy_playable` 252-283
+  - pipeline writer 341-368
+- **`audio.py`** (145 → 149 lines): `build` 49-107, `play` 109-125, `stop` 128-134, `output_latency_ms` 137-149.
+- **`gui.py`**: preview button 322-324, `open_preview` 795-811, `copy_to_song` 813-857.
+- **`audio2dtx.py`**: `SYNTH_CONF` :75, `EXTRA_LANES` :79-80, sidecar writer 1126-1150.
+- **`README.md`**: 譜面プレビュー section 51-86 (編集機能 77-84, unchanged text); sidecar note 102-104.
+
+### 2. What changed in `preview.py`
+
+#### 2.1 Read-only lock (new)
+
+- **State.** `self.locked = False` and `self.lock_note = ""` (preview.py:198-201). The comment says the window is read-only "while the GUI rewrites the chart on disk (chart generation, vid2dtx.kitgen)".
+- **`set_locked(locked, note="")`** (preview.py:374-382):
+  - sets `locked`, and `lock_note = note if locked else ""`;
+  - calls `hide_ghost()`, `update_title()` and `update_edit_buttons()`;
+  - if `lock_note` is non-empty, calls `append_status(lock_note)`.
+- **Guards added while locked:**
+  - `on_click` returns at once (preview.py:803-804);
+  - `undo` returns if locked or the stack is empty (preview.py:837);
+  - `save` returns if not modified or locked (preview.py:883);
+  - `on_motion` hides the ghost when `col is None or self.locked` (preview.py:857-859).
+- **Not guarded (still works while locked):**
+  - play/stop, slider, wheel, speed;
+  - レーンガイド toggle (`rebase`, preview.py:478-483, which builds a new `ChartAudio`);
+  - 音声 toggle, 音ズレ補正, 確信度 toggle;
+  - `次の要確認 ▼` / `n` (`goto_next_suspect`, preview.py:721-744, has no lock check);
+  - the close button.
+
+  The Ctrl+Z / Ctrl+S bindings stay registered but do nothing.
+- **Status-line lifetime.** The lock note is written to the status label. **INFERRED:** it lasts only until the next `redraw()` (redraw rewrites the label, preview.py:709-716), so during playback it is overwritten within about one frame. The title suffix (§2.2) is what keeps showing the lock.
+
+#### 2.2 Title and button state (replaces spec §4.9)
+
+- **`update_title()`** (preview.py:384-389):
+  - `title = headers.get("TITLE", path.name)`;
+  - `text = f"譜面プレビュー - {title}"`;
+  - if locked, append `f"  [{lock_note or '編集できません'}]"` (two spaces before `[`);
+  - window title = `("*" if modified else "") + text`.
+- **`update_edit_buttons()`** (preview.py:391-396):
+  - 「保存」 is enabled iff `not locked and modified`;
+  - 「元に戻す」 is enabled iff `not locked and undo_stack`.
+- **`mark_modified(flag)`** (preview.py:849-852) now just sets `modified` and calls those two methods.
+- **Effect on spec quirks:**
+  - The `title().lstrip("*")` behavior (spec §4.9, §11.2) is gone. The title is rebuilt from the headers every time, so a `#TITLE` that itself starts with `*` is no longer damaged.
+  - The quirk "edit → save → undo gives `modified=False`" is still there: undo still calls `mark_modified(bool(undo_stack))` (preview.py:846).
+
+#### 2.3 `reload(note="")` (new; preview.py:344-372)
+
+The docstring says it re-reads the chart from disk "after the GUI rewrote it (a new chart, or a new drum kit …: other #WAV ids, channels and sounds)", and only for a window with no unsaved edits ("the GUI checks first"). Steps, in order:
+
+1. `chart = dtx.parse(path)`. If the chart has no drum chips, raise `SystemExit("chart has no drum chips")` (349-352). This happens before any state changes.
+2. If playing, `toggle_play()`. Playback stops and the button returns to `▶ 再生` (353-354); the user has to press play again.
+3. Replace `chart`/`chips`; `conf = load_conf()` re-reads the sidecar; `lane_default = lane_defaults()` (355-357). **This is new:** spec §4.7 says the defaults are computed only once at load. They are now also recomputed on reload, but still not after individual edits.
+4. Clear `undo_stack`; `duration = max(chip time) + 2.0`; `slider.config(to=duration)`; `t_var = min(t, duration)`, with no reanchor (358-361). Unlike edits, a reload can make `duration` shorter.
+5. `mark_modified(False)`; `audio_dirty = True`; `_audio_gen += 1`; `audio = None` (362-365).
+6. If sound is available and the 音声 box is on: create a new `ChartAudio`, set `_refetch = _audio_building`, call `begin_audio_build()` (366-369).
+7. `redraw()`, then `append_status(note)` if a note was given (370-372).
+
+**Not reset by `reload`:**
+- `backup_done` (preview.py:202). **INFERRED:** after one save in the session, a reloaded chart gets no new `.dtx.bak`. Even when `backup_done` is still False, `.bak` is never overwritten (preview.py:897-901), so the backup keeps the first chart's text.
+- `_sus_key`: the 要確認 tour continues from the old (conf, time) key via `bisect` (preview.py:735-736).
+- `_want_audio`, the ghost item, the skin.
+
+**INFERRED:** the reload note is wiped as soon as the audio build finishes, because `poll_audio_build` sets the label to `""` or to `音源ファイルが見つかりません(無音)` unconditionally (preview.py:566-568).
+
+#### 2.4 Refactors that do not change behavior
+
+`load_conf()` (preview.py:312-326) and `lane_defaults()` (preview.py:328-342) are the old inline code moved into methods. The sidecar format, the "most common (channel, chip_id) per display column, else `(CANONICAL_CHANNEL[col], 1)`" rule and the tie-breaking are unchanged (spec §4.7, §8).
+
+#### 2.5 Audio build orchestration (changes spec §6 "Build/play orchestration")
+
+- **Snapshot.** `begin_audio_build` now captures `au, chart = self.audio, self.chart` together with the chips snapshot (preview.py:542-544). The comment: "reload() may swap the chart and the ChartAudio meanwhile". The worker calls `au.build(chart, chips_snapshot)`.
+- **Exception safety.** The worker body is `try: ok = au.build(...) finally: _audio_build_ok = ok; _audio_built_gen = gen; _audio_building = False` (preview.py:546-553).
+  - This fixes the spec §6 / §11.16 quirk where a non-numeric `#VOLUME` left the build flag stuck. Now the flag clears, `ok=False`, and the status says `音源ファイルが見つかりません(無音)`, which is misleading. The exception still propagates out of the thread.
+  - **INFERRED:** `ChartAudio.buf` is assigned only at the end of `build` (audio.py:106), and `audio_dirty` becomes False because the generations match. So after a failed rebuild the previous, stale mix plays, or nothing if there was none.
+- **`_refetch`** (new flag; preview.py:259, 368, 569-573). `reload()` sets it when a build of the *old* chart is still running; `begin_audio_build()` is then a no-op because a build is already in progress. When that stale build finishes, `poll_audio_build` sees `_refetch`, clears it, and if `audio_dirty and audio is not None` calls `begin_audio_build()` and returns. This happens before the `_want_audio` branch.
+- **Unchanged:** the `rebase()` behavior (spec §6) of leaving an old stream playing.
+  - **INFERRED, already present before:** if `rebase()` runs while a build is in progress, the new `ChartAudio` is never built. `rebase` does not bump `_audio_gen`, so when the old build ends `audio_dirty` is False and `play()` on the new object (`buf is None`) is silent until the next edit or reload.
+
+### 3. Audio mixing (`audio.py`)
+
+- **Decode each file once.** `build` now decodes each referenced file a single time, keyed by `name.lower()`. Every `#WAV` id that points to that file shares the same PCM (audio.py:66-80). The comment: "a kitgen kit plays one sample under several #WAV ids, one per volume".
+- Per-id `#VOLUME`/`#PAN` is still applied per chip (audio.py:55-64, 95), so kitgen's per-chip volumes are audible in the preview.
+- Everything else in spec §6 still holds (`decode_pcm`, `end`, the +1 s tail, normalization, `play`/`stop`, latency) with the new line numbers.
+
+### 4. Save and `render_channel_line`
+
+- **The save algorithm is identical** to spec §5 (preview.py:882-905): strict cp932 read, the same `OBJ_LINE` filter (preview.py:103-108), lines grouped by (measure, channel) and sorted, `.dtx.bak` once per session, CRLF. The only addition is the `locked` guard.
+- **`render_channel_line`** is unchanged, now at emit.py:136-148.
+- **INFERRED, saving a kitgen chart:**
+  - kitgen's mark line `; kitgen: <mode> (vid2dtx.kitgen)` (kitgen/pipeline.py:187, 1609-1610) is a `;` comment, so the save keeps it;
+  - kitgen's per-(file, volume) `#WAV`/`#VOLUME`/`#PAN` lines (kitgen/pipeline.py:1597-1602) are kept verbatim;
+  - chips keep their `chip_id`s.
+- **Parser difference.** kitgen splits drum lines with dtx.parse syntax, which also accepts a space instead of a colon (`_split_cmd`, kitgen/pipeline.py:368-382). The preview's `OBJ_LINE` requires a colon, so spec §5 edge case (a) still applies to the preview.
+
+### 5. GUI integration (`gui.py`; replaces most of spec §9)
+
+- **Window registry.** The GUI keeps every preview window it opens: `previews` list, `locked_chart`, `locked_stamp` (gui.py:221-225). `open_preview` appends the new window (gui.py:808-809).
+- **No previews during a run.** `open_preview` returns while busy (gui.py:796-797), and `set_busy` disables 譜面プレビュー... (gui.py:420-424).
+- **SystemExit quirk on open is still there.** `open_preview` still only catches `except Exception` (gui.py:810-811), so a chart with no drum chips still kills the GUI on open (spec §9).
+- **Unsaved edits block a rewrite.** `previews_saved(chart, regenerate)` (gui.py:442-461) finds preview windows of the same file (`os.path.samefile`, gui.py:173-178, 430-440) that are `modified`. If any exist, it raises the first one and shows a warning:
+  - before a regeneration (gui.py:545, 624): `譜面プレビューに未保存の編集があります。\n\n譜面を生成し直すと generated.dtx は新しい譜面に置き換わります。編集を残すなら保存して「曲フォルダへ書き出し」で書き出してから、残さないならプレビューを閉じてから、もう一度実行してください。`
+  - before ドラム音だけ作り直す (gui.py:675): `…プレビューで保存 (Ctrl+S) してから「ドラム音だけ作り直す」を押してください。保存した編集は、作り直したドラム音の譜面にもそのまま残ります。`
+  - Only `modified` is checked. A window with a non-empty undo stack but `modified=False` passes.
+- **Locking.** `lock_previews(chart, note)` records the file's (mtime_ns, size) and calls `set_locked(True, note)` on matching windows (gui.py:463-468). Notes:
+  - `譜面を生成中のため編集できません` (gui.py:549, 628)
+  - `ドラム音を作り直し中のため編集できません` (gui.py:679)
+- **Release and reload.** `release_previews(note)` (gui.py:470-487) unlocks each window. If the file stamp changed it calls `w.reload(note)` and logs `譜面プレビューを読み込み直しました: {chart}`. If the reload fails, including the `SystemExit` it explicitly catches, it logs `譜面プレビューを閉じました ({e})` and calls `w.on_close()`. Notes:
+  - `新しい譜面を読み込みました` (after generation, gui.py:743)
+  - `ドラム音を作り直したので読み込み直しました ({label})` (after a re-kit, gui.py:757-758)
+  - `譜面が書き換わったので読み込み直しました` (after an error, gui.py:773)
+- **Re-kit status.** After a re-kit the status reads `ドラム音を作り直しました ({label}、プレビューで保存した編集を反映)` when kit.json has `source == "edited"`; otherwise it ends at `({label})`. On failure: `REKIT_FAILED` (gui.py:54, 685-688, 744-756).
+- **Export.**
+  - `copy_to_song` returns while busy (gui.py:814).
+  - It reads the chart from disk and does **not** check for unsaved preview edits (gui.py:813-857).
+  - With a kit present, the dialog title is `書き出し先の曲フォルダ (ドラム音キットも一緒にコピー)` (gui.py:819), the kit WAVs are copied as `<dtx stem>_kit_*.wav` (kitgen's content hash removed; `vid2dtx_2_kit_*` on a name clash), and the `#WAV` names are rewritten (emit.py:39-42, 170-283).
+  - There are new info boxes for kit exports, with extra notes for match/synth (gui.py:840-857).
+
+### 6. How kitgen reads a chart saved by the editor (new)
+
+- **Edit detection.** kitgen compares the chart's multiset of `(measure, tick, channel, chip_id)` with what it wrote last time (`kitwork/state.json`). Each entry is `[m, tick, ch, id, source ch]` (kitgen/pipeline.py:533-534, 671-682, 857-864). The result is one of:
+  - `"fresh"`: the chart has no mark line;
+  - `"kitgen"`: same chips as kitgen wrote;
+  - `"edited"`: chips differ (kitgen/pipeline.py:634-699).
+- **Rebuilding from edits.** For `"edited"` charts, the source is rebuilt from the *current* chips (`_rebuild_source`, kitgen/pipeline.py:730-847):
+  - video charts fold hats back to HH and the left foot back to LP;
+  - audio charts put chips kitgen wrote and the user left alone back on their transcription lanes;
+  - chip ids become the source's most common id per channel (787-805);
+  - sidecar rows of deleted chips are dropped (819-846).
+- **Text edits.** Lines kitgen does not own (title, BPM, BGM, comments) are always taken from the current chart (`_merge_text`, kitgen/pipeline.py:717-727).
+- **Pins.** A hat/foot chip is pinned to its family (`pins.json`, kitgen/pipeline.py:694-697, 702-714, 775-786) only when:
+  - its cell's pad held chips kitgen wrote, and
+  - none of those chips had the chip's current channel (it was "moved to the other channel of their pad").
+
+  Further rules:
+  - Chips added in the editor on a new cell are not pinned: "the editor gives them the column's most common channel, not a type the user chose" (kitgen/pipeline.py:743-745).
+  - A cell holding two chips of the same pad keeps their source lanes (kitgen/pipeline.py:1728-1739).
+  - kit.json records `source`, `text_edited` and `pinned` (kitgen/pipeline.py:1885-1899).
+- **Hat/foot type change (no UI for it).** README:328-331 says chips whose open/closed hat or LP/LBD type was changed ("付け替えた") in the preview keep that type.
+  - `preview.py` has **no channel-change action**: its only canvas bindings are add/delete/ghost (preview.py:297-300).
+  - The check harness fakes the change by rewriting the channel directly (`editor_save`, experiments/kitgen_prod_checks.py:253-306, flips at 285-296).
+  - **INFERRED:** the only way to do it inside the preview is to delete the chip and re-add one at the same cell, where the column default has the other channel. kitgen then sees a "moved" chip and pins it.
+- **What kitgen writes (and the editor then edits)** (kitgen/pipeline.py:1589-1611, 1792-1907):
+  - one `#WAV` id per (file, volume) pair, with labels `;<lane label> [<tier>]`;
+  - hat/foot channels split into HHC 11 / HHO 18 / LP 1B / LBD 1C;
+  - content-hashed `kit_<lane>[_n]_<hash>.wav`;
+  - the sidecar's channels updated so confidence markers stay on their chips (`_update_sidecar`, 1614-1630).
+  - **INFERRED:** because each id carries a volume, `lane_defaults` picks the most common (channel, **volume variant**) of the column. An added chip plays at that volume.
+
+### 7. audio2dtx sidecar changes (`1910c39`; extends spec §8)
+
+- **New top-level keys.** The sidecar is now `{"version": 1, "origin_s": grid_origin, "t_meas": t_meas, "chips": [...]}` (audio2dtx.py:1147-1150). The preview reads only `chips[].m/tick/ch/conf` (preview.py:321-323) and ignores the new keys.
+- **Head-only chips.** Chips proposed only by the head model, with no backbone onset on the same tick, get `conf = min(conf, SYNTH_CONF = 0.35)`, so they show a red marker. Their `why` text gets the head note appended after `"; "` (audio2dtx.py:75, 1060-1069, 1086-1088, 1131-1136).
+- **LBD lane.** `EXTRA_LANES` now includes `LBD (0x1C, 13, "036_kick1_2.ogg", "Left Bass Drum", 100, 0)` (audio2dtx.py:79-80). Audio charts can therefore put LBD chips on the LP column, which can make the LP column default 0x1C (spec §4.7).
+
+### 8. Current editing features (complete list)
+
+- **Add:** left-click an empty spot in a lane (1080p y 80..865). The position snaps to the 16分/24分/32分/48分 grid. Channel and id are the column default, computed at load and at reload. A cell already holding that (measure, tick, channel) is a silent no-op. The chart length grows to the new chip's time + 2 s. Spec §4.1-4.7, §4.11.
+- **Delete:** left-click on a chip (toggle) or right-click. Hit tolerance is 14 px (1080p) divided by the speed, on the display column. Spec §4.5-4.6.
+- **Undo:** Ctrl+Z or 「元に戻す」, an unlimited stack of add/delete. Saving does not clear it; reload does. There is no redo.
+- **Ghost cursor:** a `#00ff88` rectangle at the snapped cell. It hides off-lane, on Leave, at t<0, and while locked.
+- **Save:** Ctrl+S or 「保存」. Only drum lines 11-1C are regenerated. `.dtx.bak` is written once per window session and never overwritten. cp932 + CRLF. Status `保存しました: {name}`.
+- **Modified state:** `*` prefix on the title, 保存/元に戻す buttons enabled only when allowed (and never while locked), and a save prompt on close (`編集内容が保存されていません。保存しますか?`).
+- **Confidence review:** orange/red frames, a `確信度` toggle, `次の要確認 ▼` or `n` tours suspects lowest confidence first. Spec §8.
+- **Audio follows edits:** each edit bumps a generation counter, and the mix is rebuilt at the next play start or seek. Spec §6.
+- **New:** read-only lock with a title suffix `[note]`; reload from disk (playback stops, undo cleared, column defaults and sidecar re-read, length recomputed); the GUI refuses to rewrite a chart that has unsaved preview edits.
+- **Not available:** moving or dragging chips, multi-select, copy/paste, redo, changing a chip's channel/type, id or volume, editing BPM/bar length/measures/headers. Saving does not update the sidecar.
+
+### Key facts
+
+- Only commit `132fb84` (kitgen) changed `preview.py` since the spec; it went from 855 to 932 lines. `dtx.py` is unchanged. `render_channel_line` is unchanged, now at emit.py:136-148.
+- New state `locked`/`lock_note`. While locked, these all return early: `on_click`, `undo`, `save`, and the ghost cursor (`on_motion`) (preview.py:803, 837, 883, 857). Playback, scrolling, レーンガイド, 確信度, `n` and close still work.
+- Title = `"*"?` + `譜面プレビュー - {TITLE or filename}` + `  [{lock_note or 編集できません}]` when locked. It is rebuilt each time, so the `lstrip("*")` quirk is gone.
+- 保存 is enabled iff `not locked and modified`; 元に戻す iff `not locked and undo_stack`.
+- `reload()`:
+  - raises `SystemExit` before changing anything if the chart has no drum chips;
+  - stops playback;
+  - replaces chart, chips, sidecar and column defaults;
+  - clears undo;
+  - recomputes length (it can shrink);
+  - sets modified False;
+  - rebuilds the audio mix (`_refetch` if a build was in progress);
+  - shows the note.
+
+  `backup_done` and `_sus_key` are not reset.
+- The audio worker now snapshots `(ChartAudio, chart, chips)` and clears its flags in `finally`, so the old stuck-flag quirk is fixed. A failed build shows `音源ファイルが見つかりません(無音)`.
+- `audio.py` decodes each sample file once (case-insensitive name) even when several `#WAV` ids share it.
+- GUI notes:
+  - lock: `譜面を生成中のため編集できません`, `ドラム音を作り直し中のため編集できません`;
+  - reload: `新しい譜面を読み込みました`, `ドラム音を作り直したので読み込み直しました ({label})`, `譜面が書き換わったので読み込み直しました`;
+  - a dirty preview blocks generation and re-kit with the two warning texts in §5.
+- Export (`copy_to_song`) does not check for unsaved preview edits. A kit is copied as `<stem>_kit_*.wav` and the `#WAV` names are rewritten.
+- kitgen edit detection uses the multiset of (m, tick, ch, id). A user-changed hat/foot channel is pinned; chips added on new cells are not. Text edits survive a re-kit. kit.json `source` is `"edited"` after a preview save with chip changes.
+- kitgen charts carry `; kitgen: <mode> (vid2dtx.kitgen)`, one `#WAV` id per (file, volume), and HHC/HHO/LP/LBD split. The preview keeps all of these on save, and its column default picks the most common (channel, volume-variant id).
+- The sidecar gained `origin_s` and `t_meas` (ignored by the preview). Head-only chips are capped at conf 0.35 (red). audio2dtx now emits LBD 0x1C.
+- There is no channel/type-change UI in `preview.py`, although README:328-331 describes type changes made in the preview. The test harness simulates them.
+
+### Open questions / porting notes (browser)
+
+- **Lock/reload in the browser.** When a chart is replaced from outside (re-import, another tab, a future generator), the web editor needs the same contract:
+  - refuse if there are unsaved edits;
+  - otherwise block edits, stop playback, clear undo, and recompute column defaults and length.
+
+  Should the `.bak` / "first save" state reset on reload? (vid2dtx does not reset it.)
+- **Hat/foot type change.** Should the port add it (open/closed hat, LP/LBD, maybe CY/RD), e.g. like DTXCreator's? vid2dtx's README implies it but its UI has no such action. If added, put it on the undo stack as its own operation (not delete+add) and make sure the occupancy check stays per (m, tick, channel).
+- **Column default with kitgen charts.** The "most common (channel, chip_id)" rule makes an added chip take a particular volume. Options: keep that, or pick the channel first and then the most common id within it. kitgen's own rebuild uses the most common id per channel (kitgen/pipeline.py:787-790).
+- **Sample decoding.** Decode/cache by lowercased file name, not by `#WAV` id. kitgen charts can have up to 1295 ids pointing at a handful of files.
+- **Failed audio build.** Show a real error (vid2dtx reports a decode exception as "file not found") and do not play a stale mix.
+- **Status line lifetime.** vid2dtx status notes vanish on the next redraw or when the audio build finishes. A Canvas port probably wants a separate toast/status area that stays put.
+- **Preserving kitgen data.** If the web editor saves charts that vid2dtx's kitgen may re-kit later, it must keep:
+  - the `; kitgen:` line in the first 5 lines;
+  - drum `#WAV`/`#VOLUME`/`#PAN` lines verbatim;
+  - chip ids;
+  - the `<chart>.conf.json` sidecar beside the chart.
+
+  kitgen detects edits by cells, not text, so re-rendering object lines is safe.
+- **Export of unsaved edits.** vid2dtx's export reads from disk and silently drops unsaved edits. The port should either save first or warn.
+- **Rounding parity.** Python `round()` rounds half-to-even, JS `Math.round` rounds half-up. This still applies to snapping (spec open question); nothing changed here.
+- **Sidecar keys.** The port should ignore unknown sidecar keys (`origin_s`, `t_meas`) and treat `why` as free text that may contain `"; "`-joined notes.

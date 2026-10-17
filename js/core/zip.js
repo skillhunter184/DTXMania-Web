@@ -322,7 +322,12 @@ export class ZipArchive {
 
       const name = decodeText(nameBytes, { preferUtf8: utf8 }).replace(/\\/g, '/');
       const isDir = name.endsWith('/') || ((extAttr & 0x10) !== 0 && size === 0);
-      this.entries.push({ name, size, compressedSize, method, crc, localOffset, isDir, utf8, flags });
+      // nameBytes / time / date / extAttr は書き出し(ZipWriter.copyEntry)で元のまま使う
+      this.entries.push({
+        name, size, compressedSize, method, crc, localOffset, isDir, utf8, flags,
+        nameBytes: nameBytes.slice(), time: v.getUint16(p + 12, true), date: v.getUint16(p + 14, true), extAttr,
+        madeBy: v.getUint16(p + 4, true),
+      });
       p += 46 + nameLen + extraLen + commentLen;
     }
   }
@@ -381,6 +386,192 @@ export class ZipArchive {
     const key = name.replace(/\\/g, '/').toLowerCase();
     return this.entries.find((e) => e.name.toLowerCase() === key) || null;
   }
+
+  /** エントリの圧縮されたままのデータ(Blob のスライス。メモリへは載せない)。 */
+  async rawData(entry) {
+    const { start, end } = await this._dataRange(entry);
+    return this.blob.slice(start, end);
+  }
+}
+
+// ---- 書き出し(譜面の編集で、編集した譜面を入れた ZIP を作る) ----
+
+/** Date → MS-DOS の時刻と日付。 */
+function dosDateTime(d) {
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  const date = (Math.max(0, d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  return { time, date };
+}
+
+const U32 = 0xffffffff;
+
+/**
+ * ZIP を組み立てる。元の ZIP のエントリは圧縮されたまま写し(展開も再圧縮もしない)、新しいファイルは無圧縮で入れる。
+ * 中身は Blob の部品として持つので、大きな曲パックでもメモリへ載せない。4 GB を超える位置・大きさは ZIP64 で書く。
+ */
+export class ZipWriter {
+  constructor() {
+    this._parts = []; // Blob の部品(Uint8Array / Blob)
+    this._central = []; // セントラルディレクトリのレコード(Uint8Array)
+    this._offset = 0;
+    this.count = 0;
+  }
+
+  _push(part) {
+    this._parts.push(part);
+    this._offset += part instanceof Blob ? part.size : part.length;
+  }
+
+  /**
+   * @param {{nameBytes: Uint8Array, utf8: boolean, method: number, crc: number, compressedSize: number, size: number,
+   *   time: number, date: number, extAttr?: number, madeBy?: number}} e
+   * @param {Blob|Uint8Array} data 圧縮されたままのデータ
+   */
+  _add(e, data) {
+    const offset = this._offset;
+    const big = e.compressedSize >= U32 || e.size >= U32;
+    const bigOffset = offset >= U32;
+    const flags = e.utf8 ? 0x800 : 0; // 暗号化・データ記述子のビットは立てない(大きさはヘッダに書く)
+    const version = big || bigOffset ? 45 : 20;
+
+    // ローカルヘッダ(ZIP64 なら大きさを extra に書く)
+    const locExtra = big ? 20 : 0;
+    const loc = new Uint8Array(30 + e.nameBytes.length + locExtra);
+    const lv = new DataView(loc.buffer);
+    lv.setUint32(0, SIG_LOC, true);
+    lv.setUint16(4, version, true);
+    lv.setUint16(6, flags, true);
+    lv.setUint16(8, e.method, true);
+    lv.setUint16(10, e.time, true);
+    lv.setUint16(12, e.date, true);
+    lv.setUint32(14, e.crc >>> 0, true);
+    lv.setUint32(18, big ? U32 : e.compressedSize, true);
+    lv.setUint32(22, big ? U32 : e.size, true);
+    lv.setUint16(26, e.nameBytes.length, true);
+    lv.setUint16(28, locExtra, true);
+    loc.set(e.nameBytes, 30);
+    if (big) {
+      const x = 30 + e.nameBytes.length;
+      lv.setUint16(x, 0x0001, true);
+      lv.setUint16(x + 2, 16, true);
+      lv.setBigUint64(x + 4, BigInt(e.size), true);
+      lv.setBigUint64(x + 12, BigInt(e.compressedSize), true);
+    }
+    this._push(loc);
+    this._push(data);
+
+    // セントラルディレクトリ
+    const z64 = [];
+    if (big) z64.push(e.size, e.compressedSize);
+    if (bigOffset) z64.push(offset);
+    const cenExtra = z64.length ? 4 + 8 * z64.length : 0;
+    const cen = new Uint8Array(46 + e.nameBytes.length + cenExtra);
+    const cv = new DataView(cen.buffer);
+    cv.setUint32(0, SIG_CEN, true);
+    // 作成元(上位バイトが OS。外部属性の読み方が変わる)は元のエントリのまま
+    cv.setUint16(4, e.madeBy !== undefined ? e.madeBy : version, true);
+    cv.setUint16(6, version, true);
+    cv.setUint16(8, flags, true);
+    cv.setUint16(10, e.method, true);
+    cv.setUint16(12, e.time, true);
+    cv.setUint16(14, e.date, true);
+    cv.setUint32(16, e.crc >>> 0, true);
+    cv.setUint32(20, big ? U32 : e.compressedSize, true);
+    cv.setUint32(24, big ? U32 : e.size, true);
+    cv.setUint16(28, e.nameBytes.length, true);
+    cv.setUint16(30, cenExtra, true);
+    cv.setUint32(38, (e.extAttr || 0) >>> 0, true);
+    cv.setUint32(42, bigOffset ? U32 : offset, true);
+    cen.set(e.nameBytes, 46);
+    if (cenExtra) {
+      const x = 46 + e.nameBytes.length;
+      cv.setUint16(x, 0x0001, true);
+      cv.setUint16(x + 2, 8 * z64.length, true);
+      z64.forEach((n, i) => cv.setBigUint64(x + 4 + 8 * i, BigInt(n), true));
+    }
+    this._central.push(cen);
+    this.count++;
+  }
+
+  /**
+   * 元の ZIP のエントリを圧縮されたまま写す(名前のバイト列・時刻・属性も元のまま)。
+   * @param {ZipArchive} zip
+   * @param {ZipEntry} entry
+   */
+  async copyEntry(zip, entry) {
+    if (entry.flags & 0x1) throw new Error(t('zip.encrypted', { name: entry.name }));
+    const data = await zip.rawData(entry);
+    this._add({
+      nameBytes: entry.nameBytes || new TextEncoder().encode(entry.name),
+      utf8: entry.nameBytes ? entry.utf8 : true,
+      method: entry.method, crc: entry.crc, compressedSize: entry.compressedSize, size: entry.size,
+      time: entry.time || 0, date: entry.date || 0x21, extAttr: entry.extAttr || 0, madeBy: entry.madeBy,
+    }, data);
+  }
+
+  /**
+   * ファイルを無圧縮で入れる。名前は UTF-8(フラグ付き)。nameBytes を渡すとそのバイト列を使う(元の ZIP の名前を保つ)。
+   * @param {string} name
+   * @param {Uint8Array} bytes
+   * @param {{nameBytes?: Uint8Array, utf8?: boolean, date?: Date, extAttr?: number}} [opts]
+   */
+  addFile(name, bytes, opts = {}) {
+    const { time, date } = dosDateTime(opts.date || new Date());
+    const nameBytes = opts.nameBytes || new TextEncoder().encode(name);
+    this._add({
+      nameBytes, utf8: opts.nameBytes ? !!opts.utf8 : true, method: 0, crc: crc32(bytes),
+      compressedSize: bytes.length, size: bytes.length, time, date, extAttr: opts.extAttr || 0,
+    }, bytes);
+  }
+
+  /**
+   * CRC と大きさが分かっているデータ(フォルダから選んだ File など)を無圧縮で入れる。中身はメモリへ載せない。
+   * @param {string} name
+   * @param {Blob} blob
+   * @param {number} crc
+   * @param {{date?: Date}} [opts]
+   */
+  addBlob(name, blob, crc, opts = {}) {
+    const { time, date } = dosDateTime(opts.date || new Date());
+    this._add({
+      nameBytes: new TextEncoder().encode(name), utf8: true, method: 0, crc,
+      compressedSize: blob.size, size: blob.size, time, date, extAttr: 0,
+    }, blob);
+  }
+
+  /** @returns {Blob} */
+  finish() {
+    const cdOffset = this._offset;
+    let cdSize = 0;
+    for (const c of this._central) cdSize += c.length;
+    const parts = this._parts.concat(this._central);
+    const needs64 = this.count >= 0xffff || cdOffset >= U32 || cdSize >= U32;
+    if (needs64) {
+      const rec = new Uint8Array(56 + 20);
+      const rv = new DataView(rec.buffer);
+      rv.setUint32(0, SIG_EOCD64, true);
+      rv.setBigUint64(4, 44n, true);
+      rv.setUint16(12, 45, true);
+      rv.setUint16(14, 45, true);
+      rv.setBigUint64(24, BigInt(this.count), true);
+      rv.setBigUint64(32, BigInt(this.count), true);
+      rv.setBigUint64(40, BigInt(cdSize), true);
+      rv.setBigUint64(48, BigInt(cdOffset), true);
+      rv.setUint32(56, SIG_EOCD64_LOC, true);
+      rv.setBigUint64(56 + 8, BigInt(cdOffset + cdSize), true);
+      rv.setUint32(56 + 16, 1, true);
+      parts.push(rec);
+    }
+    const eocd = new Uint8Array(22);
+    const ev = new DataView(eocd.buffer);
+    ev.setUint32(0, 0x06054b50, true);
+    ev.setUint16(8, Math.min(this.count, 0xffff), true);
+    ev.setUint16(10, Math.min(this.count, 0xffff), true);
+    ev.setUint32(12, Math.min(cdSize, U32), true);
+    ev.setUint32(16, Math.min(cdOffset, U32), true);
+    parts.push(eocd);
+    return new Blob(parts, { type: 'application/zip' });
+  }
 }
 
 /**
@@ -408,6 +599,11 @@ export class FileSetArchive {
     const f = this._files.get(entry);
     if (!f) throw new Error('file not found: ' + entry.name);
     return new Uint8Array(await f.arrayBuffer());
+  }
+
+  /** エントリの File(ZIP に書き出すとき、中身をメモリへ載せずに渡す)。 */
+  fileOf(entry) {
+    return this._files.get(entry) || null;
   }
 
   find(name) {
