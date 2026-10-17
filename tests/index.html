@@ -19,7 +19,7 @@
   // runner は各テストが './runner.js' として読む同じインスタンスを使う(クエリを付けると別モジュールになる)
   const { run } = await import('./runner.js');
   const files = ['core', 'game', 'clock', 'menu', 'renderer', 'gbrenderer', 'framepace', 'keybind', 'midi', 'gb', 'gamepad',
-    'replay', 'integration', 'edit', 'i18n'];
+    'replay', 'integration', 'edit', 'editmodel', 'editview', 'editor', 'i18n'];
   // ?only=edit,core で一部のファイルだけ回す(作業中の確かめ用。全体は何も付けずに開く)
   const only = new URLSearchParams(location.search).get('only');
   for (const f of only ? files.filter((n) => only.split(',').includes(n)) : files) await import('./' + f + '.test.js?' + v);

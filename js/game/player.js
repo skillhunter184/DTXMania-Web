@@ -143,11 +143,7 @@ export class Player {
    * @param {(done:number,total:number,name:string)=>void} [onProgress]
    */
   async load(pkg, chart, onProgress) {
-    this.pkg = pkg;
-    this.chart = chart;
-    this._prepareChart(chart);
-    this.metro = buildMetronome(chart);
-    this.measureTimes = buildMeasureTimes(chart);
+    this.setChart(pkg, chart);
     await this.audio.loadChartSounds(pkg, chart, onProgress);
     this._afterSoundsLoaded();
     // ループ区間は譜面ごとに初期化(0〜譜面長)
@@ -158,6 +154,18 @@ export class Player {
     this.scrollCurrentRatio = this.scrollRatioSetting;
     this.applySettings();
     this.enterStandby(true);
+  }
+
+  /**
+   * 譜面を差し替える(音は読まない)。load の前半で、譜面の編集の再生(js/edit/editplayer.js)は編集のたびにこれだけを
+   * 呼ぶ(音は読み込み済みのものを使う)。演奏中に呼ばないこと(判定と予約の途中の状態が壊れる)。
+   */
+  setChart(pkg, chart) {
+    this.pkg = pkg;
+    this.chart = chart;
+    this._prepareChart(chart);
+    this.metro = buildMetronome(chart);
+    this.measureTimes = buildMeasureTimes(chart);
   }
 
   /** 弾く楽器のチップ・成績・伴奏を譜面から作る(ドラム。ギター / ベースは js/game/gbplayer.js が差し替える)。 */
@@ -733,10 +741,15 @@ export class Player {
     if (this._take) this._take.reach(songMs);
 
     // 曲末 → 待機(成績は残す)
-    if (this.notes.length > 0 && this.loopEndMs === -1 && songMs > this.chart.durationMs + FINISH_TAIL_MS * this.ratio) {
+    if (this._isSongEnd(songMs)) {
       this._onSongEnd();
       this.enterStandby(false);
     }
+  }
+
+  /** 曲末か(ループしていないときに、最後のチップから FINISH_TAIL_MS 過ぎた)。譜面の編集の再生が差し替える。 */
+  _isSongEnd(songMs) {
+    return this.notes.length > 0 && this.loopEndMs === -1 && songMs > this.chart.durationMs + FINISH_TAIL_MS * this.ratio;
   }
 
   /** 曲を最後まで演奏した(ループしていない)。ギター / ベースのフルコンボの加点に使う。 */

@@ -1,9 +1,15 @@
 // アプリ本体: 画面遷移(ホーム / 演奏)、設定 UI、入力とメニューの接続、描画ループ。
 
-import { SongPackage } from './core/song.js';
+import { SongPackage, normKey } from './core/song.js';
 import { AudioEngine } from './core/audio.js';
 import { loadJSON, saveJSON, saveLastZip, loadLastZip, saveSkinFiles, loadSkinFiles } from './core/storage.js';
-import { LANE_NAMES, INSTRUMENT, gbPart } from './core/dtx.js';
+import { LANE_NAMES, INSTRUMENT, gbPart, replayRandom, msToPos, posToMs } from './core/dtx.js';
+import { crc32 } from './core/zip.js';
+import { EditSession } from './edit/session.js';
+import { EditorScreen } from './edit/editor.js';
+import { loadDraft, deleteDraft, listDrafts } from './edit/drafts.js';
+import { resumeDialog } from './edit/dialogs.js';
+import { downloadBlob, editedZipName } from './edit/save.js';
 import { chartHasInstrument } from './core/instmerge.js';
 import { TrainingSettings, LOOP_UNIT, stepLoopTime, formatLoopTime } from './game/training.js';
 import { Player, PLAYER_STATE } from './game/player.js';
@@ -164,6 +170,15 @@ class App {
     this._status = null; // ホームの状態表示 {msg, error}(言語の切り替えで作り直す)
     this._skinNotes = []; // スキンの下の注記(同上)
     this._lastZip = null; // 「前回の ZIP を開く」の {blob, name}
+    // 譜面の編集(js/edit/。本アプリの追加)
+    this.editor = null; // 開いている編集画面(EditorScreen)
+    this._editSessions = new Map(); // 譜面のパス(normKey)→ EditSession(曲パックを開き直すまで持つ)
+    this._editHintShown = false;
+    this._editKeptShown = false;
+    this._editBusy = false; // 編集画面を開いている・閉じている途中
+    this._playing = null; // 演奏中の {song, chartRef, inst}(演奏画面の ✎ で編集画面へ)
+    this._chartRolls = []; // 演奏中の譜面の #RANDOM の乱数(編集画面で同じ分岐を出す)
+    this._returnToEditor = null; // テストプレイなら {song, chartRef}(演奏をやめたら編集画面へ戻る)
     this.isTouch = matchMedia('(pointer: coarse)').matches;
     document.body.classList.toggle('touch', this.isTouch);
     document.body.classList.toggle('desktop', !this.isTouch);
@@ -290,6 +305,20 @@ class App {
     });
     window.addEventListener('resize', () => this.onResize());
     window.addEventListener('orientationchange', () => setTimeout(() => this.onResize(), 200));
+    // 譜面の編集: ファイルにしていない編集があればページを閉じる前に確かめる(iPad の Safari は出さないので下書きも書く)
+    window.addEventListener('beforeunload', (e) => {
+      if (![...this._editSessions.values()].some((s) => s.unexported)) return;
+      e.preventDefault();
+      e.returnValue = '';
+    });
+    const edit = $('btn-edit-mode');
+    if (edit) {
+      edit.addEventListener('click', () => {
+        this.config.editListMode = !this.config.editListMode;
+        this.saveConfig();
+        this.renderSongList();
+      });
+    }
     window.addEventListener('blur', () => {
       if (this.menu) this.menu.releaseAll();
       this.cancelAssign(msg('keys.blur'));
@@ -327,7 +356,18 @@ class App {
     el.classList.toggle('error', error);
   }
 
+  /**
+   * 別の曲パックを開く前に、ファイルにしていない編集があれば確かめる(下書きには残る)。開いてよければ編集の状態を捨てる。
+   * @returns {boolean} 開いてよければ true
+   */
+  _confirmPackSwitch() {
+    if ([...this._editSessions.values()].some((s) => s.unexported) && !window.confirm(t('edit.confirmReplacePack'))) return false;
+    this._editSessions.clear();
+    return true;
+  }
+
   async loadPackage(blob, name, opts) {
+    if (!this._confirmPackSwitch()) return;
     const gen = ++this._loadGen;
     this.setStatus(msg('load.zip'));
     try {
@@ -336,6 +376,7 @@ class App {
       if (this.pkg) this.pkg.dispose();
       this.pkg = pkg;
       await this.showSongList();
+      this.offerDraftRestore(pkg);
       if (!opts.fromCache && blob.size < 400 * 1024 * 1024) {
         saveLastZip(blob, name).then((ok) => { if (ok && gen === this._loadGen) this.showLastButton(blob, name); });
       }
@@ -346,6 +387,7 @@ class App {
   }
 
   async loadFolder(files) {
+    if (!this._confirmPackSwitch()) return;
     const gen = ++this._loadGen;
     this.setStatus(msg('load.folder'));
     try {
@@ -354,6 +396,7 @@ class App {
       if (this.pkg) this.pkg.dispose();
       this.pkg = pkg;
       await this.showSongList();
+      this.offerDraftRestore(pkg);
     } catch (e) {
       console.error(e);
       if (gen === this._loadGen) this.setStatus(msg('load.failed', { msg: e && e.message ? e.message : e }), true);
@@ -379,6 +422,13 @@ class App {
     const pkg = this.pkg;
     const list = $('song-list');
     list.innerHTML = '';
+    // 譜面の編集: 「✎ 譜面を編集」を押している間は、ドラムの譜面のボタンで編集画面を開く(ギター / ベースの行は出さない)
+    const editing = !!this.config.editListMode;
+    const tools = $('list-tools');
+    if (tools) tools.hidden = !(pkg && pkg.songs.length);
+    const toggle = $('btn-edit-mode');
+    if (toggle) toggle.setAttribute('aria-pressed', String(editing));
+    list.classList.toggle('editing', editing);
     if (!pkg || !pkg.songs.length) return;
     for (const song of pkg.songs) {
       const li = document.createElement('li');
@@ -393,6 +443,7 @@ class App {
       meta.querySelector('.title').textContent = song.title;
       meta.querySelector('.artist').textContent = [h.artist, h.bpm ? 'BPM ' + h.bpm : ''].filter(Boolean).join('  ');
       for (const inst of [INSTRUMENT.DRUMS, INSTRUMENT.GUITAR, INSTRUMENT.BASS]) {
+        if (editing && inst !== INSTRUMENT.DRUMS) continue;
         const charts = song.charts.filter((c) => chartHasInstrument(c.header, inst)
           || (inst === INSTRUMENT.DRUMS && ![0, 1, 2].some((i) => chartHasInstrument(c.header, i))));
         if (!charts.length) continue;
@@ -410,8 +461,22 @@ class App {
           const levels = c.header.levels || [c.header.level, 0, 0];
           const decs = c.header.levelDecs || [c.header.levelDec, 0, 0];
           b.querySelector('.lv').textContent = levelText(levels[inst], decs[inst]);
-          b.setAttribute('aria-label', t('song.playLabel', { inst: t(INSTRUMENT_NAMES[inst]), label }));
-          b.onclick = () => this.startChart(song, c, inst);
+          if (editing) {
+            b.setAttribute('aria-label', t('edit.openLabel', { label }));
+            b.onclick = () => this.openEditor(song, c);
+          } else {
+            b.setAttribute('aria-label', t('song.playLabel', { inst: t(INSTRUMENT_NAMES[inst]), label }));
+            b.onclick = () => this.startChart(song, c, inst);
+          }
+          // 編集した譜面(重ねたもの・この画面で編集中のもの)に印
+          const ses = this._editSessions.get(normKey(c.path));
+          if (pkg.override(c.path) || (ses && ses.modified)) {
+            const dot = document.createElement('span');
+            dot.className = 'edited';
+            dot.textContent = '●';
+            dot.title = t('edit.editedBadge');
+            b.appendChild(dot);
+          }
           row.appendChild(b);
         }
         meta.appendChild(row);
@@ -587,6 +652,10 @@ class App {
 
   /** 電子ドラムの打鍵(しきい値を通り、まとめたあと)。演奏画面の準備ができているときだけ判定へ流す。 */
   onMidiHit(lane, ts) {
+    if (this.editor) {
+      this.editor.onPadHit(lane, ts, 'midi'); // 譜面の編集画面では試し聞き(判定へは流さない)
+      return;
+    }
     if (!this.player || !this.input) return; // キーボードと同じく、読み込みが済んで入力を張ったあとから
     this.player.hit(lane, ts, {});
     this.pacer.forceNext();
@@ -811,10 +880,14 @@ class App {
   // ---- 演奏 ----
   /**
    * @param {number} [inst] 弾く楽器(INSTRUMENT。省略でドラム)。ギター / ベースは譜面のそのパートを弾き、ほかは伴奏になる
+   * @param {{startAtMs?: number, returnToEditor?: boolean, rolls?: number[], loopPos?: object}} [opts] 譜面の編集のテストプレイ:
+   *   startAtMs から演奏を始め、やめたら編集画面へ戻る。rolls は #RANDOM の乱数(編集していた分岐)、loopPos はループ(位置で持つ)
    */
-  async startChart(song, chartRef, inst = INSTRUMENT.DRUMS) {
+  async startChart(song, chartRef, inst = INSTRUMENT.DRUMS, opts = {}) {
     const c = this.config;
     const loadId = ++this._chartLoadSeq; // 戻ってから別の曲を始めたら、前の読み込みの失敗は画面に出さない
+    this._playing = { song, chartRef, inst };
+    this._returnToEditor = opts.returnToEditor ? { song, chartRef } : null;
     this.cancelAssign();
     await this.audio.ensureContext();
     this.playInst = inst;
@@ -828,10 +901,15 @@ class App {
     $('loading-bar').value = 0;
     $('loading-sub').textContent = '';
     const instTag = inst === INSTRUMENT.DRUMS ? '' : '  ' + t(INSTRUMENT_NAMES[inst]);
-    $('play-title').textContent = song.title + (chartRef.label ? '  [' + chartRef.label + ']' : '') + instTag;
+    const testTag = this._returnToEditor ? '  ' + t('edit.testPlayBadge') : '';
+    $('play-title').textContent = song.title + (chartRef.label ? '  [' + chartRef.label + ']' : '') + instTag + testTag;
     try {
       const skin = await this._skinLoad;
-      const chart = await this.pkg.loadChart(chartRef.path);
+      // #RANDOM の乱数を覚える(演奏画面の ✎ で編集画面へ行ったとき、同じ分岐を出す)。テストプレイは編集していた分岐
+      const rolls = [];
+      const random = opts.rolls ? replayRandom(opts.rolls) : () => { const v = Math.random(); rolls.push(v); return v; };
+      const chart = await this.pkg.loadChart(chartRef.path, { random });
+      this._chartRolls = opts.rolls ? opts.rolls.slice() : rolls;
       const base = { chipVolume: 1.0, autoChipVolume: 0.8 };
       let player;
       if (inst === INSTRUMENT.DRUMS) {
@@ -878,9 +956,19 @@ class App {
         console.warn('復号できなかった音源:', this.audio.failed);
         player.showStatus(t('load.soundsFailed', { n: this.audio.failed.length }), 4000);
       }
+      // テストプレイ: 編集画面で決めたループを戻す(Player.load は 0〜譜面の長さにする。位置で持っているので、
+      // 編集でテンポや長さが変わっても同じ所。「曲の終わりまで」は新しい長さまで)
+      if (opts.loopPos) {
+        const lp = opts.loopPos;
+        this.training.loopBeginMs = Math.max(0, posToMs(chart, lp.beginPos));
+        this.training.loopEndMs = lp.endAtEnd ? chart.durationMs : Math.min(chart.durationMs, posToMs(chart, lp.endPos));
+        player.applySettings();
+        player.enterStandby(true);
+      }
       this.setupPlayScreen();
       $('loading').hidden = true;
       this.training.save();
+      if (Number.isFinite(opts.startAtMs)) player.startTrainingAt(opts.startAtMs);
     } catch (e) {
       console.error(e);
       if (loadId !== this._chartLoadSeq) return;
@@ -969,6 +1057,12 @@ class App {
     this.input.attach($('canvas'));
 
     $('btn-back').onclick = () => this.leavePlay();
+    $('btn-back').title = t(this._returnToEditor ? 'edit.backToEditor' : 'play.back');
+    // 譜面の編集へ(ドラムだけ。今の位置・分岐・ループを持っていく。本アプリの追加)
+    const editBtn = $('btn-edit');
+    editBtn.hidden = this.playInst !== INSTRUMENT.DRUMS;
+    editBtn.title = t(this._returnToEditor ? 'edit.backToEditor' : 'edit.openFromPlay');
+    editBtn.onclick = () => this.editFromPlay();
     $('btn-start').onclick = () => player.command(MENU_COMMAND.START_STOP);
     $('btn-restart').onclick = () => player.command(MENU_COMMAND.RESTART);
     $('btn-pause').onclick = () => player.command(MENU_COMMAND.PAUSE_RESUME);
@@ -1072,6 +1166,7 @@ class App {
   }
 
   onResize() {
+    if (this.editor) this.editor.onResize();
     if (!this.renderer) return;
     const stage = $('stage');
     const w = stage.clientWidth;
@@ -1296,7 +1391,16 @@ class App {
     s.pos.textContent = formatLoopTime(now, unit, p.measureTimes) + '   ' + clockText(now) + ' / ' + clockText(max);
   }
 
-  leavePlay() {
+  /**
+   * @param {{keepHomeHidden?: boolean}} [opts] keepHomeHidden: 曲の一覧を出さない(そのまま編集画面を開く)
+   */
+  leavePlay(opts = {}) {
+    // テストプレイなら、止めた位置とループを持って編集画面へ戻る
+    const back = this._returnToEditor;
+    this._returnToEditor = null;
+    const lastMs = this.player ? this.player.songMs : 0;
+    const loopPos = this.player ? this._captureLoop(this.player) : null;
+    const keepHome = !!opts.keepHomeHidden || !!back;
     cancelAnimationFrame(this.raf);
     this._chartLoadSeq++; // 読み込み中に戻ったら、その読み込みの失敗は出さない
     this._guardGbKeys(false);
@@ -1317,9 +1421,175 @@ class App {
     document.body.classList.remove('portrait');
     if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
     $('screen-play').hidden = true;
+    this._playing = null;
+    if (keepHome) {
+      if (back) this.openEditor(back.song, back.chartRef, { atMs: lastMs, loopPos });
+      return;
+    }
     $('screen-home').hidden = false;
     if (this.midiPanel) this.midiPanel.refresh(); // 演奏中に溜まった打鍵数などを出す
     this.syncPadWatch(); // 設定を開いたままなら監視に戻る
+  }
+
+  // ---- 譜面の編集(js/edit/。本アプリの追加) ----
+
+  /** ループの区間を位置(pos)で持つ(編集でテンポが変わっても同じ所。ループしていなければ null)。 */
+  _captureLoop(player) {
+    const s = this.training;
+    const chart = player.chart;
+    if (!chart || !s.loop || !s.loopRangeValid) return null;
+    return { beginPos: msToPos(chart, s.loopBeginMs), endPos: msToPos(chart, s.loopEndMs), endAtEnd: s.loopEndMs >= chart.durationMs - 1 };
+  }
+
+  /** 演奏画面の ✎: 今の位置・分岐・ループを持って編集画面へ(テストプレイ中なら戻るのと同じ)。 */
+  editFromPlay() {
+    const p = this.player;
+    const playing = this._playing;
+    if (!p || !playing || this.playInst !== INSTRUMENT.DRUMS) return;
+    if (this._returnToEditor) {
+      this.leavePlay();
+      return;
+    }
+    const atMs = p.songMs;
+    const loopPos = this._captureLoop(p);
+    const rolls = this._chartRolls.slice();
+    this.leavePlay({ keepHomeHidden: true });
+    this.openEditor(playing.song, playing.chartRef, { atMs, rolls, loopPos });
+  }
+
+  /**
+   * 譜面の編集画面を開く。編集の状態(元に戻すの履歴など)は曲パックを開き直すまで譜面ごとに持つ。
+   * @param {{atMs?: number, rolls?: number[], loopPos?: object}} [opts]
+   */
+  async openEditor(song, chartRef, opts = {}) {
+    if (this._editBusy || this.editor || !this.pkg) return;
+    this._editBusy = true;
+    try {
+      await this.audio.ensureContext();
+      this.cancelAssign();
+      $('screen-home').hidden = true;
+      this.syncPadWatch();
+      const screen = $('screen-edit');
+      screen.hidden = false;
+      $('edit-loading').hidden = false;
+      $('edit-loading-text').textContent = t('load.chart');
+      const skin = await this._skinLoad;
+      const pkg = this.pkg;
+      const key = normKey(chartRef.path);
+      let session = this._editSessions.get(key);
+      if (!session) {
+        const original = await pkg.readOriginalBytes(chartRef.path);
+        const isNew = original === null;
+        const originalBytes = original || (await pkg.readBytes(chartRef.path));
+        let draft = await loadDraft(pkg, chartRef.path);
+        if (draft) {
+          $('edit-loading').hidden = true;
+          const choice = await resumeDialog($('edit-dialog'), draft, draft.baseCrc !== crc32(originalBytes));
+          if (choice === 'original') {
+            await deleteDraft(pkg, chartRef.path);
+            draft = null;
+          }
+        }
+        session = new EditSession({ pkg, song, chartRef, originalBytes, draft, rolls: opts.rolls || [], isNew });
+        this._editSessions.set(key, session);
+      } else if (opts.rolls && opts.rolls.length) {
+        session.setRolls(opts.rolls);
+      }
+      if (opts.loopPos !== undefined) session.loopPos = opts.loopPos;
+      this.playInst = INSTRUMENT.DRUMS;
+      this.applyVolumes();
+      this.editor = new EditorScreen(this, session, skin, { atMs: opts.atMs });
+      $('edit-loading').hidden = true;
+      await this.editor.open();
+    } catch (e) {
+      console.error(e);
+      $('edit-loading').hidden = true;
+      $('screen-edit').hidden = true;
+      this.editor = null;
+      $('screen-home').hidden = false;
+      this.setStatus(msg('load.failed', { msg: e && e.message ? e.message : e }), true);
+    } finally {
+      this._editBusy = false;
+    }
+  }
+
+  /** 編集画面を閉じて曲の一覧へ(確かめない。編集は曲パックに重ね、下書きにも残る)。 */
+  async closeEditor() {
+    const ed = this.editor;
+    if (!ed || this._editBusy) return;
+    this._editBusy = true;
+    try {
+      await ed.close();
+    } finally {
+      this.editor = null;
+      this._editBusy = false;
+    }
+    $('screen-home').hidden = false;
+    this.syncPadWatch();
+    this.renderSongList();
+    if (!this._editKeptShown && [...this._editSessions.values()].some((s) => s.unexported)) {
+      this._editKeptShown = true;
+      this.setStatus(msg('edit.keptNote'));
+    }
+  }
+
+  /** 編集画面から本物の演奏画面でテストプレイする(やめると編集画面へ戻る)。 */
+  async startTestPlay(session, startAtMs) {
+    const ed = this.editor;
+    if (!ed || this._editBusy) return;
+    this._editBusy = true;
+    try {
+      await ed.close({ toTest: true });
+    } finally {
+      this.editor = null;
+      this._editBusy = false;
+    }
+    await this.startChart(session.song, session.chartRef, INSTRUMENT.DRUMS, {
+      startAtMs, returnToEditor: true, rolls: session.rolls, loopPos: session.loopPos,
+    });
+  }
+
+  /** 編集した譜面を入れた曲パックの ZIP を書き出す(元の ZIP の中身はそのまま。次に「前回の ZIP」で開ける)。 */
+  async exportEditedZip() {
+    const pkg = this.pkg;
+    if (!pkg) return;
+    for (const s of this._editSessions.values()) await s.commit();
+    const blob = await pkg.exportZip();
+    const name = editedZipName(pkg.name);
+    downloadBlob(blob, name);
+    if (pkg.zip && pkg.zip.blob && blob.size < 400 * 1024 * 1024) {
+      saveLastZip(blob, name).then((ok) => { if (ok) this.showLastButton(blob, name); });
+    }
+    for (const s of this._editSessions.values()) s.history.markExported();
+    if (this.editor) this.editor._toast(t('edit.exported', { name }));
+  }
+
+  /** 曲パックを開いたとき、その曲パックの下書きがあれば戻すか聞く(戻すと一覧と演奏も直した譜面になる)。 */
+  async offerDraftRestore(pkg) {
+    const box = $('draft-offer');
+    if (!box) return;
+    box.hidden = true;
+    const drafts = [];
+    for (const d of await listDrafts(pkg)) {
+      if (this.pkg !== pkg) return;
+      const original = await pkg.readOriginalBytes(d.path).catch(() => null);
+      if (original && crc32(original) === d.baseCrc) drafts.push(d);
+    }
+    if (!drafts.length || this.pkg !== pkg) return;
+    $('draft-offer-text').textContent = t('edit.draftsFound', { n: drafts.length });
+    box.hidden = false;
+    $('draft-restore').onclick = async () => {
+      box.hidden = true;
+      if (this.pkg !== pkg) return;
+      for (const d of drafts) pkg.setOverride(d.path, d.bytes);
+      await pkg.rescan();
+      this.renderSongList();
+      this.setStatus(msg('edit.draftsRestored', { n: drafts.length }));
+    };
+    $('draft-discard').onclick = async () => {
+      box.hidden = true;
+      for (const d of drafts) await deleteDraft(pkg, d.path);
+    };
   }
 
   /** メニュー操作音(短い合成音)。 */

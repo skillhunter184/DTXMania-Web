@@ -53,6 +53,13 @@
     </div>
 
     <div id="pkg-status" class="status" hidden></div>
+    <div id="draft-offer" class="status" hidden><span id="draft-offer-text"></span>
+      <button id="draft-restore" class="btn small" data-i18n="edit.draftsRestore">復元する</button>
+      <button id="draft-discard" class="btn small secondary" data-i18n="edit.draftsDiscard">捨てる</button></div>
+    <div id="list-tools" hidden>
+      <button type="button" id="btn-edit-mode" class="btn small secondary" aria-pressed="false" data-i18n="edit.listToggle">✎ 譜面を編集</button>
+      <span class="note" data-i18n="edit.listNote">押している間は、ドラムの譜面のボタンで編集画面を開きます。</span>
+    </div>
     <ul id="song-list"></ul>
 
     <details id="settings-panel">
@@ -205,6 +212,7 @@
       <button id="btn-start" class="pb" title="演奏開始 / 停止" data-i18n-title="play.startStop">▶</button>
       <button id="btn-restart" class="pb" title="リスタート" data-i18n-title="play.restart">⟲</button>
       <button id="btn-pause" class="pb" title="一時停止 / 再開" data-i18n-title="play.pause">⏸</button>
+      <button id="btn-edit" class="pb" title="この譜面を編集" data-i18n-title="edit.openFromPlay" hidden>✎</button>
       <button id="btn-replay" class="pb text" title="直前の演奏をリプレイ / 停止" data-i18n="play.replay" data-i18n-title="play.replayTitle" hidden>リプレイ</button>
       <button id="btn-fullscreen" class="pb" title="全画面" data-i18n-title="play.fullscreen">⛶</button>
       <button id="btn-menu" class="pb" title="トレーニングメニュー" data-i18n-title="play.menu">☰</button>
@@ -229,6 +237,45 @@
         <div id="loading-sub" class="note"></div>
       </div>
     </div>
+  </section>
+
+  <section id="screen-edit" class="screen" hidden>
+    <div id="edit-bar" role="toolbar">
+      <div class="grp top">
+        <button id="edit-back" class="pb" title="曲選択へ戻る" aria-label="曲選択へ戻る" data-i18n-title="edit.back" data-i18n-aria-label="edit.back">←</button>
+        <span id="edit-title"></span><span id="edit-dirty" title="編集あり" data-i18n-title="edit.editedBadge" hidden>●</span>
+        <button id="edit-undo" class="pb" title="元に戻す" aria-label="元に戻す" data-i18n-title="common.undo" data-i18n-aria-label="common.undo">↶</button>
+        <button id="edit-redo" class="pb" title="やり直す" aria-label="やり直す" data-i18n-title="edit.redo" data-i18n-aria-label="edit.redo">↷</button>
+        <button id="edit-save" class="pb text" data-i18n="edit.save">保存</button>
+        <button id="edit-more" class="pb" title="その他" aria-label="その他" data-i18n-title="edit.more" data-i18n-aria-label="edit.more">⋯</button>
+      </div>
+      <div class="grp tools">
+        <select id="edit-guide" title="ガイド間隔" aria-label="ガイド間隔" data-i18n-title="edit.snap" data-i18n-aria-label="edit.snap"></select>
+        <button id="edit-zoom-out" class="pb" title="縮小" aria-label="縮小" data-i18n-title="edit.zoomOut" data-i18n-aria-label="edit.zoomOut">−</button>
+        <button id="edit-zoom-in" class="pb" title="拡大" aria-label="拡大" data-i18n-title="edit.zoomIn" data-i18n-aria-label="edit.zoomIn">＋</button>
+        <button id="edit-play" class="pb" title="再生 / 停止" aria-label="再生 / 停止" data-i18n-title="edit.playStop" data-i18n-aria-label="edit.playStop">▶</button>
+        <button id="edit-follow" class="pb" title="再生位置を追う" aria-label="再生位置を追う" data-i18n-title="edit.follow" data-i18n-aria-label="edit.follow" hidden>⇩</button>
+        <button id="edit-test" class="pb text" data-i18n="edit.testPlay">テストプレイ</button>
+      </div>
+      <div class="grp types" id="edit-types" role="group" aria-label="チップの種類" data-i18n-aria-label="edit.types">
+        <span>HH</span><div class="seg" data-col="1"><button type="button" data-i18n="edit.hhClosed">閉</button><button type="button" data-i18n="edit.hhOpen">開</button></div>
+        <span>LP</span><div class="seg" data-col="2"><button type="button">LP</button><button type="button">LBD</button></div>
+        <span>CY</span><div class="seg" data-col="8"><button type="button">CY</button><button type="button">RD</button></div>
+      </div>
+    </div>
+    <div id="edit-banner" hidden></div>
+    <div id="edit-main">
+      <div id="edit-stage">
+        <canvas id="edit-canvas" tabindex="0" role="application" aria-label="譜面" data-i18n-aria-label="edit.canvas"></canvas>
+        <div id="edit-rail" aria-label="譜面の位置" data-i18n-aria-label="edit.rail"><div id="edit-rail-thumb"></div></div>
+      </div>
+    </div>
+    <div id="edit-status" aria-live="polite"><span id="edit-pos"></span><span id="edit-info"></span></div>
+    <div id="edit-toast" role="status" hidden></div>
+    <div id="edit-pop" class="edit-pop" role="menu" hidden></div>
+    <dialog id="edit-dialog"></dialog>
+    <div id="edit-help" hidden></div>
+    <div id="edit-loading" hidden><div class="box"><div id="edit-loading-text"></div></div></div>
   </section>
 </div>
 <script>

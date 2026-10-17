@@ -9,8 +9,8 @@
 // - #IF 〜 #ENDIF の中の行は触らない(どの分岐が選ばれるかは演奏ごとに変わるので、編集の対象にしない)
 // - 文書は変更できない値として扱う。編集の操作は新しい DtxDoc を返す(元に戻す・やり直しは文書を積むだけ)
 
-import { TICKS_PER_MEASURE, splitHeader, isDataLine, stripComment } from '../core/dtx.js';
-import { decodeTextInfo, encodeText } from '../core/encoding.js';
+import { TICKS_PER_MEASURE, splitHeader, isDataLine, stripComment, IfStack } from '../core/dtx.js';
+import { decodeTextInfo, encodeText, encodeShiftJis } from '../core/encoding.js';
 
 /** 書ける小節番号の上限(本アプリの parseDTX は 10 進 3 桁しか読まない。NX の 36 進の百の位は書かない)。 */
 export const MAX_MEASURE = 999;
@@ -246,9 +246,21 @@ export class DtxDoc {
   /**
    * ファイルのバイト列にする。元の行は元のバイト列のまま。書き直した行が元の文字コードで書けない
    * (Shift-JIS に無い文字)ときは全体を UTF-8(BOM 付き)で書き、encoding でそれを知らせる。
-   * @returns {{bytes: Uint8Array, encoding: string, bom: boolean, changedEncoding: boolean}}
+   * opts.encoding を渡すと、その文字コードで全体を書き直す(元と同じなら今までどおり)。Shift-JIS で書けない文字が
+   * あれば ok: false(何も変えない)。
+   * @param {{encoding?: string, bom?: boolean}} [opts]
+   * @returns {{ok: boolean, bytes: Uint8Array, encoding: string, bom: boolean, changedEncoding: boolean}}
    */
-  toBytes() {
+  toBytes(opts = {}) {
+    if (opts.encoding && (opts.encoding !== this.info.encoding || !!opts.bom !== this.info.bom)) {
+      const enc = opts.encoding;
+      if (enc === 'shift_jis' && encodeShiftJis(this.text) === null) {
+        return { ...this.toBytes(), ok: false, changedEncoding: false };
+      }
+      const conv = new DtxDoc(this.lines.map((l) => ({ text: l.text, bytes: null, eol: l.eol })),
+        { ...this.info, encoding: enc, bom: enc === 'shift_jis' ? false : !!opts.bom });
+      return { ...conv.toBytes(), changedEncoding: true };
+    }
     let { encoding, bom } = this.info;
     const parts = [];
     let changed = false;
@@ -289,7 +301,7 @@ export class DtxDoc {
       out.set(p, o);
       o += p.length;
     }
-    return { bytes: out, encoding, bom, changedEncoding: changed };
+    return { ok: true, bytes: out, encoding, bom, changedEncoding: changed };
   }
 
   /**
@@ -302,6 +314,8 @@ export class DtxDoc {
     if (this._index) return this._index;
     const groups = new Map();
     const headers = [];
+    const headerCounts = new Map(); // #IF の外のヘッダのコマンド → 行数(何度も定義された #WAV / #BPMzz を見分ける)
+    const ifCmds = new Set(); // #IF の中のヘッダのコマンド(#BPMzz などの番号を新しく取るときに避ける)
     let depth = 0;
     let lockedObjects = 0;
     let firstObject = -1;
@@ -331,11 +345,16 @@ export class DtxDoc {
         }
         g.lines.push(i);
         for (const chip of c.chips) g.chips.push(chip);
-      } else if (c.kind === 'header' && depth === 0) {
+      } else if (c.kind === 'header') {
+        if (depth > 0) {
+          ifCmds.add(c.cmd);
+          continue;
+        }
         headers.push({ idx: i, cmd: c.cmd, rawCmd: c.rawCmd, param: c.param });
+        headerCounts.set(c.cmd, (headerCounts.get(c.cmd) || 0) + 1);
       }
     }
-    this._index = { groups, headers, lockedObjects, firstObject, maxMeasure };
+    this._index = { groups, headers, headerCounts, allCmds: new Set(headerCounts.keys()), ifCmds, lockedObjects, firstObject, maxMeasure };
     return this._index;
   }
 
@@ -351,6 +370,53 @@ export class DtxDoc {
     const hs = this.index.headers;
     for (let i = hs.length - 1; i >= 0; i--) if (hs[i].cmd === up) return hs[i].param;
     return null;
+  }
+
+  /**
+   * #IF の中のデータ行。active は random で選ばれる分岐の中か(parseDTX と同じ順に IfStack へ行を流すので、
+   * 同じ random なら同じ分岐になる)。文書には覚えない(呼ぶ側が持つ)。
+   * @param {() => number} random 例 replayRandom(rolls)
+   * @returns {{line:number, measure:number, channel:number, chips:{tick:number, value:string}[], active:boolean}[]}
+   */
+  locked(random) {
+    const out = [];
+    const st = new IfStack(random);
+    for (let i = 0; i < this.lines.length; i++) {
+      const s = this.lines[i].text.replace(/^[ \t]+/, '');
+      if (s.length < 2 || s[0] !== '#') continue;
+      const body = s.slice(1);
+      const skipped = st.skipsLine(splitHeader(body));
+      if (!st.inIfBlock) continue;
+      const c = classifyCached(this.lines[i].text);
+      if (c.kind !== 'object') continue;
+      out.push({ line: i, measure: c.measure, channel: c.channel, chips: c.chips, active: !skipped });
+    }
+    return out;
+  }
+
+  /**
+   * 行を直接書き換える(1 行ずつの #WAV の定義・#BGMWAV のように、同じコマンドの行をまとめて書き直すと困るとき)。
+   * @param {Map<number, string|null>} edits 行番号 → 新しい行(null で消す)
+   * @param {{after:number, texts:string[]}[]} [inserts] after の行の後ろに足す(-1 で先頭)
+   * @returns {DtxDoc}
+   */
+  withLines(edits, inserts = []) {
+    const add = new Map();
+    for (const { after, texts } of inserts) push(add, after, texts);
+    const out = [];
+    const newLine = (text) => ({ text, bytes: null, eol: this.info.eol });
+    if (add.has(-1)) for (const t of add.get(-1)) out.push(newLine(t));
+    for (let i = 0; i < this.lines.length; i++) {
+      const l = this.lines[i];
+      if (edits.has(i)) {
+        const t = edits.get(i);
+        if (t !== null) out.push(t === l.text ? l : { text: t, bytes: null, eol: l.eol });
+      } else {
+        out.push(l);
+      }
+      if (add.has(i)) for (const t of add.get(i)) out.push(newLine(t));
+    }
+    return this._with(fixEols(out, this.info.eol));
   }
 
   /** 行を差し替えた新しい文書。 */

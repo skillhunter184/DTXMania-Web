@@ -262,14 +262,42 @@ export class SongPackage {
     }
   }
 
-  /** 譜面を読み込んで解析する。 */
-  async loadChart(path) {
+  /**
+   * 譜面を読み込んで解析する。
+   * @param {string} path
+   * @param {{random?: () => number}} [opts] #RANDOM の乱数(譜面の編集のテストプレイで、編集していた分岐を流す)
+   */
+  async loadChart(path, opts = {}) {
     const ent = this.entry(path);
     if (!ent) throw new Error(t('zip.chartMissing', { path }));
-    const chart = parseDTX(await this.readText(ent));
+    const chart = parseDTX(await this.readText(ent), opts);
     chart.path = ent.name;
     chart.dir = dirOf(ent.name);
     return chart;
+  }
+
+  /** 重ねる前の元のファイルの中身(元の ZIP に無い、重ねただけのファイルは null)。 */
+  async readOriginalBytes(path) {
+    const key = normKey(path);
+    const o = this._overrides.get(key);
+    if (o && o.added) return null;
+    const e = this.index.get(key);
+    return e ? this.zip.read(e) : null;
+  }
+
+  /** path の譜面の一覧の表示(題名・レベルなど)を読み直す(重ねた譜面を一覧に出す。曲のまとめ方は変えない)。 */
+  async refreshHeader(path) {
+    const key = normKey(path);
+    const e = this.index.get(key);
+    if (!e) return;
+    let header = null;
+    for (const song of this.songs) {
+      for (const c of song.charts) {
+        if (normKey(c.path) !== key) continue;
+        if (!header) header = await this._header(e);
+        c.header = header;
+      }
+    }
   }
 
   /** 画像ファイルの Blob URL(ジャケットなど)。同じファイルは 1 つの URL を使い回す。無ければ null。 */

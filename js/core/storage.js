@@ -133,3 +133,63 @@ export async function loadSkinFiles() {
     if (db) db.close();
   }
 }
+
+// ---- 汎用(譜面の編集の下書きなど。同じ files ストアに、キーを分けて置く。版は上げない) ----
+
+/** 1 つの取引を開いて fn(store) を回す。失敗は呼び出し側で握りつぶす。 */
+async function withStore(mode, fn) {
+  let db = null;
+  try {
+    db = await openDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, mode);
+      let result;
+      const req = fn(tx.objectStore(STORE));
+      if (req) req.onsuccess = () => { result = req.result; };
+      tx.oncomplete = () => resolve(result);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('transaction aborted')); // 容量超過はコミット時に abort で来る
+    });
+  } finally {
+    if (db) db.close();
+  }
+}
+
+/** @returns {Promise<any>} 無ければ・読めなければ null */
+export async function idbGet(key) {
+  try {
+    const v = await withStore('readonly', (st) => st.get(key));
+    return v === undefined ? null : v;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** @returns {Promise<boolean>} 書けたら true */
+export async function idbSet(key, value) {
+  try {
+    await withStore('readwrite', (st) => st.put(value, key));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export async function idbDelete(key) {
+  try {
+    await withStore('readwrite', (st) => st.delete(key));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/** prefix で始まるキーの一覧(文字列のキーだけ)。 */
+export async function idbKeys(prefix) {
+  try {
+    const keys = await withStore('readonly', (st) => st.getAllKeys());
+    return (keys || []).filter((k) => typeof k === 'string' && k.startsWith(prefix));
+  } catch (e) {
+    return [];
+  }
+}
