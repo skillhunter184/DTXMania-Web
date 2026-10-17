@@ -103,13 +103,19 @@ export class SongPackage {
    * 書き換えた譜面は同じ名前で無圧縮で入れ、新しいファイルは末尾に足す。フォルダから読んだときはファイルを無圧縮で入れる。
    * @returns {Promise<Blob>}
    */
-  async exportZip() {
+  async exportZip({ onlyDir = '' } = {}) {
     const w = new ZipWriter();
     const zip = this.zip;
     const seen = new Set();
+    // onlyDir: その曲のフォルダ('/' で終わる)の中だけ(パスはそのまま。中の譜面の相対パスが崩れない)
+    const prefix = normKey(onlyDir);
+    // 書き出している間に編集画面が重ね直しても、始めたときの中身で書く(書き出した文書の印と食い違わないように)
+    const overrides = new Map(this._overrides);
+    const inside = (key) => !prefix || key.startsWith(prefix);
     for (const e of zip.entries) {
       const key = normKey(e.name);
-      const o = this._overrides.get(key);
+      if (!inside(key)) continue;
+      const o = overrides.get(key);
       if (o && !e.isDir) {
         // 正規化して同じ名前のエントリが 2 つあれば、重ねた中身を 1 つだけ入れる(読み込みは後勝ちなので古い方を残さない)
         if (!seen.has(key)) w.addFile(e.name, o.bytes, e.nameBytes ? { nameBytes: e.nameBytes, utf8: e.utf8 } : {});
@@ -123,8 +129,8 @@ export class SongPackage {
         w.addBlob(e.name, f, crc32(await zip.read(e)), { date: f && f.lastModified ? new Date(f.lastModified) : undefined });
       }
     }
-    for (const [key, o] of this._overrides) {
-      if (!seen.has(key) && o.added) w.addFile(o.entry.name, o.bytes);
+    for (const [key, o] of overrides) {
+      if (!seen.has(key) && o.added && inside(key)) w.addFile(o.entry.name, o.bytes);
     }
     return w.finish();
   }

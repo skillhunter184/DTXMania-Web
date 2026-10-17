@@ -55,19 +55,21 @@ export class EditHistory {
     return this.doc !== this.originalDoc && this.doc !== this.exportedDoc;
   }
 
-  markExported() {
-    this.exportedDoc = this.doc;
+  /** 書き出した(doc: 書き出した文書。書き出している間に編集が進んだときのため。省けば今の文書)。 */
+  markExported(doc = this.doc) {
+    this.exportedDoc = doc;
   }
 
   /**
-   * 1 手積む(やり直しの手は消える)。同じ文書なら積まない。coalesceKey が前の手と同じで 1 秒以内(closeCoalesce するまで)
-   * なら前の手を置き換える(↑↓ の微調整の繰り返しを 1 手にまとめる)。
+   * 1 手積む(やり直しの手は消える)。同じ文書なら積まない。coalesceKey が前の手と同じで 1 秒以内(closeCoalesce するまで)、
+   * しかも前の手の結果の選択のまま続けたときは、前の手を置き換える(↑↓ の微調整の繰り返しを 1 手にまとめる。
+   * 別のものを選び直して動かしたら別の手)。
    * @returns {boolean} 積んだら true
    */
   push(doc, { label = '', select = [], selectBefore = [], focusU = null, coalesceKey = null, now = Date.now() } = {}) {
     if (doc === this.doc) return false;
     const top = this.entries[this.index];
-    if (coalesceKey && this.index > 0 && top.coalesceKey === coalesceKey && this._coalesceOpen && now - top.at <= 1000) {
+    if (coalesceKey && this.index > 0 && top.coalesceKey === coalesceKey && this._coalesceOpen && now - top.at <= 1000 && sameKeys(top.select, selectBefore)) {
       this.entries[this.index] = { ...top, doc, select, focusU, at: now };
       this.entries.length = this.index + 1;
       if (doc === this.entries[this.index - 1].doc) {
@@ -118,4 +120,11 @@ export class EditHistory {
       this.index--;
     }
   }
+}
+
+/** 2 つの名前の並びが(順を問わず)同じか。 */
+function sameKeys(a, b) {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((k) => set.has(k));
 }

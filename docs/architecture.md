@@ -35,6 +35,15 @@
 | (追加) 音量バス | 元実装は音量を発音ごとに掛ける | `AudioEngine.setBusVolume('bgm'/'chip')`。鳴っている音にも効くので演奏中に調整できる。SE・歓声・メニュー音は master 直結 |
 | (変更) ハイスピード | 移植元 DTXManiaAI の x1.0 は 0.675 px/ms で NX の約 2.5 倍速い | `SCROLL_BASE_PX_PER_MS`(js/game/player.js)を NX の式から導いた 0.268125 px/ms に。刻みも 0.5 → 0.1(`scrollSpeedTenth`、旧 `scrollSpeed` は読み込み時に ×5 で移行) |
 | `js/ui/skin.js`, `js/ui/renderer.js` | vid2dtx `preview.py` | `docs/spec/vid2dtx-edit.md`。静止部分はキャンバスと同じ大きさで一度だけ作って等倍で貼る(vid2dtx §2.2 と同じ。ソフトウェア描画の 4K で 36〜48 → 60 fps)。(追加) 新しい Renderer の最初の 10 フレームは演出を静止部分の下に描き、GPU のシェーダを待機中に作る(`WARM_AGES` の注記)。(追加) 絵はスキンの画像の組(`skins/README.md`。既定のスキン `skins/default/` を同梱し、設定でフォルダか読み込んだ画像に替えられる。足りない画像は既定のスキンで補い、それも無ければ単色の図形。移植元は単色。§1.4)。画像は等倍の何倍でもよく、幅から倍率を求めて配置を掛ける(`SKIN_PARTS`)。チップは表示の画素数に縮めて作り置き、パッド列と判定ラインは画像の倍率のまま切り出して作り置く |
+| (追加) 譜面の編集 `js/edit/` | DTXCreator(NX 同梱。`docs/spec/dtxcreator-edit.md` / `dtxcreator-ui.md` / `dtxcreator-io.md`)、vid2dtx `preview.py`(`docs/spec/vid2dtx-edit.md`) | 挙動と手本との違いは `docs/spec/chart-editor.md`。コードは移植していない(手本の挙動を読んで作った) |
+| `js/edit/dtxdoc.js` | DTXC `CDTXInputOutput`(読み書き)、vid2dtx `emit.render_channel_line` | (変更) 全体を作り直さず、変えた (小節, チャンネル) の行だけ書き直す。触っていない行は元のバイト列のまま。`#IF` の中は書き換えない |
+| `js/edit/geometry.js` | DTXC `ScoreManager.cs` の座標関数(§1.4)| (変更) 小節 192 等分 → 384 tick、u(4/4 の小節 = 1)。吸着は切り捨てでなくいちばん近い線 |
+| `js/edit/model.js` / `lanes.js` | DTXC `CChip` / `CLane` / `CMeasure`、vid2dtx の 9 列 | 9 列 + 種類(HH 閉 / 開・LP / LBD・CY / RD)。チップの名前は `小節.チャンネル.tick.値.n`(同じものの何個目) |
+| `js/edit/ops.js` | DTXC `CEditModeManager.cs`(置く・消す)、`CSelectionModeManager.cs`(選択・移動)、`CClipBoard.cs`、`CChangeMeasureLengthDialog`、小節の挿入 / 削除、BPM レーン | 操作は文書を受けて新しい文書を返す純粋な関数(1 手) |
+| `js/edit/history.js` | DTXC `CUndoRedoManager.cs` / `CUndoRedoCell*` | (変更) 操作ごとのセルでなく文書の写しを積む(触っていない行は同じものを指すので軽い)。保存した点が正確 |
+| `js/edit/editor.js` / `view.js` / `gestures.js` / `dialogs.js` | DTXC `CMainForm`(ツールバー・メニュー・ショートカット)、vid2dtx の編集の操作 | (変更) タッチ・Apple Pencil の身振り、ペン / 選択のモード |
+| `js/edit/editplayer.js` | DTXC の「再生」(DTXViewer を起動) | (変更) 演奏の `Player` を継承して全部 AUTO で鳴らす。トレーニングの設定に触れない |
+| `js/edit/sidecar.js` | vid2dtx の確信度のファイル(`<譜面>.dtx.conf.json`) | 読むだけ |
 
 ## 時計モデル
 
@@ -135,9 +144,37 @@ STANDBY ──演奏開始/リスタート──▶ START IN(実時間で待つ)
   テイクの頭からその位置までの出来事を演出なしで当て直す(`_replayRebuild`)
 - リプレイ中の打鍵・ピックは使わない。ギター / ベースのボタンは実際に押している状態を別に覚えておき、止めたら戻す
 
-## 譜面編集(将来)への布石
+## 譜面の編集(元実装に無い追加)
 
-- `parseDTX` の各ノートは `{measure, tick, channel, wavId, pos}` を持つ。`chart.rawLines` に元テキストの行を残す
-- vid2dtx と同じ保存方式: ドラムチャンネル行(0x11〜0x1C)以外は原文のまま残し、ドラム行だけを
-  `#mmmCC: …`(gcd で分割数を決める)で再生成する。ZIP 内の譜面を書き換えて再ダウンロードする形になる
-- レーン→(小節, tick)の変換に必要な `measureTimes` / `barLines` は既に `chart` にある
+挙動の仕様は `docs/spec/chart-editor.md`。ここはデータの流れ。
+
+```
+.dtx のバイト列 ─ DtxDoc.fromBytes ─▶ DtxDoc(行の配列。行ごとに元のバイト列を持つ)
+                                        │  index: (小節, チャンネル) の組 → チップ、ヘッダ、#IF の中の行(読むだけ)
+                                        ▼
+                                     EditModel(文書 1 つにつき 1 つ作り置く。parseDTX の結果・u の座標・列ごとのチップ)
+                                        │
+            操作(ops.js。純粋な関数)──▶ 新しい DtxDoc(変えた組の行だけ書き直す。GroupEdit)
+                                        ▼
+                                     EditHistory(文書の写しを積む。元に戻す = 前の写しに戻す)
+                                        ▼
+                                     EditSession
+                                       ├ outputBytes(): 使わなくなった新しい #BPMzz を消して toBytes(元の文字コード・改行)
+                                       ├ commit(): SongPackage.setOverride(パス, バイト列)
+                                       │   → 曲の一覧・演奏(loadChart)・テストプレイ・ZIP の書き出しが編集した譜面を読む
+                                       └ 下書き(IndexedDB。js/edit/drafts.js)
+```
+
+- **保存は差分**。vid2dtx のようにドラムの行を全部作り直すのでなく、変えた (小節, チャンネル) の組の行だけを書き直し、
+  ほかの行(ヘッダ・コメント・BGM・ギター / ベース・`#IF` の中)は元のバイト列のまま書く。差分が小さく、NX や DTXCreator が
+  書いた行の癖(分割数・空白)も残る。書き直した行が元の文字コードで書けなければ全体を UTF-8(BOM 付き)にする
+- **座標は u**(4/4 の小節 = 1 の拍に比例する縦の量)。BPM を変えてもチップの並びは変わらない(時間だけ変わる)。
+  時間との行き来は `chart.tempoMap`(`posToMs` / `msToPos`、js/core/dtx.js)
+- **`#RANDOM` / `#IF`** は乱数を記録して再生する(`replayRandom`)。演奏から編集へ来たときはその演奏の分岐を出し、
+  テストプレイも同じ分岐で流す。`#IF` の中の行は書き換えない
+- **再生**は `EditorPlayer`(`Player` を継承。自分の `TrainingSettings` を持ち、全部 AUTO)。**テストプレイ**は本物の演奏画面
+  (`App.startChart` に `returnToEditor`)で、やめると止めた位置で編集画面へ戻る。ループは位置(pos)で持ち回る
+- **音**は `AudioEngine.loadChartSounds` が同じ曲パックの前の読み込みで復号したファイルを使い回す(編集画面とテストプレイを
+  行き来するたびに長い BGM を復号し直さない)。別の譜面を読むときは前の譜面の音をすぐ手放す。編集で番号を足したときは
+  鳴っている音を止めずに読み足す(`keepVoices`)
+- **ZIP の書き出し**は元のエントリを圧縮したまま写し(`ZipWriter.copyEntry`)、編集した譜面だけを入れ替える

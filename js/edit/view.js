@@ -167,6 +167,34 @@ export class EditView {
     return (this.chipH / 2 + this.css(HIT_TOL_CSS[pointerType] || 5)) / this.ppu;
   }
 
+  /** BPM の札の当たりの遊び(u。札の半分の高さ + 入力の種類ごとの遊び)。 */
+  bpmTolU(pointerType) {
+    return (this.css(9) + this.css(HIT_TOL_CSS[pointerType] || 5)) / this.ppu;
+  }
+
+  /**
+   * 範囲選択の枠(論理座標)が掛かる列・BPM レーン・u の範囲。チップは中心が枠から半分の高さまで出ていても入る
+   * (docs/spec/chart-editor.md「範囲選択」)。
+   * @returns {{col0:number, col1:number, bpm:boolean, u0:number, u1:number}}
+   */
+  bandRange(b) {
+    const xa = Math.min(b.x0, b.x1);
+    const xb = Math.max(b.x0, b.x1);
+    let col0 = COLUMN_COUNT;
+    let col1 = -1;
+    for (let c = 0; c < COLUMN_COUNT; c++) {
+      const [x0, x1] = columnRange(c);
+      if (xb >= x0 && xa < x1) {
+        col0 = Math.min(col0, c);
+        col1 = Math.max(col1, c);
+      }
+    }
+    const v = this.view;
+    const bpm = !!v.bpm && xb >= v.bpm[0] && xa < v.bpm[1];
+    const half = this.chipH / 2 / this.ppu;
+    return { col0, col1, bpm, u0: this.uAt(Math.max(b.y0, b.y1)) - half, u1: this.uAt(Math.min(b.y0, b.y1)) + half };
+  }
+
   // ---- 描画 ----
 
   draw(perfNow = 0) {
@@ -370,36 +398,14 @@ export class EditView {
       this._frame(x, y, Math.abs(b.x1 - b.x0), Math.abs(b.y1 - b.y0), 'lightblue', this.css(1));
     }
 
-    // BPM の印
+    // BPM の印(動かしている間は元を隠し、行き先に描く)
     g.font = `${this.css(11)}px ${FONT}`;
     g.textBaseline = 'middle';
     for (const b of m.bpmMarks) {
-      const yy = this.y(b.u);
-      if (yy < -20 || yy > this.H + 20) continue;
-      const text = b.bpm === null ? '?' : formatBpmShort(b.bpm);
-      const sel = st.selection.has(b.key);
-      if (v.bpm) {
-        const ph = this.css(18);
-        g.fillStyle = b.locked ? 'rgba(160,160,160,0.3)' : sel ? 'rgba(255,255,255,0.85)' : 'rgba(160,160,160,0.6)';
-        roundRect(g, v.bpm[0] + this.css(2), yy - ph / 2, v.bpm[1] - v.bpm[0] - this.css(4), ph, this.css(4));
-        g.fill();
-        if (b.channel === 0x03) {
-          g.save();
-          g.setLineDash([this.css(2), this.css(2)]);
-          g.strokeStyle = '#fff';
-          g.lineWidth = this.css(1);
-          g.stroke();
-          g.restore();
-        }
-        g.fillStyle = sel ? '#000' : '#fff';
-        g.textAlign = 'center';
-        g.fillText(text, (v.bpm[0] + v.bpm[1]) / 2, yy);
-      } else {
-        g.fillStyle = 'rgb(200,200,200)';
-        g.textAlign = 'left';
-        g.fillText('♩' + text, v.gutter[0] + this.css(2), yy + this.css(10));
-      }
+      if (hide && hide.has(b.key)) continue;
+      this._bpmMark(b.u, b.bpm, b.channel, b.locked, st.selection.has(b.key));
     }
+    if (st.preview && st.preview.bpm) for (const b of st.preview.bpm) this._bpmMark(b.u, b.bpm, b.channel, false, true);
 
     // 再生位置
     g.fillStyle = COL_PLAYHEAD;
@@ -431,6 +437,36 @@ export class EditView {
     g.font = `${this.css(10)}px ${FONT}`;
     g.fillStyle = 'rgb(170,170,200)';
     g.fillText('BPM', v.bpm ? (v.bpm[0] + v.bpm[1]) / 2 : v.gutter[0] + this.css(14), hh / 2);
+  }
+
+  /** BPM の印(広い配置は BPM レーンの札、狭い配置は小節番号の欄の ♩)。 */
+  _bpmMark(u, bpm, channel, locked, selected) {
+    const g = this.g;
+    const v = this.view;
+    const yy = this.y(u);
+    if (yy < -20 || yy > this.H + 20) return;
+    const text = bpm === null ? '?' : formatBpmShort(bpm);
+    if (v.bpm) {
+      const ph = this.css(18);
+      g.fillStyle = locked ? 'rgba(160,160,160,0.3)' : selected ? 'rgba(255,255,255,0.85)' : 'rgba(160,160,160,0.6)';
+      roundRect(g, v.bpm[0] + this.css(2), yy - ph / 2, v.bpm[1] - v.bpm[0] - this.css(4), ph, this.css(4));
+      g.fill();
+      if (channel === 0x03) {
+        g.save();
+        g.setLineDash([this.css(2), this.css(2)]);
+        g.strokeStyle = '#fff';
+        g.lineWidth = this.css(1);
+        g.stroke();
+        g.restore();
+      }
+      g.fillStyle = selected ? '#000' : '#fff';
+      g.textAlign = 'center';
+      g.fillText(text, (v.bpm[0] + v.bpm[1]) / 2, yy);
+    } else {
+      g.fillStyle = selected ? 'rgb(255,255,255)' : 'rgb(200,200,200)';
+      g.textAlign = 'left';
+      g.fillText('♩' + text, v.gutter[0] + this.css(2), yy + this.css(10));
+    }
   }
 
   /** チップの x 範囲(左右に分けたセルなら半分)。 */

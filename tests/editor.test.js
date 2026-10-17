@@ -18,8 +18,8 @@ function fakeAudio() {
   };
 }
 
-/** 編集画面を開く。終わったら done() で片付ける。 */
-async function openEditor(text = null) {
+/** 編集画面を開く。終わったら done() で片付ける。files: 譜面のパスの後ろに付ける名前 → 中身(確信度のファイルなど)。 */
+async function openEditor(text = null, files = {}) {
   const html = await (await fetch('../index.html')).text();
   const parsed = new DOMParser().parseFromString(html, 'text/html');
   const sec = document.importNode(parsed.getElementById('screen-edit'), true);
@@ -33,6 +33,7 @@ async function openEditor(text = null) {
   const song = pkg.songs[0];
   const chartRef = song.charts[0];
   if (text) pkg.setOverride(chartRef.path, new TextEncoder().encode(text));
+  for (const [suffix, body] of Object.entries(files)) pkg.setOverride(chartRef.path + suffix, new TextEncoder().encode(body));
   const originalBytes = await pkg.readBytes(chartRef.path);
   const calls = [];
   const app = {
@@ -57,21 +58,40 @@ async function openEditor(text = null) {
   }));
   const click = async (p, o) => { ptr('pointerdown', p, o); await sleep(5); ptr('pointerup', p, o); await sleep(5); };
   const key = (code, o = {}) => {
-    const e = new KeyboardEvent('keydown', { code, key: o.key || '', ctrlKey: !!o.ctrl, shiftKey: !!o.shift, bubbles: true, cancelable: true });
-    window.dispatchEvent(e);
+    const e = new KeyboardEvent('keydown', { code, key: o.key || '', ctrlKey: !!o.ctrl, shiftKey: !!o.shift, altKey: !!o.alt, bubbles: true, cancelable: true });
+    (o.target || window).dispatchEvent(e);
     return e;
   };
   const chips = (ch) => ed.model.chips.filter((c) => c.channel === ch).map((c) => `${c.measure}:${c.tick}`);
+  /** 小節番号の欄の (小節, tick) の位置。 */
+  const gutter = (m, tick) => ed.view.toClient((ed.view.view.gutter[0] + ed.view.view.gutter[1]) / 2, ed.view.y(geo().u(m, tick)));
+  /** 開いているメニューの、文言が text で始まるボタンを押す。 */
+  const menu = async (text) => {
+    const b = [...sec.querySelectorAll('#edit-pop button')].find((x) => x.textContent.replace(/^✓ /, '').startsWith(text));
+    assert(b, 'menu item ' + text + ' in: ' + sec.querySelector('#edit-pop').textContent);
+    b.click();
+    await sleep(5);
+  };
+  const dialog = () => sec.querySelector('#edit-dialog');
+  /** ダイアログの value のボタンを押す(Enter は既定のボタン = OK。合成のキーでは押せないので押す)。 */
+  const dialogButton = async (value) => {
+    const b = dialog().querySelector(`button[value="${value}"]`);
+    assert(b && dialog().open, 'dialog button ' + value);
+    b.click(); // 送信でダイアログが終わる(close イベントは待たない。js/edit/dialogs.js)
+    await sleep(5);
+    assert(!dialog().open, 'dialog closed by ' + value);
+  };
   const cleanup = async () => {
     sec.remove();
     css.remove();
     await deleteDraft(pkg, chartRef.path);
   };
   const done = async () => {
+    if (dialog().open) dialog().close();
     await ed.close();
     await cleanup();
   };
-  return { ed, sec, pkg, chartRef, app, calls, at, ptr, click, key, chips, done, cleanup, session };
+  return { ed, sec, pkg, chartRef, app, calls, at, ptr, click, key, chips, gutter, menu, dialog, dialogButton, done, cleanup, session, geo };
 }
 
 const CHART = '#TITLE: e\r\n#BPM: 120\r\n#WAV01: bd.wav\r\n#WAV02: sd.wav\r\n#00113: 01000100\r\n#00112: 00020002\r\n#00111: 03030303\r\n#00216: 05\r\n';
@@ -136,15 +156,20 @@ test('editor: keys (Ctrl+Z / Ctrl+Y, [ ], - +, PageUp, Esc stays, Space does not
     key('KeyZ', { ctrl: true, shift: true });
     assertEq(session.history.index, 1, 'Ctrl+Shift+Z もやり直す(もう先が無い)');
     assertEq(ed.view.guide, 16);
-    key('BracketLeft');
+    key('BracketLeft', { key: '[' });
     assertEq(ed.view.guide, 12, '[ で粗く');
-    key('BracketRight');
-    key('BracketRight');
+    key('BracketRight', { key: ']' });
+    key('BracketRight', { key: ']' });
     assertEq(ed.view.guide, 24, '] で細かく');
+    // 記号は e.key で見る(JIS 配列の [ は US の ] の位置)。IME の入力中('Process')だけ e.code から読む
+    key('BracketRight', { key: '[' });
+    assertEq(ed.view.guide, 16, 'JIS の [');
+    key('BracketRight', { key: 'Process' });
+    assertEq(ed.view.guide, 24, 'IME 入力中の ]');
     const z = ed.view.zoom;
-    key('Equal');
+    key('Equal', { key: '=' });
     assert(ed.view.zoom > z, '+ で拡大');
-    key('Minus');
+    key('Minus', { key: '-' });
     assertEq(ed.view.zoom, z);
     ed.view.uHead = 0.25;
     key('PageUp');
@@ -209,5 +234,270 @@ test('editor: close commits the overlay and writes a draft; MIDI pads audition a
   } finally {
     if (closed) await h.cleanup();
     else await h.done();
+  }
+});
+
+test('editor: select mode — click / Shift / band select, drag moves the selection, ↑↓ nudge (coalesced), ←→ change column, Delete, Esc', async () => {
+  const h = await openEditor(CHART);
+  const { ed, at, click, ptr, key, chips, session } = h;
+  try {
+    key('KeyS', { key: 's' });
+    assertEq(ed.mode, 'select');
+    assertEq(h.sec.querySelector('#edit-mode [data-mode="select"]').getAttribute('aria-pressed'), 'true');
+    // クリックで選ぶ(文書は変わらない)、Shift で足す、何もないところで外す
+    await click(at(5, 1, 0));
+    assertEq(session.selection.size, 1);
+    assertEq(session.history.index, 0);
+    await click(at(5, 1, 192), { shift: true });
+    assertEq(session.selection.size, 2);
+    await click(at(4, 1, 96));
+    assertEq(session.selection.size, 0);
+    // 範囲選択(LC の列の空いたところから HH の列へ): HHC の 4 つ
+    const a = at(0, 1, 330);
+    const b = at(1, 0, 360);
+    ptr('pointerdown', a);
+    for (let i = 1; i <= 6; i++) { ptr('pointermove', { x: a.x + ((b.x - a.x) * i) / 6, y: a.y + ((b.y - a.y) * i) / 6 }); await sleep(2); }
+    assert(ed.view.state.band, '範囲の枠を描く');
+    ptr('pointerup', b);
+    await sleep(5);
+    assertEq(session.selection.size, 4, '範囲で選ぶ');
+    assert(!ed.view.state.band);
+    // 選んだものの上からドラッグで全部動かす(1 手)
+    const from = at(1, 1, 0);
+    const to = at(1, 1, 48);
+    ptr('pointerdown', from);
+    for (let i = 1; i <= 6; i++) { ptr('pointermove', { x: from.x, y: from.y + ((to.y - from.y) * i) / 6 }); await sleep(2); }
+    ptr('pointerup', to);
+    await sleep(5);
+    assertEq(chips(0x11).join(), '1:48,1:144,1:240,1:336');
+    assertEq(session.history.index, 1);
+    assertEq(session.selection.size, 4, '動かしたものを選んだまま');
+    // ↑ で 1 ガイド(1/16 = 24 tick)、Alt+↑ で 1 tick。続けて押すと 1 手
+    key('ArrowUp', { key: 'ArrowUp' });
+    assertEq(chips(0x11).join(), '1:72,1:168,1:264,1:360');
+    key('ArrowUp', { key: 'ArrowUp', alt: true });
+    assertEq(chips(0x11).join(), '1:73,1:169,1:265,1:361');
+    assertEq(session.history.index, 2, '微調整は 1 手にまとめる');
+    // → で隣の列(LP)へ
+    key('ArrowRight', { key: 'ArrowRight' });
+    assertEq(chips(0x11).length, 0);
+    assertEq(chips(0x1b).length, 4);
+    // Delete で消す
+    key('Delete', { key: 'Delete' });
+    assertEq(chips(0x1b).length, 0);
+    // Esc で選択を外す
+    await click(at(5, 1, 0));
+    assertEq(session.selection.size, 1);
+    key('Escape', { key: 'Escape' });
+    assertEq(session.selection.size, 0);
+    // E でペンに戻る(選択は残る)
+    await click(at(5, 1, 0));
+    key('KeyE', { key: 'e' });
+    assertEq(ed.mode, 'pen');
+    assertEq(session.selection.size, 1, 'ペンにしても選択は残る');
+    // ペンで書くと選択は外れる
+    await click(at(4, 1, 0));
+    assertEq(session.selection.size, 0);
+  } finally {
+    await h.done();
+  }
+});
+
+test('editor: copy / paste at the playhead, Ctrl+D duplicates, Ctrl+A selects all; the context menu inserts and deletes bars (confirm, Space never confirms)', async () => {
+  const h = await openEditor(CHART);
+  const { ed, at, click, ptr, key, chips, session, menu, dialog, dialogButton, gutter, geo, app } = h;
+  try {
+    key('KeyS', { key: 's' });
+    await click(at(5, 1, 0));
+    key('KeyC', { ctrl: true });
+    assert(app.editClipboard && app.editClipboard.items.length === 1, 'クリップボードはページに 1 つ');
+    ed._hover = null; // マウスがレーンの外: 再生位置に貼る
+    ed.view.uHead = geo().u(2, 0);
+    key('KeyV', { ctrl: true });
+    assertEq(chips(0x13).join(), '1:0,1:192,2:0');
+    assertEq(session.selection.size, 1, '貼ったものを選ぶ');
+    key('KeyD', { ctrl: true });
+    assertEq(chips(0x13).join(), '1:0,1:192,2:0,3:0', '後ろの小節に複製');
+    key('KeyA', { ctrl: true });
+    assertEq(session.selection.size, ed.model.chips.length);
+    // 右クリックのメニュー → 小節の挿入(小節 1 から後ろが 1 つ後ろへ)
+    await click(at(4, 1, 96));
+    const p = at(4, 1, 96);
+    ptr('pointerdown', p, { button: 2 });
+    ptr('pointerup', p, { button: 2 });
+    assert(!h.sec.querySelector('#edit-pop').hidden, 'メニューが出る');
+    await menu('小節の挿入');
+    assertEq(chips(0x13).join(), '2:0,2:192,3:0,4:0');
+    key('KeyZ', { ctrl: true });
+    assertEq(chips(0x13).join(), '1:0,1:192,2:0,3:0');
+    // 小節番号の欄の右クリック → 小節の削除(消えるものがあるので確かめる)
+    const g = gutter(1, 100);
+    ptr('pointerdown', g, { button: 2 });
+    ptr('pointerup', g, { button: 2 });
+    await menu('小節の削除');
+    await sleep(5);
+    assert(dialog().open, '確かめのダイアログ');
+    assert(dialog().textContent.includes('小節 001'), dialog().textContent);
+    const ok = dialog().querySelector('button[value="ok"]');
+    const sp = key('Space', { key: ' ', target: ok });
+    assert(sp.defaultPrevented && dialog().open, 'Space(BD)では決定しない');
+    await dialogButton('ok');
+    assertEq(chips(0x13).join(), '1:0,2:0', '小節 1 が消えて詰まる');
+    assertEq(chips(0x16).join(), '1:0', 'CY 2:0 → 1:0');
+  } finally {
+    await h.done();
+  }
+});
+
+test('editor: BPM here (dialog, ch 08 + #BPMzz) and bar length (dialog, this bar only)', async () => {
+  const h = await openEditor(CHART);
+  const { ed, ptr, menu, dialog, dialogButton, gutter, session } = h;
+  try {
+    const g = gutter(2, 0);
+    ptr('pointerdown', g, { button: 2 });
+    ptr('pointerup', g, { button: 2 });
+    await menu('ここに BPM');
+    await sleep(5);
+    assert(dialog().open);
+    const input = dialog().querySelector('input');
+    assertEq(input.value, '120', '今の BPM が入っている');
+    input.value = '150';
+    await dialogButton('ok');
+    const marks = ed.model.bpmMarks;
+    assertEq(marks.length, 1);
+    assertEq(marks[0].bpm, 150);
+    const out = new TextDecoder().decode(session.outputBytes().bytes);
+    assert(out.includes('#BPM01: 150\r\n') && out.includes('#00208: 01\r\n'), out);
+    // 範囲の外の BPM は OK を押させない
+    ptr('pointerdown', g, { button: 2 });
+    ptr('pointerup', g, { button: 2 });
+    await menu('ここに BPM');
+    await sleep(5);
+    dialog().querySelector('input').value = '0';
+    dialog().querySelector('button[value="ok"]').click();
+    await sleep(5);
+    assert(dialog().open, '0 では閉じない');
+    await dialogButton('cancel');
+    // 小節長
+    const g1 = gutter(1, 100);
+    ptr('pointerdown', g1, { button: 2 });
+    ptr('pointerup', g1, { button: 2 });
+    await menu('小節長');
+    await sleep(5);
+    const v = dialog().querySelector('input.num');
+    v.value = '0.75';
+    v.dispatchEvent(new Event('input'));
+    await dialogButton('ok');
+    assertEq(ed.model.geometry.len(1), 0.75);
+    assertEq(ed.model.geometry.len(2), 1, 'この小節だけ');
+    const out2 = new TextDecoder().decode(session.outputBytes().bytes);
+    assert(out2.includes('#00102: 0.75\r\n'), out2);
+  } finally {
+    await h.done();
+  }
+});
+
+test('editor: touch select mode — tap toggles, a drag that starts on a selected chip moves it, other drags scroll', async () => {
+  const h = await openEditor(CHART);
+  const { ed, at, ptr, key, chips, session } = h;
+  try {
+    key('KeyS', { key: 's' });
+    const t = { type: 'touch', id: 4 };
+    const p = at(5, 1, 0);
+    ptr('pointerdown', p, t);
+    await sleep(20);
+    ptr('pointerup', p, t);
+    await sleep(5);
+    assertEq(session.selection.size, 1, 'タップで選ぶ');
+    const to = at(5, 1, 96);
+    ptr('pointerdown', p, t);
+    for (let i = 1; i <= 6; i++) { await sleep(4); ptr('pointermove', { x: p.x, y: p.y + ((to.y - p.y) * i) / 6 }, t); }
+    ptr('pointerup', to, t);
+    await sleep(5);
+    assertEq(chips(0x13).join(), '1:96,1:192', '選んだチップの上からは動かす');
+    const idx = session.history.index;
+    const u0 = ed.view.uHead;
+    const q = at(3, 1, 0);
+    ptr('pointerdown', q, t);
+    for (let i = 1; i <= 8; i++) { await sleep(4); ptr('pointermove', { x: q.x, y: q.y + i * 12 }, t); }
+    ptr('pointerup', { x: q.x, y: q.y + 96 }, t);
+    await sleep(5);
+    assertEq(session.history.index, idx, 'ほかはスクロール');
+    assert(ed.view.uHead > u0);
+  } finally {
+    await h.done();
+  }
+});
+
+test('editor: vid2dtx confidence sidecar — frames on low-confidence chips, N / 次の要確認 visits them lowest first', async () => {
+  const conf = JSON.stringify({ chips: [
+    { m: 1, tick: 0, ch: 19, conf: 0.3, why: 'weak onset' },
+    { m: 1, tick: 192, ch: 19, conf: 0.5 },
+    { m: 1, tick: 96, ch: 17, conf: 0.9 },
+  ] });
+  const h = await openEditor(CHART, { '.conf.json': conf });
+  const { ed, key, session, geo } = h;
+  try {
+    await sleep(30);
+    assert(!h.sec.querySelector('#edit-suspect').hidden, '確信度のファイルがあるときだけボタンを出す');
+    assertEq(ed._suspectMap().size, 2, '0.7 未満の 2 つ');
+    key('KeyN', { key: 'n' });
+    assertEq(ed.view.uHead, geo().u(1, 0));
+    assert(h.sec.querySelector('#edit-toast').textContent.includes('要確認 1/2'), h.sec.querySelector('#edit-toast').textContent);
+    assert(h.sec.querySelector('#edit-toast').textContent.includes('weak onset'));
+    assertEq([...session.selection].length, 1);
+    key('KeyN', { key: 'n' });
+    assertEq(ed.view.uHead, geo().u(1, 192));
+    key('KeyN', { key: 'n' });
+    assertEq(ed.view.uHead, geo().u(1, 0), '最後まで行ったら最初へ');
+  } finally {
+    await h.done();
+  }
+});
+
+test('editor: choosing Shift-JIS saves with the normal toast; a click that did not start on the backdrop keeps a dialog open; bar insert undo restores the loop', async () => {
+  const h = await openEditor(CHART);
+  const { ed, session, ptr, menu, dialog, dialogButton, gutter } = h;
+  try {
+    // ASCII の譜面で Shift-JIS を選んで保存: UTF-8 のお知らせは出さない
+    ed._setEncoding({ encoding: 'shift_jis', bom: false });
+    const out = session.outputBytes();
+    assertEq(`${out.encoding}/${out.bom}`, 'shift_jis/false');
+    const realDownload = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {}; // テストではダウンロードしない
+    try {
+      await ed.saveDtx();
+    } finally {
+      HTMLAnchorElement.prototype.click = realDownload;
+    }
+    const toast = h.sec.querySelector('#edit-toast').textContent;
+    assert(toast.startsWith('保存しました'), toast);
+    // タップで開いたダイアログに、そのタップの click が背景に来ても閉じない(押し始めが背景のときだけ取り消し)
+    const g = gutter(1, 0);
+    ptr('pointerdown', g, { button: 2 });
+    ptr('pointerup', g, { button: 2 });
+    await menu('ここに BPM');
+    await sleep(5);
+    assert(dialog().open);
+    const r = dialog().getBoundingClientRect();
+    const outside = { clientX: Math.max(1, r.left - 20), clientY: r.top + 5, bubbles: true };
+    dialog().dispatchEvent(new MouseEvent('click', outside));
+    assert(dialog().open, 'click だけでは閉じない');
+    dialog().dispatchEvent(new PointerEvent('pointerdown', outside));
+    dialog().dispatchEvent(new MouseEvent('click', outside));
+    await sleep(5);
+    assert(!dialog().open, '背景を押して離すと取り消し');
+    // 小節の挿入でずらしたループは、元に戻すと戻る
+    const lp = { beginPos: 384 * 3, endPos: 384 * 4, endAtEnd: false };
+    session.loopPos = lp;
+    ed.insertMeasure(1);
+    assertEq(session.loopPos.beginPos, 384 * 4);
+    ed.undo();
+    assertEq(session.loopPos, lp, '元に戻すとループも戻る');
+    ed.redo();
+    assertEq(session.loopPos.beginPos, 384 * 4, 'やり直すとまたずれる');
+    void dialogButton;
+  } finally {
+    await h.done();
   }
 });

@@ -5,7 +5,11 @@
 // - マウス / ペン: 空いたところを押すと置く(そのままドラッグで同じ列に塗る)。チップを押して離すと消す、ドラッグで動かす。
 //   Alt+クリックで列のもう一方の種類、Shift+クリックで LP / CY の列に相方を並べる。右クリック / 右ドラッグで消す
 // - タッチ: タップで置く / 消す、1 本指のドラッグはスクロール、長押しで持ち上げて動かす(動かさずに離すとメニュー)、2 本指で拡大縮小
-// - キー: Ctrl+Z / Ctrl+Y・Ctrl+S・[ ]・- +・PageUp / PageDown・Home / End・↑↓・R・P・T・M・?・Esc(画面からは出ない)
+// - 選択モード(DTXCreator の選択モード §5): クリック / 範囲で選び、ドラッグで動かす。右クリック / 長押しでメニュー
+//   (切り取り・コピー・貼り付け・削除・すべて選択・レーン / 小節の中を選択・小節長・小節の挿入 / 削除)
+// - BPM レーン(広い配置)を押すと BPM、小節番号の欄を右クリック / 長押しすると小節のメニュー
+// - キー: Ctrl+Z / Ctrl+Y・Ctrl+S・Ctrl+X / C / V / D / A・Delete・[ ]・- +・PageUp / PageDown・Home / End・↑↓←→・
+//   E / S・R・P・T・M・N・?・Esc(画面からは出ない)
 // Space は BD の既定のキーなので何もしない(CLAUDE.md)。
 
 import { posToMs, msToPos, requiredWavIds, TICKS_PER_MEASURE } from '../core/dtx.js';
@@ -17,14 +21,17 @@ import { MAX_MEASURE } from './dtxdoc.js';
 import { GUIDES, ZOOMS, nearestZoom, posOf } from './geometry.js';
 import { COLUMN_TYPES, TYPE_OF, channelsConflict, otherType, channelName, laneOfChannel, padChannel } from './lanes.js';
 import {
-  EditError, opPlace, opPaint, opDelete, opErase, opMove, opSetType, opSetValue, opAddPartner, moveTargets, clampMove,
+  EditError, opPlace, opPaint, opDelete, opErase, opMove, opSetType, opSetValue, opAddPartner, moveTargets, moveBpmTargets,
+  clampMove, opNudge, copyClip, opPaste, opDuplicate, opSetBpm, opBarLength, barOverflow, opInsertMeasure, opDeleteMeasure,
+  measureDeleteSummary, formatBpm,
 } from './ops.js';
 import { EditView, HEADER_CSS } from './view.js';
 import { TouchGestures, G } from './gestures.js';
 import { EditorPlayer } from './editplayer.js';
 import { saveDraft, deleteDraft } from './drafts.js';
-import { downloadBytes, canShareFile, shareFile, baseName } from './save.js';
-import { confirmDialog } from './dialogs.js';
+import { downloadBytes, canShareFile, shareFile, baseName, canSaveAs, saveAsFile, writeHandle } from './save.js';
+import { confirmDialog, bpmDialog, barDialog } from './dialogs.js';
+import { loadSidecar, suspectsOf, suspectOrder } from './sidecar.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -33,6 +40,12 @@ const ERR = {
   measureLimit: 'edit.measureLimit',
   locked: 'edit.lockedCell',
   leadIn: 'edit.measureLimit',
+  bpmRange: 'edit.bpmRange',
+  bpmBase: 'edit.errBpmBase',
+  bpmKeys: 'edit.errBpmKeys',
+  barLocked: 'edit.errBarLocked',
+  barRange: 'edit.barRange',
+  measureLocked: 'edit.errMeasureLocked',
 };
 
 /** 操作の名前(元に戻す・やり直すのお知らせ)。 */
@@ -42,17 +55,32 @@ const OP = {
   move: 'edit.opMove',
   type: 'edit.opType',
   sound: 'edit.opSound',
+  cut: 'edit.cut',
+  paste: 'edit.paste',
+  duplicate: 'edit.duplicate',
+  nudge: 'edit.opNudge',
+  bpm: 'edit.bpmTitle',
+  bar: 'edit.barTitle',
+  insertMeasure: 'edit.insertMeasure',
+  deleteMeasure: 'edit.deleteMeasure',
 };
 
 const PREVIEW_VOLUME = 0.9;
 const DRAFT_DEBOUNCE_MS = 1500;
 const SPEEDS = [10, 15, 20, 25, 30]; // 再生速度(playSpeed。20 = x1.0。DTXCreator の x0.5〜x1.5)
 
-/** 1 文字のショートカット(キーボードの配列・IME に左右されないよう e.code で見る)。 */
-const KEY_OF_CODE = {
-  KeyE: 'e', KeyP: 'p', KeyT: 't', KeyM: 'm', KeyR: 'r', KeyN: 'n',
-  BracketLeft: '[', BracketRight: ']', Minus: '-', Equal: '+', NumpadSubtract: '-', NumpadAdd: '+', Slash: '/',
-};
+/** 文字のショートカット(e.code で見る。キーボードの配列・IME に左右されない)。 */
+const LETTER_OF_CODE = { KeyE: 'e', KeyS: 's', KeyP: 'p', KeyT: 't', KeyM: 'm', KeyR: 'r', KeyN: 'n' };
+/** 記号のショートカットの e.code(IME が入力中で e.key が 'Process' のときだけ使う。JIS 配列では [ ] の位置が違うので、ふだんは e.key)。 */
+const SYMBOL_OF_CODE = { BracketLeft: '[', BracketRight: ']', Minus: '-', Equal: '+', NumpadSubtract: '-', NumpadAdd: '+' };
+
+/** キーのショートカットの文字('e' / '[' / '?' など。無ければ null)。 */
+function shortcutKey(e) {
+  if (LETTER_OF_CODE[e.code]) return LETTER_OF_CODE[e.code];
+  if (e.key === 'Process' || e.keyCode === 229) return e.code === 'Slash' && e.shiftKey ? '?' : SYMBOL_OF_CODE[e.code] || null;
+  if (e.key === '=') return '+';
+  return e.key && e.key.length === 1 && '[]-+?'.includes(e.key) ? e.key : null;
+}
 
 function msClock(ms) {
   const v = Math.max(0, ms) / 1000;
@@ -90,6 +118,10 @@ export class EditorScreen {
     this._loadedFor = null;
     this.player = null;
     this._playerDoc = null;
+    this._loopRange = null; // 小節を繰り返し再生している範囲 {m0, m1, beginMs, endMs}
+    this.sidecar = null; // vid2dtx の確信度(js/edit/sidecar.js)
+    this._suspectCache = null; // {doc, map}
+    this._lastSuspect = null; // 最後に回った要確認 {conf, u}
     this.touch = new TouchGestures(this._touchHandlers());
     this._closed = false;
   }
@@ -130,8 +162,16 @@ export class EditorScreen {
     else this.view.uHead = 0;
     this._clampHead();
     this._syncTypes();
+    this._setMode(v && v.mode === 'select' ? 'select' : 'pen');
     this._syncButtons();
     this._showBanners();
+    $('edit-suspect').hidden = true;
+    loadSidecar(s.pkg, s.path).then((sc) => {
+      if (this._closed) return;
+      this.sidecar = sc;
+      $('edit-suspect').hidden = !sc;
+      this._render();
+    });
     if (!this.app._editHintShown) {
       this.app._editHintShown = true;
       this._toast(t(document.body.classList.contains('touch') ? 'edit.hintTouch' : 'edit.hintMouse'), null, 6000);
@@ -159,6 +199,11 @@ export class EditorScreen {
     cancelAnimationFrame(this._raf);
     clearTimeout(this._toastTimer);
     clearTimeout(this._soundTimer);
+    // お知らせを消す(次に開いた画面に残り、「元に戻す」が閉じたこの画面の譜面に効かないように)
+    const toast = $('edit-toast');
+    toast.hidden = true;
+    toast.innerHTML = '';
+    this.app.releaseWakeLock();
     await this.flushDraft();
     await this.session.commit();
     if (this.player) this.player.dispose();
@@ -207,7 +252,13 @@ export class EditorScreen {
     this._on(window, 'keyup', (e) => this._keyUp(e), true);
     this._on(document, 'visibilitychange', () => { if (document.hidden) { this._stopPlay(); this.flushDraft(); } });
     this._on(window, 'pagehide', () => { this.flushDraft(); });
-    this._on(document, 'pointerdown', (e) => { const pop = $('edit-pop'); if (!pop.hidden && !pop.contains(e.target)) this._closePop(); }, true);
+    // メニューの外を押したら閉じる。譜面を押して閉じたときは、その押しで書かない(閉じるだけ)
+    this._on(document, 'pointerdown', (e) => {
+      const pop = $('edit-pop');
+      if (pop.hidden || pop.contains(e.target)) return;
+      this._closePop();
+      if (e.target === this.canvas) e.stopPropagation();
+    }, true);
     const btn = (id, fn) => {
       const b = $(id);
       this._on(b, 'click', (e) => { b.blur(); fn(e); });
@@ -222,7 +273,15 @@ export class EditorScreen {
     btn('edit-play', () => this.togglePlay());
     btn('edit-follow', () => { this.follow = true; this._syncButtons(); });
     btn('edit-test', () => this.testPlay());
-    this._on($('edit-guide'), 'change', () => this._setGuide(Number($('edit-guide').value)));
+    btn('edit-suspect', () => this.nextSuspect());
+    for (const b of document.querySelectorAll('#edit-mode button')) {
+      this._on(b, 'click', () => { b.blur(); this._setMode(b.dataset.mode); });
+    }
+    this._on($('edit-guide'), 'change', () => {
+      this._setGuide(Number($('edit-guide').value));
+      // 選んだら譜面へ戻す(選択欄にフォーカスが残るとショートカットが効かない)
+      this.canvas.focus({ preventScroll: true });
+    });
     for (const seg of document.querySelectorAll('#edit-types .seg')) {
       const col = Number(seg.dataset.col);
       seg.querySelectorAll('button').forEach((b, i) => {
@@ -244,11 +303,18 @@ export class EditorScreen {
     this._on(rail, 'pointermove', (e) => { if (this._railDrag) railMove(e); });
     this._on(rail, 'pointerup', () => { this._railDrag = false; });
     this._on(rail, 'pointercancel', () => { this._railDrag = false; });
+    // 譜面の場所の大きさが変わったら(お知らせの帯・状態の行の文字・ツールバーの折り返し)キャンバスを合わせる
+    if (typeof ResizeObserver === 'function') {
+      this._ro = new ResizeObserver(() => { if (!this._closed) this.onResize(); });
+      this._ro.observe($('edit-stage'));
+    }
   }
 
   _unbindDom() {
     for (const [target, type, fn, opts] of this._listeners) target.removeEventListener(type, fn, opts);
     this._listeners = [];
+    if (this._ro) this._ro.disconnect();
+    this._ro = null;
   }
 
   onResize() {
@@ -297,7 +363,11 @@ export class EditorScreen {
       p.update(now);
       if (this.follow) this.view.uHead = this._uOfMs(p.songMs);
       more = true;
-      if (p.state === PLAYER_STATE.STANDBY) this._syncButtons();
+      if (p.state === PLAYER_STATE.STANDBY) {
+        // 最後まで鳴って止まった
+        this.app.releaseWakeLock();
+        this._syncButtons();
+      }
     }
     if (this._fling) more = this._stepFling(now) || more;
     if (this._autoScroll) more = this._stepAutoScroll(now) || more;
@@ -319,12 +389,23 @@ export class EditorScreen {
     st.model = this.model;
     st.activeTypes = s.activeTypes;
     st.pens = s.pens;
-    st.selection = this.mode === 'select' || (this._drag && this._drag.type === 'move') ? s.selection : new Set();
+    // 選択はどちらのモードでも見せる(ペンのモードでも R・Delete が選択に効くので)。ペンで書くと選択は外れる
+    st.selection = s.selection;
     st.showIds = !!this.config.editShowIds;
+    st.suspects = this.sidecar && this.config.editConfidence !== false ? this._suspectMap() : null;
     const lp = s.loopPos;
     const geo = this.model.geometry;
-    st.loop = lp ? { u0: geo.uOfPos(lp.beginPos), u1: lp.endAtEnd ? null : geo.uOfPos(lp.endPos) } : null;
+    const lr = this._loopRange;
+    if (lr) st.loop = { u0: geo.start(lr.m0), u1: geo.start(lr.m1 + 1) };
+    else st.loop = lp ? { u0: geo.uOfPos(lp.beginPos), u1: lp.endAtEnd ? null : geo.uOfPos(lp.endPos) } : null;
     if (st.loop && st.loop.u1 === null) st.loop.u1 = geo.uOfPos(msToPos(this.model.chart, this.model.chart.durationMs));
+  }
+
+  /** 今の譜面の要確認のチップ(文書ごとに作り置く)。 */
+  _suspectMap() {
+    const doc = this.model.doc;
+    if (!this._suspectCache || this._suspectCache.doc !== doc) this._suspectCache = { doc, map: suspectsOf(this.model, this.sidecar) };
+    return this._suspectCache.map;
   }
 
   _updateRail() {
@@ -352,7 +433,8 @@ export class EditorScreen {
     const text = `${pos}   ${msClock(ms)}   BPM ${Math.round(bpm * 100) / 100}`;
     const el = $('edit-pos');
     if (el.textContent !== text) el.textContent = text;
-    const info = this._soundInfo || '';
+    const n = this._selKeys().length;
+    const info = [n ? t('edit.selCount', { n }) : '', this._soundInfo || ''].filter(Boolean).join('   ');
     const ie = $('edit-info');
     if (ie.textContent !== info) ie.textContent = info;
   }
@@ -411,9 +493,11 @@ export class EditorScreen {
   // ---- 文書を変える ----
 
   /**
-   * 操作の結果を 1 手にする。EditError はお知らせにして false。
+   * 操作の結果を 1 手にする。EditError はお知らせにして null。
+   * 選択は操作の結果にするが、ペンのモードで書いたとき(keepSel でないとき)は外す(書くたびに枠が付かないように)。
+   * selectBefore(元に戻したときの選択)は、渡さなければ今の選択。
    * @param {() => {doc, select?: string[]}} fn
-   * @param {{label: string, selectBefore?: string[], focusU?: number, coalesceKey?: string, quiet?: boolean}} opts
+   * @param {{label: string, selectBefore?: string[], focusU?: number, coalesceKey?: string, keepSel?: boolean}} opts
    */
   _commit(fn, opts) {
     let r;
@@ -426,7 +510,9 @@ export class EditorScreen {
       }
       throw e;
     }
-    const changed = this.session.apply(r, { label: opts.label, selectBefore: opts.selectBefore, focusU: opts.focusU, coalesceKey: opts.coalesceKey });
+    const selectBefore = opts.selectBefore || [...this.session.selection];
+    const changed = this.session.apply(r, { label: opts.label, selectBefore, focusU: opts.focusU, coalesceKey: opts.coalesceKey });
+    if (this.mode === 'pen' && !opts.keepSel) this.session.selection = new Set();
     if (changed) {
       this._afterDocChange();
       this._scheduleDraft();
@@ -444,19 +530,30 @@ export class EditorScreen {
   }
 
   undo() {
-    const r = this.session.history.undo();
+    if (this._closed) return;
+    const h = this.session.history;
+    const top = h.entries[h.index];
+    const r = h.undo();
     if (!r) return;
+    // 小節の挿入 / 削除でずらしたループを戻す(そのあと演奏画面でループを決め直していれば触らない)
+    const ls = top.loopShift;
+    if (ls && this.session.loopPos === ls.after) this.session.loopPos = ls.before;
     this._afterHistory(r, 'edit.undone');
   }
 
   redo() {
-    const r = this.session.history.redo();
+    if (this._closed) return;
+    const h = this.session.history;
+    const r = h.redo();
     if (!r) return;
+    const ls = h.entries[h.index].loopShift;
+    if (ls && this.session.loopPos === ls.before) this.session.loopPos = ls.after;
     this._afterHistory(r, 'edit.redone');
   }
 
   _afterHistory(r, key) {
-    this.session.selection = new Set(r.select || []);
+    // ペンのモードでは、戻した操作の選択は付けない(ペンで書いても選択しないのと同じ)
+    this.session.selection = new Set(this.mode === 'pen' ? [] : r.select || []);
     this._afterDocChange();
     this._scheduleDraft();
     if (r.label) this._toast(t(key, { what: t(r.label) }));
@@ -527,6 +624,67 @@ export class EditorScreen {
     return this.session.pens.get(ch) || '01';
   }
 
+  /** ペン / 選択のモード(E / S。(変更) DTXCreator の Ctrl+Space は IME の切り替えなので使わない)。選択は残す。 */
+  _setMode(mode) {
+    if (mode !== 'pen' && mode !== 'select') return;
+    this.mode = mode;
+    for (const b of document.querySelectorAll('#edit-mode button')) b.setAttribute('aria-pressed', String(b.dataset.mode === mode));
+    this._hoverGhost();
+    this._render();
+  }
+
+  /** マウスで指しているところの影を描き直す(選択のモードでは影を出さない)。 */
+  _hoverGhost() {
+    const h = this._hover;
+    if (!h || this.mode !== 'pen') {
+      this._setGhost(null);
+      return;
+    }
+    this._setGhost(this._target(this.view.hit(h.clientX, h.clientY), h.pointerType, h.mods));
+  }
+
+  /** 選んでいるもののうち今の譜面にあるもの(チップと BPM の印の名前)。 */
+  _selKeys() {
+    const m = this.model;
+    return [...this.session.selection].filter((k) => m.kindOf(k));
+  }
+
+  /** 押したところのチップか BPM の印の名前(選択のモード。無ければ null)。 */
+  _keyAt(hit, pointerType) {
+    if (hit.region === 'lanes') {
+      const c = this.model.chipAt(hit.column, hit.u, this.view.tolU(pointerType), hit.half);
+      return c ? c.key : null;
+    }
+    if (hit.region === 'bpm') {
+      const b = this._bpmAt(hit.u, pointerType);
+      return b && !b.locked ? b.key : null;
+    }
+    return null;
+  }
+
+  /** u に近い BPM の印(分岐の中で表示していないものは除く)。 */
+  _bpmAt(u, pointerType) {
+    const tol = this.view.bpmTolU(pointerType);
+    let best = null;
+    for (const b of this.model.bpmMarks) {
+      if (b.locked && !b.active) continue;
+      const d = Math.abs(b.u - u);
+      if (d <= tol && (!best || d < Math.abs(best.u - u))) best = b;
+    }
+    return best;
+  }
+
+  /** 選んだものの中でいちばん前の u(元に戻したときに送る先)。 */
+  _focusOf(keys) {
+    const m = this.model;
+    let u = Infinity;
+    for (const k of keys) {
+      const x = m.chip(k) || m.bpmMark(k);
+      if (x) u = Math.min(u, x.u);
+    }
+    return Number.isFinite(u) ? u : undefined;
+  }
+
   // ---- マウス / ペン ----
 
   _mods(e) {
@@ -553,6 +711,24 @@ export class EditorScreen {
         this._penMenu(hit.column, e.clientX, e.clientY);
         return;
       }
+      if (hit.region === 'gutter') {
+        this._measureMenu(hit, e.clientX, e.clientY);
+        return;
+      }
+      if (this.mode === 'select') {
+        // 選択のモードはメニュー(選んでいないチップの上なら、先にそれだけを選ぶ)
+        const key = this._keyAt(hit, e.pointerType);
+        if (key && !this.session.selection.has(key)) this.session.selection = new Set([key]);
+        this._render();
+        this._contextMenu(e.clientX, e.clientY, hit);
+        return;
+      }
+      if (hit.region === 'bpm') {
+        const b = this._bpmAt(hit.u, e.pointerType);
+        if (b && b.locked) this._toast(t('edit.lockedCell'));
+        else if (b) this._commit(() => opDelete(this.model, [b.key]), { label: OP.bpm, focusU: b.u });
+        return;
+      }
       this._startErase(e, hit);
       return;
     }
@@ -563,6 +739,16 @@ export class EditorScreen {
     }
     if (hit.region === 'gutter') {
       this._gutterClick(hit);
+      return;
+    }
+    if (this.mode === 'select' && (hit.region === 'lanes' || hit.region === 'bpm')) {
+      this._selectPress(e, hit, mods);
+      return;
+    }
+    if (hit.region === 'bpm') {
+      // 押して離したら BPM のダイアログ(押したときに開くと、離したときのクリックがダイアログに届く)
+      try { this.canvas.setPointerCapture(e.pointerId); } catch (err) { /* 無くても動く */ }
+      this._drag = { type: 'bpmClick', pointerId: e.pointerId, pointerType: e.pointerType, u: hit.u, mods };
       return;
     }
     if (hit.region !== 'lanes') return;
@@ -577,13 +763,54 @@ export class EditorScreen {
     if (tg.kind === 'empty' || tg.kind === 'replace') {
       const value = this._pen(tg.ch);
       this._drag = {
-        type: 'paint', pointerId: e.pointerId, pointerType: e.pointerType, col: tg.col, ch: tg.ch, value,
+        type: 'paint', pointerId: e.pointerId, pointerType: e.pointerType, x0: e.clientX, y0: e.clientY, col: tg.col, ch: tg.ch, value,
         cells: [{ measure: tg.cell.measure, tick: tg.cell.tick, channel: tg.ch, value }], lastSound: performance.now(), mods,
       };
       this._previewSound(tg.ch, value);
       this._updatePaintPreview();
       this._setGhost(null);
     }
+  }
+
+  /**
+   * 選択のモードで押した(DTXCreator の選択モード §5.2)。チップ / BPM の印の上なら選び(Shift で足す、Ctrl / ⌘ で入れ替え)、
+   * そのままドラッグすると選んだものを動かす。何もないところからは範囲選択。
+   */
+  _selectPress(e, hit, mods) {
+    try { this.canvas.setPointerCapture(e.pointerId); } catch (err) { /* 無くても動く */ }
+    const key = this._keyAt(hit, e.pointerType);
+    const base = { pointerId: e.pointerId, pointerType: e.pointerType, x0: e.clientX, y0: e.clientY, mods };
+    if (!key) {
+      if (hit.region === 'lanes') {
+        const c = this.model.chipAt(hit.column, hit.u, this.view.tolU(e.pointerType), hit.half);
+        if (!c && this.model.cellChips(hit.column, ...this._cellOf(hit.u)).some((x) => x.locked)) this._toast(t('edit.lockedCell'));
+      }
+      const keep = mods.shift || mods.free;
+      this._drag = { ...base, type: 'band', u0: hit.u, lx0: hit.x, keep: keep ? new Set(this.session.selection) : new Set(), moved: false };
+      return;
+    }
+    const s = this.session;
+    const was = s.selection.has(key);
+    if (!mods.alt) {
+      const sel = new Set(s.selection);
+      if (mods.free) {
+        if (was) sel.delete(key);
+        else sel.add(key);
+      } else if (mods.shift) sel.add(key);
+      else if (!was) {
+        sel.clear();
+        sel.add(key);
+      }
+      s.selection = sel;
+    }
+    this._drag = { ...base, type: 'selPress', key, was };
+    this._render();
+  }
+
+  /** u のセル(ガイドに合わせる)の [小節, tick]。リードインは [-1, 0]。 */
+  _cellOf(u) {
+    const c = this.model.geometry.snap(u, this.view.guide);
+    return c ? [c.measure, c.tick] : [-1, 0];
   }
 
   _pointerMove(e) {
@@ -596,57 +823,88 @@ export class EditorScreen {
     const d = this._drag;
     if (!d) {
       const hit = this.view.hit(e.clientX, e.clientY);
-      this._setGhost(this._target(hit, e.pointerType, this._mods(e)));
+      this.canvas.style.cursor = hit.region === 'bpm' || hit.region === 'gutter' || hit.region === 'header' ? 'pointer' : '';
+      this._hoverGhost();
       return;
     }
     if (d.pointerId !== e.pointerId) return;
     d.lastX = e.clientX;
     d.lastY = e.clientY;
-    this._dragMove(e.clientX, e.clientY, this._mods(e));
-    this._checkAutoScroll(e.clientY);
+    d.liveMods = this._mods(e);
+    this._dragMove(e.clientX, e.clientY, d.liveMods);
+    // 端での自動スクロールは、本当にドラッグしてから(押しただけの手ぶれで塗り・消しが走らないように)
+    if (!d.dragged && Number.isFinite(d.x0)) d.dragged = Math.hypot(e.clientX - d.x0, e.clientY - d.y0) > (G.SLOP_CSS[d.pointerType] || 4);
+    if (d.type === 'move' || d.dragged) this._checkAutoScroll(e.clientY);
   }
 
   _dragMove(clientX, clientY, mods) {
     const d = this._drag;
     if (!d) return;
     const hit = this.view.hit(clientX, clientY);
+    const slop = G.SLOP_CSS[d.pointerType] || 4;
     if (d.type === 'chipPress') {
-      const slop = G.SLOP_CSS[d.pointerType] || 4;
       if (Math.hypot(clientX - d.x0, clientY - d.y0) <= slop) return;
       d.type = 'move';
+      d.anchor = d.chip.key;
       d.keys = [d.chip.key];
-      this.session.selection = new Set(d.keys);
     }
+    if (d.type === 'selPress') {
+      if (Math.hypot(clientX - d.x0, clientY - d.y0) <= slop) return;
+      if (d.mods.alt || !this.session.selection.has(d.key)) return; // Ctrl で外したチップは動かさない
+      d.type = 'move';
+      d.anchor = d.key;
+      d.keys = this._selKeys();
+    }
+    if (d.type === 'band') {
+      if (!d.moved && Math.hypot(clientX - d.x0, clientY - d.y0) <= slop) return;
+      d.moved = true;
+      this._updateBand(clientX, clientY);
+      return;
+    }
+    if (d.type === 'bpmClick') return;
     if (d.type === 'move') {
       this._updateMovePreview(hit, mods);
       return;
     }
     if (d.type === 'paint') {
+      // 押したところから少し動かすまでは塗らない(手ぶれで隣のセルに書かない)
+      if (!d.painting) {
+        if (Math.hypot(clientX - d.x0, clientY - d.y0) <= slop) return;
+        d.painting = true;
+      }
       const geo = this.model.geometry;
-      const cell = geo.snap(hit.u, this._snapGuide(mods.free));
+      const g = this._snapGuide(mods.free);
+      const cell = geo.snap(hit.u, g);
       if (!cell || cell.measure > MAX_MEASURE) return;
       const last = d.cells[d.cells.length - 1];
       if (last.measure === cell.measure && last.tick === cell.tick) return;
+      const add = (c) => {
+        if (d.cells.some((x) => x.measure === c.measure && x.tick === c.tick)) return;
+        // 分岐の中のチップ(塗っているチャンネルとぶつかるもの)があるセルは飛ばす
+        if (this.model.cellChips(d.col, c.measure, c.tick).some((x) => x.locked && x.active && channelsConflict(x.channel, d.ch))) return;
+        d.cells.push({ measure: c.measure, tick: c.tick, channel: d.ch, value: d.value });
+        const now = performance.now();
+        if (now - d.lastSound >= G.PAINT_SOUND_MS) {
+          d.lastSound = now;
+          this._previewSound(d.ch, d.value);
+        }
+      };
+      if (!g) {
+        // フリー(Ctrl)では 1 tick ごとに埋めない。指しているセルだけを、前に置いたところから少し離れたら置く
+        const px = Math.abs(geo.u(cell.measure, cell.tick) - geo.u(last.measure, last.tick)) * this.view.ppu * this.view.s;
+        if (px >= slop * 2) add(cell);
+        this._updatePaintPreview();
+        return;
+      }
       // 飛ばしたセルも埋める(速く動かしても途切れない)
       const dir = geo.u(cell.measure, cell.tick) > geo.u(last.measure, last.tick) ? 1 : -1;
       let cur = { measure: last.measure, tick: last.tick };
-      const g = this._snapGuide(mods.free);
       for (let i = 0; i < 512; i++) {
         cur = geo.step(cur.measure, cur.tick, g, dir);
         if (cur.measure < 0 || cur.measure > MAX_MEASURE) break;
         const passed = dir > 0 ? geo.u(cur.measure, cur.tick) > geo.u(cell.measure, cell.tick) + 1e-9 : geo.u(cur.measure, cur.tick) < geo.u(cell.measure, cell.tick) - 1e-9;
         if (passed) break;
-        if (!d.cells.some((c) => c.measure === cur.measure && c.tick === cur.tick)) {
-          const tg = this._target({ region: 'lanes', column: d.col, u: geo.u(cur.measure, cur.tick), half: 0 }, d.pointerType, { free: true });
-          if (tg.kind !== 'locked' && tg.kind !== 'limit') {
-            d.cells.push({ measure: cur.measure, tick: cur.tick, channel: d.ch, value: d.value });
-            const now = performance.now();
-            if (now - d.lastSound >= G.PAINT_SOUND_MS) {
-              d.lastSound = now;
-              this._previewSound(d.ch, d.value);
-            }
-          }
-        }
+        add(cur);
         if (cur.measure === cell.measure && cur.tick === cell.tick) break;
       }
       this._updatePaintPreview();
@@ -671,7 +929,9 @@ export class EditorScreen {
     st.preview = null;
     st.erase = null;
     try { this.canvas.releasePointerCapture(e.pointerId); } catch (err) { /* 解放済み */ }
+    st.band = null;
     if (cancelled) {
+      if (d.type === 'band') this.session.selection = d.keep;
       this._render();
       return;
     }
@@ -680,6 +940,12 @@ export class EditorScreen {
       if (d.mods.alt) this._setTypes([c.key], d.mods.shift);
       else if (d.mods.shift) this._addPartner(c.key);
       else this._commit(() => opDelete(this.model, [c.key]), { label: OP.delete, focusU: c.u });
+    } else if (d.type === 'selPress') {
+      this._selectClick(d);
+    } else if (d.type === 'band') {
+      if (!d.moved) this.session.selection = d.keep; // 何もないところのクリック: 選択を外す(Shift / Ctrl なら残す)
+    } else if (d.type === 'bpmClick') {
+      this._bpmClick(d.u, d.pointerType, d.mods.free);
     } else if (d.type === 'move') {
       this._finishMove(d, e.altKey);
     } else if (d.type === 'paint') {
@@ -690,14 +956,52 @@ export class EditorScreen {
     } else if (d.type === 'erase') {
       if (d.keys.size) this._commit(() => opErase(this.model, [...d.keys]), { label: OP.delete });
     }
-    const hit = this.view.hit(e.clientX, e.clientY);
-    this._setGhost(this._target(hit, e.pointerType, this._mods(e)));
+    this._hover = { clientX: e.clientX, clientY: e.clientY, pointerType: e.pointerType, mods: this._mods(e) };
+    this._hoverGhost();
+    this._render();
+  }
+
+  /** 選択のモードで動かさずに離した。 */
+  _selectClick(d) {
+    const s = this.session;
+    if (d.mods.alt) {
+      // Alt+クリック: 種類の切り替え(選んでいるチップなら選んだもの全部)
+      const keys = s.selection.has(d.key) ? this._selKeys() : [d.key];
+      this._setTypes(keys.filter((k) => this.model.chip(k)), d.mods.shift, true);
+      return;
+    }
+    if (!d.mods.free && !d.mods.shift && d.was) s.selection = new Set([d.key]); // 選んでいたものを押して離した: それだけにする
+    // チップを 1 つだけ選んだら、その列のペンをそのチップの音にする(スポイト。本アプリの追加)
+    const c = this.model.chip(d.key);
+    if (c && s.selection.size === 1 && s.selection.has(c.key)) {
+      s.pens.set(c.channel, c.value);
+      this._previewSound(c.channel, c.value);
+      this._scheduleDraft();
+    }
+    this._render();
+  }
+
+  /** 範囲選択の枠を指の / マウスの位置まで広げ、枠に入るものを選ぶ(始めた位置は u で覚える。自動スクロールしてもずれない)。 */
+  _updateBand(clientX, clientY) {
+    const d = this._drag;
+    const v = this.view;
+    const p = v.toLogical(clientX, clientY);
+    const band = { x0: d.lx0, y0: v.y(d.u0), x1: p.x, y1: p.y };
+    v.state.band = band;
+    const r = v.bandRange(band);
+    const m = this.model;
+    const sel = new Set(d.keep);
+    if (r.col1 >= r.col0) for (const c of m.chipsInRect(r.col0, r.col1, r.u0, r.u1)) sel.add(c.key);
+    if (r.bpm) for (const b of m.bpmMarks) if (!b.locked && b.u >= r.u0 && b.u <= r.u1) sel.add(b.key);
+    this.session.selection = sel;
     this._render();
   }
 
   _cancelDrag() {
-    if (this._drag) {
-      try { this.canvas.releasePointerCapture(this._drag.pointerId); } catch (err) { /* 解放済み */ }
+    const d = this._drag;
+    if (d) {
+      try { this.canvas.releasePointerCapture(d.pointerId); } catch (err) { /* 解放済み */ }
+      if (d.type === 'band' && d.keep) this.session.selection = d.restore || d.keep;
     }
     this._drag = null;
     this._autoScroll = null;
@@ -706,12 +1010,13 @@ export class EditorScreen {
     st.preview = null;
     st.erase = null;
     st.ghost = null;
+    st.band = null;
     this._render();
   }
 
   _startErase(e, hit) {
     try { this.canvas.setPointerCapture(e.pointerId); } catch (err) { /* 無くても動く */ }
-    this._drag = { type: 'erase', pointerId: e.pointerId, pointerType: e.pointerType, keys: new Set() };
+    this._drag = { type: 'erase', pointerId: e.pointerId, pointerType: e.pointerType, x0: e.clientX, y0: e.clientY, keys: new Set() };
     this.view.state.erase = this._drag.keys;
     this._eraseAt(hit, e.pointerType);
   }
@@ -733,22 +1038,26 @@ export class EditorScreen {
     this._render();
   }
 
-  /** 動かしている先の描画(元を隠し、行き先に描き、行き先で消えるチップに × を付ける)。 */
+  /**
+   * 動かしている先の描画(元を隠し、行き先に描き、行き先で消えるチップに × を付ける)。つかんだもの(anchor)を
+   * ガイドに合わせ、ほかは同じだけ動かす。BPM の印は縦にだけ動く。
+   */
   _updateMovePreview(hit, mods) {
     const d = this._drag;
     const m = this.model;
     const geo = m.geometry;
-    const anchor = m.chip(d.keys[0]);
+    const anchorChip = m.chip(d.anchor);
+    const anchor = anchorChip || m.bpmMark(d.anchor);
     if (!anchor) return;
     const cell = geo.snap(hit.u, this._snapGuide(mods.free));
     const du = cell ? geo.u(cell.measure, cell.tick) - anchor.u : 0;
-    let col = hit.region === 'lanes' ? hit.column : d.lastCol ?? anchor.column;
-    d.lastCol = col;
-    const clamped = clampMove(m, d.keys, du, col - anchor.column);
+    if (anchorChip && hit.region === 'lanes') d.lastDcol = hit.column - anchorChip.column;
+    const clamped = clampMove(m, d.keys, du, d.lastDcol || 0);
     d.du = clamped.du;
     d.dcol = clamped.dcol;
     const s = this.session;
     const targets = moveTargets(m, d.keys, { du: d.du, dcol: d.dcol, pens: s.pens, activeTypes: s.activeTypes, keepValue: mods.alt });
+    const bpmTargets = moveBpmTargets(m, d.keys, d.du);
     const moving = new Set(d.keys);
     const removeKeys = new Set();
     for (const tgt of targets) {
@@ -759,6 +1068,7 @@ export class EditorScreen {
     this.view.state.preview = {
       hide: moving, removeKeys,
       targets: targets.map((tg) => ({ column: tg.column, u: tg.u, channel: tg.channel, value: tg.value, half: 0 })),
+      bpm: bpmTargets.map((b) => ({ u: b.u, bpm: b.mark.bpm, channel: b.mark.channel })),
     };
     this._render();
   }
@@ -769,17 +1079,21 @@ export class EditorScreen {
       this._render();
       return;
     }
-    const anchor = this.model.chip(d.keys[0]);
+    const m = this.model;
+    const anchor = m.chip(d.anchor) || m.bpmMark(d.anchor);
+    // 元に戻したときの選択: 選択のモードは動かしたもの、ペンのモードは今の選択(ペンは選択を変えない)
+    const selectBefore = this.mode === 'select' ? d.keys : [...s.selection];
     const r = this._commit(() => opMove(this.model, d.keys, { du: d.du, dcol: d.dcol, pens: s.pens, activeTypes: s.activeTypes, keepValue: alt }),
-      { label: OP.move, selectBefore: d.keys, focusU: anchor ? anchor.u : undefined });
+      { label: OP.move, selectBefore, focusU: anchor ? anchor.u : undefined });
     if (r && r.removed) this._toast(t('edit.removedConflicts', { n: r.removed }));
   }
 
-  _setTypes(keys, keepValue = false) {
+  /** 種類を切り替える。fromSel: 選んだものに対して(結果を選んだままにする)。 */
+  _setTypes(keys, keepValue = false, fromSel = false) {
     const s = this.session;
     const chips = keys.map((k) => this.model.chip(k)).filter((c) => c && otherType(c.channel) !== null);
     if (!chips.length) return;
-    this._commit(() => opSetType(this.model, keys, { pens: s.pens, keepValue }), { label: OP.type, selectBefore: keys, focusU: chips[0].u });
+    this._commit(() => opSetType(this.model, keys, { pens: s.pens, keepValue }), { label: OP.type, focusU: chips[0].u, keepSel: fromSel });
   }
 
   _addPartner(key) {
@@ -807,7 +1121,7 @@ export class EditorScreen {
     if (COLUMN_TYPES[col].length < 2) return;
     this.session.activeTypes[col] = i;
     this._syncTypes();
-    if (this._hover) this._setGhost(this._target(this.view.hit(this._hover.clientX, this._hover.clientY), this._hover.pointerType, this._hover.mods));
+    this._hoverGhost();
     this._render();
     this._scheduleDraft();
   }
@@ -825,7 +1139,10 @@ export class EditorScreen {
       this._autoScroll = null;
       return;
     }
-    this._autoScroll = { v: Math.min(3, Math.max(-3, v)), last: performance.now() };
+    // 動かしている間は速さだけ変える(時計を毎回やり直すと、指やマウスが動いている間スクロールが止まる)
+    const nv = Math.min(3, Math.max(-3, v));
+    if (this._autoScroll) this._autoScroll.v = nv;
+    else this._autoScroll = { v: nv, last: performance.now() };
     this.follow = false;
     this._render();
   }
@@ -837,11 +1154,11 @@ export class EditorScreen {
       this._autoScroll = null;
       return false;
     }
-    const dt = Math.min(50, now - a.last) / 1000;
-    a.last = now;
+    const dt = Math.max(0, Math.min(50, now - a.last)) / 1000;
+    a.last = Math.max(a.last, now);
     this.view.uHead += a.v * dt;
     this._clampHead();
-    if (d.lastX !== undefined) this._dragMove(d.lastX, d.lastY, d.mods || {});
+    if (d.lastX !== undefined) this._dragMove(d.lastX, d.lastY, d.liveMods || d.mods || {});
     this._dirty = true;
     return true;
   }
@@ -876,16 +1193,30 @@ export class EditorScreen {
   _touchHandlers() {
     return {
       press: (p) => {
+        if (this._penBusy) return;
         const hit = this.view.hit(p.clientX, p.clientY);
-        if (hit.region === 'lanes') this._setGhost(this._target(hit, 'touch'));
+        if (hit.region === 'lanes' && this.mode === 'pen') this._setGhost(this._target(hit, 'touch'));
       },
       tap: (p) => this._tap(p),
       longPress: (p) => this._longPress(p),
+      // 選択のモードで、選んだチップの上から動かしたら移動(それ以外はスクロール)
+      dragStart: (p) => {
+        if (this.mode !== 'select' || this._penBusy) return false;
+        const key = this._keyAt(this.view.hit(p.clientX, p.clientY), 'touch');
+        if (!key || !this.session.selection.has(key)) return false;
+        this._setGhost(null);
+        this._drag = { type: 'move', pointerId: p.pointerId, pointerType: 'touch', anchor: key, keys: this._selKeys(), mods: {} };
+        return true;
+      },
       liftMove: (p) => {
-        if (!this._drag || this._drag.type !== 'move') return;
-        this._drag.lastX = p.clientX;
-        this._drag.lastY = p.clientY;
-        this._updateMovePreview(this.view.hit(p.clientX, p.clientY), {});
+        const d = this._drag;
+        if (!d || (d.type !== 'move' && d.type !== 'band')) return;
+        d.lastX = p.clientX;
+        d.lastY = p.clientY;
+        if (d.type === 'band') {
+          d.moved = true;
+          this._updateBand(p.clientX, p.clientY);
+        } else this._updateMovePreview(this.view.hit(p.clientX, p.clientY), {});
         this._checkAutoScroll(p.clientY);
       },
       liftEnd: (p, moved) => {
@@ -893,22 +1224,29 @@ export class EditorScreen {
         this._drag = null;
         this._autoScroll = null;
         this.view.state.preview = null;
+        this.view.state.band = null;
         this._setGhost(null);
         if (!d) return;
         if (d.type === 'menu') return;
-        if (moved && d.type === 'move') this._finishMove(d, false);
+        const hit = this.view.hit(p.clientX, p.clientY);
+        if (d.type === 'band') {
+          if (!moved) this._contextMenu(p.clientX, p.clientY, hit);
+        } else if (moved && d.type === 'move') this._finishMove(d, false);
+        else if (this.mode === 'select') this._contextMenu(p.clientX, p.clientY, hit);
         else if (d.chip) this._chipMenu(d.chip, p.clientX, p.clientY);
         this._render();
       },
       scroll: (dy) => {
+        if (this._penBusy) return; // ペンで書いている間は手のひらで動かさない
         this.follow = false;
         this.view.uHead += dy / (this.view.s * this.view.ppu);
         this._clampHead();
         this._syncButtons();
         this._render();
       },
-      scrollEnd: (v) => this._startFling(v),
+      scrollEnd: (v) => { if (!this._penBusy) this._startFling(v); },
       pinch: ({ scale, cy, dy }) => {
+        if (this._penBusy) return;
         this.follow = false;
         this._zoomAt(this.view.zoom * scale, cy, false);
         this.view.uHead += dy / (this.view.s * this.view.ppu);
@@ -917,14 +1255,27 @@ export class EditorScreen {
       },
       pinchEnd: () => this._saveZoom(),
       cancel: () => {
+        const d = this._drag;
+        if (d && d.pointerType && d.pointerType !== 'touch') return; // マウス / ペンの身振りは消さない
+        if (d && d.type === 'band') this.session.selection = d.restore || d.keep;
         this._drag = null;
+        this._autoScroll = null;
         this.view.state.preview = null;
+        this.view.state.band = null;
         this._setGhost(null);
+        this._render();
       },
     };
   }
 
+  /** マウス / ペンで操作している途中か(指の身振りで横取りしない。iPad で Pencil を使っている間の手のひら)。 */
+  get _penBusy() {
+    const d = this._drag;
+    return !!(d && d.pointerType && d.pointerType !== 'touch');
+  }
+
   _tap(p) {
+    if (this._penBusy) return;
     this._setGhost(null);
     this._closePop();
     const hit = this.view.hit(p.clientX, p.clientY);
@@ -936,10 +1287,35 @@ export class EditorScreen {
       this._gutterClick(hit);
       return;
     }
+    if (this.mode === 'select') {
+      // タップでそのチップを選ぶ / 外す、何もないところで選択を外す
+      const key = this._keyAt(hit, 'touch');
+      const sel = new Set(this.session.selection);
+      if (!key) sel.clear();
+      else if (sel.has(key)) sel.delete(key);
+      else sel.add(key);
+      this.session.selection = sel;
+      const c = key && sel.has(key) && sel.size === 1 ? this.model.chip(key) : null;
+      if (c) {
+        this.session.pens.set(c.channel, c.value);
+        this._previewSound(c.channel, c.value);
+      }
+      this._render();
+      return;
+    }
+    if (hit.region === 'bpm') {
+      this._bpmClick(hit.u, 'touch', false);
+      return;
+    }
     const tg = this._target(hit, 'touch');
     if (tg.kind === 'chip') {
       const r = this._commit(() => opDelete(this.model, [tg.chip.key]), { label: OP.delete, focusU: tg.chip.u });
-      if (r) this._toast(t('edit.deleted'), { label: t('common.undo'), run: () => this.undo() });
+      if (r) {
+        // 「元に戻す」はこの削除がいちばん新しい手のときだけ(あとで置いたものを戻さない)
+        const h = this.session.history;
+        const entry = h.entries[h.index];
+        this._toast(t('edit.deleted'), { label: t('common.undo'), run: () => { if (h.entries[h.index] === entry) this.undo(); } });
+      }
     } else if (tg.kind === 'empty' || tg.kind === 'replace') {
       const value = this._pen(tg.ch);
       const r = this._commit(() => opPlace(this.model, { measure: tg.cell.measure, tick: tg.cell.tick, channel: tg.ch, value }), { label: OP.place, focusU: tg.u });
@@ -950,31 +1326,56 @@ export class EditorScreen {
   }
 
   _longPress(p) {
+    if (this._penBusy) return;
     const hit = this.view.hit(p.clientX, p.clientY);
     this._setGhost(null);
+    const vibrate = () => { if (navigator.vibrate) navigator.vibrate(15); };
     if (hit.region === 'header' && hit.column >= 0) {
-      this._drag = { type: 'menu' };
+      this._drag = { type: 'menu', pointerId: p.pointerId, pointerType: 'touch' };
       this._penMenu(hit.column, p.clientX, p.clientY);
+      return;
+    }
+    if (hit.region === 'gutter') {
+      this._drag = { type: 'menu', pointerId: p.pointerId, pointerType: 'touch' };
+      vibrate();
+      this._measureMenu(hit, p.clientX, p.clientY);
+      return;
+    }
+    if (hit.region === 'bpm' && this.mode === 'pen') {
+      this._drag = { type: 'menu', pointerId: p.pointerId, pointerType: 'touch' };
+      vibrate();
+      this._bpmClick(hit.u, 'touch', false);
+      return;
+    }
+    if (this.mode === 'select' && (hit.region === 'lanes' || hit.region === 'bpm')) {
+      vibrate();
+      const key = this._keyAt(hit, 'touch');
+      if (key) {
+        // 持ち上げる(選んでいなければそれだけを選ぶ。動かせば選んだものを移動、動かさずに離せばメニュー)
+        if (!this.session.selection.has(key)) this.session.selection = new Set([key]);
+        this._drag = { type: 'move', pointerId: p.pointerId, pointerType: 'touch', anchor: key, keys: this._selKeys(), mods: {} };
+      } else {
+        // 長押しから動かすと範囲選択、動かさずに離すとメニュー
+        // keep: 範囲で選ぶときの土台(空 = 置き換え)、restore: やめたときに戻す選択(長押しのメニューは今の選択に効く)
+        this._drag = { type: 'band', pointerId: p.pointerId, pointerType: 'touch', x0: p.clientX, y0: p.clientY, u0: hit.u, lx0: hit.x, keep: new Set(), restore: new Set(this.session.selection), moved: false, mods: {} };
+      }
+      this._render();
       return;
     }
     if (hit.region !== 'lanes') return;
     const tg = this._target(hit, 'touch');
     if (tg.kind === 'chip') {
       // 持ち上げる(動かせば移動、動かさずに離せばメニュー)
-      this._drag = { type: 'move', pointerId: p.pointerId, pointerType: 'touch', keys: [tg.chip.key], chip: tg.chip, mods: {} };
-      this.session.selection = new Set([tg.chip.key]);
+      this._drag = { type: 'move', pointerId: p.pointerId, pointerType: 'touch', anchor: tg.chip.key, keys: [tg.chip.key], chip: tg.chip, mods: {} };
       this.view.state.preview = { hide: new Set(), removeKeys: new Set(), targets: [{ column: tg.chip.column, u: tg.chip.u, channel: tg.chip.channel, value: tg.chip.value }] };
-      if (navigator.vibrate) navigator.vibrate(15);
+      vibrate();
       this._render();
       return;
     }
     if (tg.cell) {
-      this._drag = { type: 'menu' };
-      const u = this.model.geometry.u(tg.cell.measure, tg.cell.tick);
-      this._popover([
-        { label: t('edit.playHere'), run: () => { this.view.uHead = u; this.play(); } },
-        { label: t('edit.testHere'), run: () => this.testPlay(u) },
-      ], p.clientX, p.clientY);
+      this._drag = { type: 'menu', pointerId: p.pointerId, pointerType: 'touch' };
+      vibrate();
+      this._contextMenu(p.clientX, p.clientY, hit);
     }
   }
 
@@ -994,7 +1395,7 @@ export class EditorScreen {
     this._clampHead();
     this._syncButtons();
     this._render();
-    if (this._hover) this._setGhost(this._target(this.view.hit(this._hover.clientX, this._hover.clientY), this._hover.pointerType, this._hover.mods));
+    this._hoverGhost();
   }
 
   /** 拡大率を変える(clientY の位置の u を動かさない)。 */
@@ -1045,6 +1446,8 @@ export class EditorScreen {
     const tgt = e.target;
     if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.tagName === 'SELECT' || tgt.isContentEditable)) return;
     if (e.isComposing) return;
+    // Space は BD のキーなので、選んでいるボタン(ダイアログ・メニューの決定も)を押させない(CLAUDE.md。決定は Enter)
+    if (e.code === 'Space' && tgt && tgt.tagName === 'BUTTON') e.preventDefault();
     const dlg = $('edit-dialog');
     if (dlg.open) return;
     if (!$('edit-help').hidden) {
@@ -1054,19 +1457,25 @@ export class EditorScreen {
     const pop = $('edit-pop');
     if (!pop.hidden) {
       if (e.code === 'Escape') { e.preventDefault(); this._closePop(); }
+      else if (e.code === 'ArrowDown' || e.code === 'ArrowUp') { e.preventDefault(); this._popFocus(e.code === 'ArrowDown' ? 1 : -1); }
+      else if (e.code === 'Space') e.preventDefault();
       return;
     }
     const ctrl = e.ctrlKey || e.metaKey;
-    let key = KEY_OF_CODE[e.code];
-    if (!key && e.key && e.key.length === 1) key = e.key.toLowerCase();
-    if (e.code === 'Slash' && e.shiftKey) key = '?';
-    if (e.key === '?') key = '?';
     if (ctrl && !e.altKey) {
-      if (e.code === 'KeyZ') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); return; }
-      if (e.code === 'KeyY') { e.preventDefault(); this.redo(); return; }
-      if (e.code === 'KeyS') { e.preventDefault(); this.saveDtx(); return; }
-      return;
+      switch (e.code) {
+        case 'KeyZ': e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); return;
+        case 'KeyY': e.preventDefault(); this.redo(); return;
+        case 'KeyS': e.preventDefault(); if (e.shiftKey) this.saveAs(); else this.saveDtx(); return;
+        case 'KeyX': e.preventDefault(); this.cut(); return;
+        case 'KeyC': e.preventDefault(); this.copy(); return;
+        case 'KeyV': e.preventDefault(); this.paste(); return;
+        case 'KeyD': e.preventDefault(); this.duplicate(); return;
+        case 'KeyA': e.preventDefault(); this.selectAll(); return;
+        default: return;
+      }
     }
+    const hasSel = this._selKeys().length > 0;
     switch (e.code) {
       case 'Escape':
         e.preventDefault();
@@ -1077,6 +1486,22 @@ export class EditorScreen {
       case 'F1':
         e.preventDefault();
         return;
+      case 'Delete':
+      case 'Backspace':
+        e.preventDefault();
+        this.deleteSelection();
+        return;
+      case 'Enter':
+      case 'NumpadEnter': {
+        // BPM の印を 1 つだけ選んでいれば、その BPM を変える
+        const keys = this._selKeys();
+        const b = keys.length === 1 ? this.model.bpmMark(keys[0]) : null;
+        if (b) {
+          e.preventDefault();
+          this.editBpm(b);
+        }
+        return;
+      }
       case 'PageUp':
       case 'PageDown': {
         e.preventDefault();
@@ -1100,12 +1525,24 @@ export class EditorScreen {
       case 'ArrowUp':
       case 'ArrowDown': {
         e.preventDefault();
+        const dir = e.code === 'ArrowUp' ? 1 : -1;
+        // 選んでいれば選んだものを 1 ガイド(Alt で 1 tick)動かす。無ければ再生位置を 1 ガイド
+        if (hasSel) {
+          this._nudge(dir, e.altKey);
+          return;
+        }
         const geo = this.model.geometry;
         const cell = geo.snap(this.view.uHead, 0) || { measure: -1, tick: Math.round((this.view.uHead + 1) * TICKS_PER_MEASURE) };
-        const next = geo.step(cell.measure, cell.tick, this.view.guide, e.code === 'ArrowUp' ? 1 : -1);
+        const next = geo.step(cell.measure, cell.tick, this.view.guide, dir);
         this._moveHead(geo.u(next.measure, next.tick));
         return;
       }
+      case 'ArrowLeft':
+      case 'ArrowRight':
+        if (e.altKey) return; // Alt+← はブラウザの「戻る」
+        e.preventDefault();
+        if (hasSel) this._shiftColumns(e.code === 'ArrowRight' ? 1 : -1);
+        return;
       default:
         break;
     }
@@ -1113,10 +1550,18 @@ export class EditorScreen {
       if (e.key === 'Alt') e.preventDefault();
       return;
     }
-    switch (key) {
+    switch (shortcutKey(e)) {
       case 'e':
         e.preventDefault();
-        this.mode = 'pen';
+        this._setMode('pen');
+        return;
+      case 's':
+        e.preventDefault();
+        this._setMode('select');
+        return;
+      case 'n':
+        e.preventDefault();
+        this.nextSuspect();
         return;
       case 'p':
         e.preventDefault();
@@ -1133,8 +1578,13 @@ export class EditorScreen {
         return;
       case 'r': {
         e.preventDefault();
-        const keys = this._hoverOrSelection();
-        if (keys.length) this._setTypes(keys, e.shiftKey);
+        // 選んでいるチップ、無ければマウスで指しているチップ
+        const sel = this._selKeys().filter((k) => this.model.chip(k));
+        if (sel.length) this._setTypes(sel, e.shiftKey, true);
+        else {
+          const keys = this._hoverChip();
+          if (keys.length) this._setTypes(keys, e.shiftKey);
+        }
         return;
       }
       case '[':
@@ -1150,7 +1600,6 @@ export class EditorScreen {
         this._zoomStep(-1);
         return;
       case '+':
-      case '=':
         e.preventDefault();
         this._zoomStep(1);
         return;
@@ -1167,20 +1616,28 @@ export class EditorScreen {
   _keyUp(e) {
     if (this.root.hidden) return;
     if (e.key === 'Alt') e.preventDefault();
+    if (e.code === 'Space' && e.target && e.target.tagName === 'BUTTON') e.preventDefault();
     // Alt / Ctrl を押した・離したら影を描き直す(もう一方の種類・フリー)
     if (this._hover && (e.key === 'Alt' || e.key === 'Control' || e.key === 'Meta' || e.key === 'Shift')) {
       this._hover.mods = this._mods(e);
-      this._setGhost(this._target(this.view.hit(this._hover.clientX, this._hover.clientY), this._hover.pointerType, this._hover.mods));
+      this._hoverGhost();
     }
   }
 
-  /** R の対象: 選んでいるチップ、無ければマウスで指しているチップ。 */
-  _hoverOrSelection() {
-    const sel = [...this.session.selection].filter((k) => this.model.chip(k));
-    if (sel.length) return sel;
+  /** マウスで指しているチップ(R の対象)。 */
+  _hoverChip() {
     if (!this._hover) return [];
     const tg = this._target(this.view.hit(this._hover.clientX, this._hover.clientY), this._hover.pointerType, {});
     return tg.kind === 'chip' ? [tg.chip.key] : [];
+  }
+
+  /** メニューの中を ↑↓ で動く。 */
+  _popFocus(dir) {
+    const btns = [...$('edit-pop').querySelectorAll('button:not(:disabled)')];
+    if (!btns.length) return;
+    const i = btns.indexOf(document.activeElement);
+    const j = i < 0 ? (dir > 0 ? 0 : btns.length - 1) : (i + dir + btns.length) % btns.length;
+    btns[j].focus({ preventScroll: true });
   }
 
   _moveHead(u) {
@@ -1189,6 +1646,345 @@ export class EditorScreen {
     this.view.uHead = u;
     this._clampHead();
     this._syncButtons();
+    this._render();
+  }
+
+  // ---- 選択・クリップボード(DTXCreator の選択モードとクリップボード。docs/spec/dtxcreator-edit.md §5・§6) ----
+
+  /** 選んだものを消す(Delete / Backspace)。 */
+  deleteSelection() {
+    const keys = this._selKeys();
+    if (!keys.length) return;
+    this._commit(() => opDelete(this.model, keys), { label: OP.delete, selectBefore: keys, focusU: this._focusOf(keys) });
+  }
+
+  /** 選んだものをコピーする(クリップボードはページの中で 1 つ。別の譜面にも貼れる。DTXCreator と同じ)。 */
+  copy() {
+    const keys = this._selKeys();
+    if (!keys.length) return false;
+    const clip = copyClip(this.model, keys);
+    if (!clip) return false;
+    this.app.editClipboard = clip;
+    return true;
+  }
+
+  /** 切り取り(コピーして消す。1 手)。 */
+  cut() {
+    if (!this.copy()) return;
+    const keys = this._selKeys();
+    this._commit(() => opDelete(this.model, keys), { label: OP.cut, selectBefore: keys, focusU: this._focusOf(keys) });
+  }
+
+  /**
+   * 貼り付け。貼る位置は、メニューから: メニューを開いたセル、キーから: マウスで指しているセル(レーンの上なら)、
+   * 無ければ再生位置(どれもガイドに合わせる)。(変更) DTXCreator はメニューの左上の位置に貼る(§11 Q15)。
+   */
+  paste(atU) {
+    const clip = this.app.editClipboard;
+    if (!clip) return;
+    let u = atU;
+    if (!Number.isFinite(u) && this._hover) {
+      const hit = this.view.hit(this._hover.clientX, this._hover.clientY);
+      if (hit.region === 'lanes') u = hit.u;
+    }
+    if (!Number.isFinite(u)) u = this.view.uHead;
+    const geo = this.model.geometry;
+    const cell = geo.snap(Math.max(0, u), this._snapGuide(false)) || { measure: 0, tick: 0 };
+    const u0 = geo.u(cell.measure, cell.tick);
+    const r = this._commit(() => opPaste(this.model, clip, { u0, modelOf: (d) => this.session.modelOf(d) }), { label: OP.paste, focusU: u0, keepSel: true });
+    if (r) this._reveal(u0);
+  }
+
+  /** 選んだものを、選んだ小節の数だけ後ろへ写す(Ctrl+D。本アプリの追加)。 */
+  duplicate() {
+    const keys = this._selKeys();
+    if (!keys.length) return;
+    const m = this.model;
+    let m0 = Infinity;
+    let m1 = -Infinity;
+    for (const k of keys) {
+      const x = m.chip(k) || m.bpmMark(k);
+      m0 = Math.min(m0, x.measure);
+      m1 = Math.max(m1, x.measure);
+    }
+    const focusU = m.geometry.start(Math.min(MAX_MEASURE, m1 + 1));
+    const r = this._commit(() => opDuplicate(this.model, keys), { label: OP.duplicate, selectBefore: keys, focusU, keepSel: true });
+    if (r) this._reveal(m.geometry.start(Math.min(MAX_MEASURE, m0 + (m1 - m0 + 1))));
+  }
+
+  /** すべて選択(選択のモードにする)。 */
+  selectAll() {
+    const m = this.model;
+    this._selectKeys(m.chips.filter((c) => !c.locked).map((c) => c.key).concat(m.bpmMarks.filter((b) => !b.locked).map((b) => b.key)));
+  }
+
+  /** レーン(列)の中をすべて選択。 */
+  selectLane(col) {
+    this._selectKeys((this.model.byColumn[col] || []).filter((c) => !c.locked).map((c) => c.key));
+  }
+
+  /** 小節の中をすべて選択(BPM の印も)。 */
+  selectMeasure(measure) {
+    const m = this.model;
+    this._selectKeys(m.chips.filter((c) => !c.locked && c.measure === measure).map((c) => c.key)
+      .concat(m.bpmMarks.filter((b) => !b.locked && b.measure === measure).map((b) => b.key)));
+  }
+
+  _selectKeys(keys) {
+    this.session.selection = new Set(keys);
+    this._setMode('select');
+  }
+
+  /** 選んだものを 1 ガイド(fine: 1 tick)動かす(↑↓。続けて押すと 1 秒の間は 1 手にまとめる)。値はそのまま。 */
+  _nudge(dir, fine) {
+    const keys = this._selKeys();
+    if (!keys.length) return;
+    const m = this.model;
+    const geo = m.geometry;
+    let a = null;
+    for (const k of keys) {
+      const x = m.chip(k) || m.bpmMark(k);
+      if (x && (!a || x.u < a.u)) a = x;
+    }
+    const next = geo.step(a.measure, a.tick, fine ? 0 : this.view.guide, dir);
+    const du = geo.u(next.measure, next.tick) - a.u;
+    if (!du) return;
+    const r = this._commit(() => opNudge(this.model, keys, { du }), { label: OP.nudge, selectBefore: keys, focusU: a.u, coalesceKey: 'nudge', keepSel: true });
+    if (r) {
+      if (r.removed) this._toast(t('edit.removedConflicts', { n: r.removed }));
+      this._reveal(a.u + du);
+    }
+  }
+
+  /** 選んだチップを隣の列へ(←→。移った列の今の種類とペンの音になる)。 */
+  _shiftColumns(dir) {
+    const keys = this._selKeys();
+    if (!keys.some((k) => this.model.chip(k))) return;
+    const s = this.session;
+    const r = this._commit(() => opMove(this.model, keys, { du: 0, dcol: dir, pens: s.pens, activeTypes: s.activeTypes }),
+      { label: OP.move, selectBefore: keys, focusU: this._focusOf(keys), coalesceKey: 'column', keepSel: true });
+    if (r && r.removed) this._toast(t('edit.removedConflicts', { n: r.removed }));
+  }
+
+  /** u が画面の外なら、そこへ送る。 */
+  _reveal(u) {
+    const { lo, hi } = this.view.uRange;
+    if (u >= lo && u <= hi) return;
+    this.follow = false;
+    this.view.uHead = u;
+    this._clampHead();
+    this._render();
+  }
+
+  // ---- BPM(DTXCreator の BPM レーン。docs/spec/dtxcreator-edit.md §4.5) ----
+
+  /** BPM レーンを押した: 印の上ならその BPM、無ければガイドに合わせたセルに新しい BPM。 */
+  _bpmClick(u, pointerType, free) {
+    const b = this._bpmAt(u, pointerType);
+    if (b) this.editBpm(b);
+    else this._bpmAtCell(u, free);
+  }
+
+  /** u のセルの BPM(そこに印があればそれを変える)。 */
+  _bpmAtCell(u, free = false) {
+    const m = this.model;
+    const cell = m.geometry.snap(Math.max(0, u), this._snapGuide(free));
+    if (!cell) return;
+    if (cell.measure > MAX_MEASURE) {
+      this._toast(t('edit.measureLimit'));
+      return;
+    }
+    const mark = m.bpmMarks.find((b) => b.measure === cell.measure && b.tick === cell.tick && (!b.locked || b.active));
+    if (mark) this.editBpm(mark);
+    else this._bpmDialog(cell.measure, cell.tick, null);
+  }
+
+  /** BPM の印を変える / 消す。 */
+  editBpm(mark) {
+    if (mark.locked) {
+      this._toast(t('edit.lockedCell'));
+      return;
+    }
+    this._bpmDialog(mark.measure, mark.tick, mark);
+  }
+
+  async _bpmDialog(measure, tick, mark) {
+    const m = this.model;
+    const cur = mark && mark.bpm !== null ? mark.bpm : m.bpmAtPos(posOf(measure, tick));
+    const r = await bpmDialog($('edit-dialog'), { bpm: cur, canDelete: !!mark, headerOption: measure === 0 && tick === 0 && !mark });
+    this.canvas.focus({ preventScroll: true });
+    if (this._closed) return;
+    const focusU = this.model.geometry.u(measure, tick);
+    if (r.action === 'delete' && mark) this._commit(() => opDelete(this.model, [mark.key]), { label: OP.bpm, focusU });
+    else if (r.action === 'ok') this._commit(() => opSetBpm(this.model, { measure, tick, bpm: r.bpm, header: r.header }), { label: OP.bpm, focusU });
+  }
+
+  // ---- 小節(DTXCreator の小節長変更・小節の挿入 / 削除。docs/spec/dtxcreator-edit.md §8) ----
+
+  /** 小節長のダイアログ。 */
+  async barLength(measure) {
+    if (measure < 0 || measure > MAX_MEASURE) return;
+    const m = this.model;
+    const r = await barDialog($('edit-dialog'), {
+      measure, value: m.geometry.len(measure),
+      overflow: (o) => barOverflow(this.model, { measure, ...o }),
+    });
+    this.canvas.focus({ preventScroll: true });
+    if (r.action !== 'ok' || this._closed) return;
+    const res = this._commit(() => opBarLength(this.model, { measure, value: r.value, scope: r.scope, keepBeats: r.keepBeats }),
+      { label: OP.bar, focusU: this.model.geometry.start(measure) });
+    if (res && res.removed) this._toast(t('edit.barRemoved', { n: res.removed }));
+  }
+
+  /** 小節 measure の前に空の小節を挿す(押した小節から後ろが 1 小節ずつ後ろへ)。 */
+  insertMeasure(measure) {
+    if (measure < 0) return;
+    const r = this._commit(() => opInsertMeasure(this.model, measure), { label: OP.insertMeasure, focusU: this.model.geometry.start(measure) });
+    if (r) this._shiftLoop(measure, 1);
+  }
+
+  /** 小節 measure を消して詰める(消えるものがあれば、種類ごとの数を見せて確かめる)。 */
+  async deleteMeasure(measure) {
+    const m = this.model;
+    if (measure < 0) return;
+    if (measure > m.doc.index.maxMeasure) {
+      this._toast(t('edit.nothingToDelete'));
+      return;
+    }
+    // 先に作ってみる(できないなら確かめる前に知らせる)。ダイアログの間は譜面を変えられないので、作ったものをそのまま使う
+    let result;
+    try {
+      result = opDeleteMeasure(m, measure);
+    } catch (e) {
+      if (!(e instanceof EditError)) throw e;
+      this._toast(t(ERR[e.code] || 'edit.measureLimit', e.vars));
+      return;
+    }
+    const sum = measureDeleteSummary(m, measure);
+    if (sum.drums + sum.bgm + sum.tempo + sum.other + sum.lockedLines > 0) {
+      const extra = [];
+      if (sum.bgm) extra.push(t('edit.deleteMeasureBgm'));
+      if (sum.carriedBpm !== null && sum.carriedBpm !== undefined) extra.push(t('edit.bpmCarry', { bpm: formatBpm(sum.carriedBpm) }));
+      const ok = await confirmDialog($('edit-dialog'), t('edit.deleteMeasureConfirm', {
+        m: String(measure).padStart(3, '0'), d: sum.drums, b: sum.bgm, t: sum.tempo, o: sum.other, k: sum.lockedLines,
+      }), { ok: t('edit.deleteMeasure'), danger: true, extra: extra.join(' ') });
+      this.canvas.focus({ preventScroll: true });
+      if (!ok || this._closed) return;
+    }
+    const r = this._commit(() => (this.model === m ? result : opDeleteMeasure(this.model, measure)), { label: OP.deleteMeasure, focusU: m.geometry.start(measure) });
+    if (r) this._shiftLoop(measure, -1);
+  }
+
+  /**
+   * 小節を挿す / 消したとき、演奏画面から持ってきたループの位置もずらす。元に戻す / やり直すで戻せるよう、
+   * ずらす前とあとを今の手に書いておく(undo / redo が見る)。
+   */
+  _shiftLoop(measure, delta) {
+    const lp = this.session.loopPos;
+    if (!lp) return;
+    const at = posOf(measure, 0);
+    const T = TICKS_PER_MEASURE;
+    const f = (p) => {
+      if (delta > 0) return p >= at ? p + T : p;
+      if (p >= at + T) return p - T;
+      return p >= at ? at : p; // 消した小節の中 → その小節の頭
+    };
+    const after = { ...lp, beginPos: f(lp.beginPos), endPos: lp.endAtEnd ? lp.endPos : f(lp.endPos) };
+    this.session.loopPos = after;
+    const h = this.session.history;
+    h.entries[h.index].loopShift = { before: lp, after };
+  }
+
+  // ---- メニュー(右クリック・長押し) ----
+
+  /** 小節の操作(小節番号の欄・メニュー)。 */
+  _measureItems(measure, u) {
+    return [
+      { label: t('edit.bpmHere'), run: () => this._bpmAtCell(u) },
+      { label: t('edit.barLength'), run: () => this.barLength(measure) },
+      { label: t('edit.insertMeasure'), run: () => this.insertMeasure(measure) },
+      { label: t('edit.deleteMeasure'), danger: true, run: () => this.deleteMeasure(measure) },
+    ];
+  }
+
+  /** 選択のモードの右クリック・長押しのメニュー(docs/spec/chart-editor.md「メニュー」)。 */
+  _contextMenu(x, y, hit) {
+    const m = this.model;
+    const geo = m.geometry;
+    const keys = this._selKeys();
+    const has = keys.length > 0;
+    const u = hit && Number.isFinite(hit.u) ? Math.max(0, hit.u) : Math.max(0, this.view.uHead);
+    const measure = Math.max(0, Math.min(MAX_MEASURE, geo.measureAt(u)));
+    const cell = geo.snap(u, this._snapGuide(false));
+    const cellU = cell ? geo.u(cell.measure, cell.tick) : u;
+    const items = [
+      { label: t('edit.cut'), disabled: !has, run: () => this.cut() },
+      { label: t('edit.copy'), disabled: !has, run: () => this.copy() },
+      { label: t('edit.paste'), disabled: !this.app.editClipboard, run: () => this.paste(u) },
+      { label: t('edit.delete'), disabled: !has, danger: true, run: () => this.deleteSelection() },
+      { label: t('edit.duplicate'), disabled: !has, run: () => this.duplicate() },
+      { sep: true },
+      { label: t('edit.selectAll'), run: () => this.selectAll() },
+    ];
+    if (hit && hit.region === 'lanes' && hit.column >= 0) {
+      items.push({ label: t('edit.selectLane', { lane: channelName(this._channel(hit.column, false)) }), run: () => this.selectLane(hit.column) });
+    }
+    items.push({ label: t('edit.selectMeasure', { m: String(measure).padStart(3, '0') }), run: () => this.selectMeasure(measure) });
+    const chips = keys.filter((k) => m.chip(k));
+    const flippable = chips.filter((k) => otherType(m.chip(k).channel) !== null);
+    items.push({ sep: true });
+    items.push({ label: t('edit.typeFlip') + ' (R)', disabled: !flippable.length, run: () => this._setTypes(flippable, false, true) });
+    if (chips.length === 1) {
+      const c = m.chip(chips[0]);
+      const other = otherType(c.channel);
+      if (other !== null && !channelsConflict(c.channel, other)) items.push({ label: t('edit.addPartner', { type: channelName(other) }), run: () => this._addPartner(c.key) });
+    }
+    items.push({ sep: true }, ...this._measureItems(measure, u), { sep: true });
+    items.push({ label: t('edit.playHere'), run: () => { this.view.uHead = cellU; this.play(); } });
+    items.push({ label: t('edit.testHere'), run: () => this.testPlay(cellU) });
+    if (has) {
+      const ms = keys.map((k) => (m.chip(k) || m.bpmMark(k)).measure);
+      items.push({ label: t('edit.loopSelection'), run: () => this.loopMeasures(Math.min(...ms), Math.max(...ms)) });
+    } else items.push({ label: t('edit.loopMeasure'), run: () => this.loopMeasures(measure, measure) });
+    this._popover(items, x, y);
+  }
+
+  /** 小節番号の欄の右クリック・長押しのメニュー。 */
+  _measureMenu(hit, x, y) {
+    const geo = this.model.geometry;
+    const measure = geo.measureAt(hit.u);
+    if (measure < 0 || measure > MAX_MEASURE) return;
+    const head = geo.start(measure);
+    this._popover([
+      { label: `${t('edit.barMeasure')} ${String(measure).padStart(3, '0')}`, heading: true },
+      ...this._measureItems(measure, Math.max(head, hit.u)),
+      { sep: true },
+      { label: t('edit.selectMeasure', { m: String(measure).padStart(3, '0') }), run: () => this.selectMeasure(measure) },
+      { label: t('edit.playHere'), run: () => { this.view.uHead = head; this.play(); } },
+      { label: t('edit.loopMeasure'), run: () => this.loopMeasures(measure, measure) },
+    ], x, y);
+  }
+
+  // ---- vid2dtx の確信度(docs/spec/vid2dtx-edit.md §8) ----
+
+  /** 次の要確認のチップへ(確信度の低い順に回る。最後まで行ったら最初へ。vid2dtx の goto_next_suspect)。 */
+  nextSuspect() {
+    if (!this.sidecar) return;
+    const m = this.model;
+    const order = suspectOrder(m, this._suspectMap());
+    if (!order.length) {
+      this._toast(t('edit.noSuspect'));
+      return;
+    }
+    const last = this._lastSuspect;
+    let i = last ? order.findIndex((x) => x.conf > last.conf || (x.conf === last.conf && x.chip.u > last.u + 1e-9)) : 0;
+    if (i < 0) i = 0;
+    const { chip, conf } = order[i];
+    this._lastSuspect = { conf, u: chip.u };
+    this._moveHead(chip.u);
+    this.session.selection = new Set([chip.key]); // R・Delete ですぐ直せるように
+    const s = this.sidecar.get(`${chip.measure}.${chip.tick}.${chip.channel}`);
+    this._toast(t('edit.suspectStatus', { i: i + 1, n: order.length, c: conf.toFixed(2) }) + (s && s.why ? '  ' + s.why : ''), null, 5000);
     this._render();
   }
 
@@ -1219,26 +2015,40 @@ export class EditorScreen {
 
   /** 譜面が使う音を読む(新しい番号のファイルだけ復号する)。 */
   async _loadSounds(keepVoices) {
+    if (this._closed) return;
+    // 読み込み中にまた頼まれたら、終わってから 1 回だけ読み直す(長い BGM を並べて何度も復号しない)
+    if (this._soundLoading) {
+      this._soundAgain = true;
+      return;
+    }
     const chart = this.model.chart;
     const ids = requiredWavIds(chart);
     const audio = this.app.audio;
     if (keepVoices && ids.every((id) => audio.buffers.has(id))) return;
     const doc = this.model.doc;
+    this._soundLoading = true;
     this._soundInfo = t('load.sounds', { done: 0, total: ids.length });
     this._render();
     try {
       await audio.loadChartSounds(this.session.pkg, chart, (done, total) => {
+        if (this._closed) return;
         this._soundInfo = t('load.sounds', { done, total });
         this._render();
       }, { keepVoices });
     } catch (e) {
       console.warn('音源の読み込みに失敗:', e);
+    } finally {
+      this._soundLoading = false;
     }
     if (this._closed) return;
     this._soundInfo = audio.failed.length ? t('load.soundsFailed', { n: audio.failed.length }) : '';
     this._loadedFor = doc;
     if (this.player && this.player.state === PLAYER_STATE.STANDBY) this._playerDoc = null; // BGM の長さで止まる位置が変わる
     this._render();
+    if (this._soundAgain) {
+      this._soundAgain = false;
+      this._loadSounds(true);
+    }
   }
 
   /** 鳴らすときの譜面と範囲(文書が変わっていれば差し替える。演奏中には差し替えない)。 */
@@ -1267,6 +2077,12 @@ export class EditorScreen {
     s.metronomeVolume = c.editMetronome ? 60 : 0;
     s.autoPlay = c.editDrumSound !== false;
     s.playSpeed = SPEEDS.includes(c.editSpeed) ? c.editSpeed : 20;
+    const lr = this._loopRange;
+    s.loop = !!lr;
+    if (lr) {
+      s.loopBeginMs = lr.beginMs;
+      s.loopEndMs = lr.endMs;
+    }
   }
 
   togglePlay() {
@@ -1274,11 +2090,34 @@ export class EditorScreen {
     else this.play();
   }
 
+  /**
+   * 小節 m0〜m1 を繰り返し鳴らす(本アプリの追加。演奏画面のループと同じく、折り返すと 1 小節前から)。止めると繰り返しも終わる。
+   */
+  loopMeasures(m0, m1) {
+    const p = this.player;
+    if (!p || this._closed) return;
+    this._stopPlay();
+    this._closePop();
+    this._preparePlayer();
+    const chart = this.model.chart;
+    const beginMs = posToMs(chart, posOf(m0, 0));
+    const endMs = posToMs(chart, posOf(m1 + 1, 0));
+    if (!(endMs > beginMs)) return;
+    this._loopRange = { m0, m1, beginMs, endMs };
+    this._applyPlayOptions();
+    this.follow = true;
+    p.startTrainingAt(beginMs);
+    this.app.requestWakeLock();
+    this._syncButtons();
+    this._render();
+  }
+
   /** 再生位置から鳴らす(DTXCreator の「現在の位置から再生」)。 */
   play() {
     const p = this.player;
     if (!p || this._closed) return;
     this._closePop();
+    this._loopRange = null;
     this._preparePlayer();
     this._applyPlayOptions();
     const geo = this.model.geometry;
@@ -1301,6 +2140,10 @@ export class EditorScreen {
     if (!p || p.state === PLAYER_STATE.STANDBY) return;
     // (変更) 止めた位置にとどまる(演奏画面の停止は開始位置へ戻る。DTXCreator の「現在の位置」と同じ考え)
     p.enterStandby(false, p.songMs);
+    if (this._loopRange) {
+      this._loopRange = null;
+      this._applyPlayOptions();
+    }
     this.app.releaseWakeLock();
     this._syncButtons();
     this._render();
@@ -1330,14 +2173,73 @@ export class EditorScreen {
     await this.app.startTestPlay(this.session, startAtMs);
   }
 
-  /** .dtx をダウンロードする(Ctrl+S)。 */
-  saveDtx() {
+  /**
+   * 保存(Ctrl+S)。「名前を付けて保存」で選んだファイルがあればそこへ上書き、無ければ .dtx をダウンロードする。
+   */
+  async saveDtx() {
     const s = this.session;
+    const doc = s.doc;
     const r = s.outputBytes();
-    downloadBytes(r.bytes, baseName(s.path));
-    s.history.markExported();
-    this._toast(r.changedEncoding ? t('edit.savedUtf8') : t('edit.saved', { name: baseName(s.path) }), null, r.changedEncoding ? 8000 : 3000);
+    let name = baseName(s.path);
+    if (s.fileHandle) {
+      try {
+        await writeHandle(s.fileHandle, r.bytes);
+        name = s.fileHandle.name || name;
+      } catch (e) {
+        // 選んだファイルに書けなかった(動かした・消した・許可を取り消した)。ダウンロードにして、そう知らせる
+        console.warn('選んだファイルに上書きできません(ダウンロードにします):', e);
+        const picked = s.fileHandle.name || name;
+        s.fileHandle = null;
+        downloadBytes(r.bytes, name);
+        s.history.markExported(doc);
+        this._toast(t('edit.overwriteFailed', { file: picked, name }), null, 8000);
+        this._syncButtons();
+        return;
+      }
+    } else downloadBytes(r.bytes, name);
+    this._saved(r, name, doc);
+  }
+
+  /** 名前を付けて保存(Ctrl+Shift+S。Chromium だけ。ほかのブラウザはダウンロード)。次の Ctrl+S は同じファイルへ上書きする。 */
+  async saveAs() {
+    if (!canSaveAs()) {
+      await this.saveDtx();
+      return;
+    }
+    const s = this.session;
+    const doc = s.doc;
+    const r = s.outputBytes();
+    let h;
+    try {
+      h = await saveAsFile(r.bytes, baseName(s.path));
+    } catch (e) {
+      console.warn('名前を付けて保存できません:', e);
+      this._toast(t('edit.saveFailed'));
+      return;
+    }
+    if (!h) return;
+    s.fileHandle = h;
+    this._saved(r, h.name || baseName(s.path), doc);
+  }
+
+  _saved(r, name, doc) {
+    this.session.history.markExported(doc);
+    // Shift-JIS で書けずに UTF-8 になったときだけ知らせる(文字コードを選んで変えたときは普通の「保存しました」)
+    const ch = this.session.encodingChoice;
+    const fellBack = r.changedEncoding && r.encoding === 'utf-8' && !(ch && ch.encoding === 'utf-8');
+    this._toast(fellBack ? t('edit.savedUtf8') : t('edit.saved', { name }), null, fellBack ? 8000 : 3000);
     this._syncButtons();
+  }
+
+  /** 書き出す文字コード(⋯ の「文字コード」)。Shift-JIS で書けない文字があれば変えない。 */
+  _setEncoding(choice) {
+    const s = this.session;
+    const prev = s.encodingChoice;
+    s.encodingChoice = choice;
+    if (!s.outputBytes().ok) {
+      s.encodingChoice = prev;
+      this._toast(t('edit.encFailed'));
+    }
   }
 
   async _share() {
@@ -1363,11 +2265,23 @@ export class EditorScreen {
     const c = this.config;
     const s = this.session;
     const bytes = s.outputBytes().bytes;
-    const items = [
-      { label: t('edit.saveDtx'), run: () => this.saveDtx() },
-      { label: t('edit.saveZipPack'), run: () => this.app.exportEditedZip() },
-    ];
+    const items = [{ label: t('edit.saveDtx'), run: () => this.saveDtx() }];
+    if (canSaveAs()) items.push({ label: t('edit.saveAs'), run: () => this.saveAs() });
     if (canShareFile(bytes, baseName(s.path))) items.push({ label: t('edit.share'), run: () => this._share() });
+    const fromFolder = !(s.pkg.zip && s.pkg.zip.blob);
+    const zip = (onlyDir) => {
+      if (fromFolder) this._toast(t('edit.folderZipNote'), null, 5000); // フォルダの曲パックは全部のファイルを読み直す
+      this.app.exportEditedZip({ onlyDir });
+    };
+    if (s.dir) items.push({ label: t('edit.saveZipSong'), run: () => zip(s.dir) });
+    items.push({ label: t('edit.saveZipPack'), run: () => zip('') });
+    // 文字コード((追加) DTXCreator は Shift-JIS だけ。UTF-8 は BOM 付きで書く。NX が見分けられるので)
+    const enc = s.encodingChoice ? s.encodingChoice.encoding : null;
+    const info = s.originalDoc.info;
+    items.push({ label: t('edit.encoding'), heading: true });
+    items.push({ label: `${t('edit.encKeep')} (${info.encoding === 'shift_jis' || info.encoding === 'ascii' ? 'Shift-JIS' : info.encoding.toUpperCase()}${info.bom ? ' BOM' : ''})`, checked: !enc, run: () => this._setEncoding(null) });
+    items.push({ label: t('edit.encSjis'), checked: enc === 'shift_jis', run: () => this._setEncoding({ encoding: 'shift_jis', bom: false }) });
+    items.push({ label: t('edit.encUtf8'), checked: enc === 'utf-8', run: () => this._setEncoding({ encoding: 'utf-8', bom: true }) });
     items.push({ sep: true });
     items.push({ label: t('edit.playTop'), run: () => this.playFromTop() });
     items.push({ label: t('edit.metronome'), checked: !!c.editMetronome, run: () => this._toggleOption('editMetronome') });
@@ -1378,6 +2292,7 @@ export class EditorScreen {
     items.push({ sep: true });
     items.push({ label: t('edit.showIds'), checked: !!c.editShowIds, run: () => this._toggleOption('editShowIds') });
     items.push({ label: t('edit.previewSound'), checked: c.editPreviewSound !== false, run: () => this._toggleOption('editPreviewSound') });
+    if (this.sidecar) items.push({ label: t('edit.confidence'), checked: c.editConfidence !== false, run: () => this._toggleOption('editConfidence') });
     items.push({ label: t('edit.help'), run: () => this._toggleHelp(true) });
     items.push({ sep: true });
     items.push({ label: t('edit.discard'), danger: true, disabled: !s.modified, run: () => this._discard() });
@@ -1387,7 +2302,7 @@ export class EditorScreen {
 
   _toggleOption(key) {
     const c = this.config;
-    const def = key === 'editDrumSound' || key === 'editPreviewSound';
+    const def = key === 'editDrumSound' || key === 'editPreviewSound' || key === 'editConfidence';
     const cur = def ? c[key] !== false : !!c[key];
     c[key] = !cur;
     this.app.saveConfig();
@@ -1405,7 +2320,15 @@ export class EditorScreen {
       items.push({ label: t('edit.addPartner', { type: channelName(other) }), run: () => this._addPartner(chip.key) });
     }
     items.push({ label: t('edit.pen') + '…', run: () => this._soundMenu(chip.channel, x, y, chip) });
-    items.push({ label: t('edit.opDelete'), danger: true, run: () => this._commit(() => opDelete(this.model, [chip.key]), { label: OP.delete, focusU: chip.u }) });
+    items.push({
+      label: t('edit.copy'),
+      run: () => {
+        const clip = copyClip(this.model, [chip.key]);
+        if (clip) this.app.editClipboard = clip;
+      },
+    });
+    items.push({ label: t('edit.modeSelect'), run: () => this._selectKeys([chip.key]) });
+    items.push({ label: t('edit.delete'), danger: true, run: () => this._commit(() => opDelete(this.model, [chip.key]), { label: OP.delete, focusU: chip.u }) });
     this._popover(items, x, y);
   }
 
@@ -1524,19 +2447,29 @@ export class EditorScreen {
     const rows = [
       ['Ctrl+Z / Ctrl+Y', t('common.undo') + ' / ' + t('edit.redo')],
       ['Ctrl+S', t('edit.saveDtx')],
+      ['Ctrl+Shift+S', t('edit.saveAs')],
+      ['E / S', t('edit.modePen') + ' / ' + t('edit.modeSelect')],
       ['[ / ]', t('edit.helpGuide')],
       ['- / +', t('edit.helpZoom')],
       ['PageUp / PageDown', t('edit.helpMeasure')],
       ['Home / End', t('edit.helpEnds')],
       ['↑ / ↓', t('edit.helpCursor')],
+      ['↑ / ↓  Alt+↑ / ↓', t('edit.helpNudge')],
+      ['← / →', t('edit.helpColumn')],
+      ['Ctrl+X / C / V', t('edit.cut') + ' / ' + t('edit.copy') + ' / ' + t('edit.paste')],
+      ['Ctrl+D', t('edit.duplicate')],
+      ['Ctrl+A', t('edit.selectAll')],
+      ['Delete', t('edit.delete')],
       ['P / Shift+P', t('edit.playStop') + ' / ' + t('edit.playTop')],
       ['T', t('edit.testPlay')],
       ['M', t('edit.metronome')],
       ['R', t('edit.typeFlip')],
+      ['N', t('edit.nextSuspect')],
       ['Alt', t('edit.helpAltClick')],
       ['Shift', t('edit.helpShiftClick')],
       [t('edit.rightClick'), t('edit.helpRightClick')],
       ['Ctrl', t('edit.helpCtrlDrag')],
+      [t('edit.modeSelect'), t('edit.helpBand')],
       ['Esc', t('edit.helpEsc')],
     ];
     el.innerHTML = '';

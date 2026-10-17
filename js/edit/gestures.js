@@ -91,6 +91,13 @@ export class TouchGestures {
       const dy = e.clientY - this.start.y;
       if (Math.hypot(dx, dy) > G.SLOP_CSS.touch) {
         this._clearTimer();
+        // 選択モードで選んだチップの上から動かしたら、スクロールでなく移動(handlers.dragStart が true を返したとき)
+        if (!this.palm && this.h.dragStart && this.h.dragStart({ clientX: this.start.x, clientY: this.start.y, pointerType: 'touch', pointerId: e.pointerId })) {
+          this.state = 'lifted';
+          this.liftMoved = true;
+          this.h.liftMove && this.h.liftMove(pt(e));
+          return;
+        }
         this.state = 'scroll';
         this.h.cancel && this.h.cancel(); // 押した場所の影を消す
         this.h.scroll && this.h.scroll(e.clientY - this.start.y);

@@ -18,6 +18,8 @@ DTXMania Web は非公式のファンメイドのアプリで、DTXMania の各�
 譜面(`.dtx` / `set.def`)の読み込みとタイミング計算、判定・スコア・ゲージ・達成率、演奏画面の状態の扱いは、
 [DTXManiaNX](https://github.com/limyz/DTXmaniaNX) を作者が Unity に移植した DTXManiaAI から、さらに移植したもの
 (主に `js/core/` と `js/game/`)。DTXManiaNX 同梱の `Runtime/Licenses/dtxmania.txt` の許諾に従い、著作権表示と許諾文を載せる。
+譜面の編集(`js/edit/`)は、DTXManiaNX 同梱の譜面エディタ DTXCreator の挙動を手本にしたもの(挙動の仕様は
+`docs/spec/dtxcreator-*.md`)で、DTXCreator のコードは移植していない。
 
 ```
 DTXMania 使用許諾

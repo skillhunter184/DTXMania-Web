@@ -6,6 +6,7 @@ import { DtxDoc } from './dtxdoc.js';
 import { EditModel } from './model.js';
 import { EditHistory } from './history.js';
 import { defaultPens, defaultActiveTypes } from './lanes.js';
+import { gcBpmKeys } from './ops.js';
 
 function dirOf(path) {
   const i = path.lastIndexOf('/');
@@ -33,7 +34,8 @@ export class EditSession {
     this.originalBytes = o.originalBytes;
     this.originalDoc = DtxDoc.fromBytes(o.originalBytes);
     this.history = new EditHistory(this.originalDoc);
-    this.rolls = (o.draft && o.draft.rolls) || o.rolls || [];
+    // #RANDOM の乱数: 演奏から来たときはその演奏の分岐、無ければ下書きのとき、無ければ分岐 1(下書きの [] は「無い」)
+    this.rolls = (o.rolls && o.rolls.length ? o.rolls : (o.draft && o.draft.rolls) || []).slice();
     this._models = new WeakMap();
     this._out = null;
     const draft = o.draft || null;
@@ -107,7 +109,7 @@ export class EditSession {
     if (this._out && this._out.doc === doc && this._out.choice === this.encodingChoice) return this._out.result;
     const result = doc === this.originalDoc && !this.encodingChoice
       ? { ok: true, bytes: this.originalBytes, encoding: doc.info.encoding, bom: doc.info.bom, changedEncoding: false }
-      : doc.toBytes(this.encodingChoice || {});
+      : gcBpmKeys(doc, this.originalDoc).toBytes(this.encodingChoice || {});
     this._out = { doc, choice: this.encodingChoice, result };
     return result;
   }

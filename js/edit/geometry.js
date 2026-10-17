@@ -134,7 +134,8 @@ export class MeasureGeometry {
     const Lm = this.len(measure);
     const off = (Lm * tick) / TICKS_PER_MEASURE;
     if (dir > 0) {
-      const k = Math.floor(off * d + EPS) + 1;
+      // tick より後ろの最初のガイド線(線の tick は切り捨てなので、線の上にいても「次」が同じ tick にならないよう tick + 1 から探す)
+      const k = Math.ceil(((tick + 1) * d * Lm) / TICKS_PER_MEASURE - EPS);
       if (k / d >= Lm - EPS) return { measure: measure + 1, tick: 0 };
       return { measure, tick: guideTick(k, d, Lm) };
     }

@@ -233,12 +233,14 @@ body.portrait .tmenu-footer { display: none; }
 #edit-title { flex: 1; min-width: 0; color: var(--muted); font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #edit-dirty { color: var(--accent2); flex: none; }
 #edit-types { gap: 4px 6px; flex-wrap: wrap; color: var(--muted); font-size: 0.85em; }
-#edit-types .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-#edit-types .seg button { background: transparent; color: var(--muted); border: 0; min-width: 40px; height: 36px; padding: 0 8px; cursor: pointer; }
-#edit-types .seg button + button { border-left: 1px solid var(--line); }
-#edit-types .seg button[aria-pressed="true"] { background: #2b3550; color: var(--accent2); font-weight: 700; }
+#edit-bar .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+#edit-bar .seg button { background: transparent; color: var(--muted); border: 0; min-width: 40px; height: 36px; padding: 0 8px; cursor: pointer; }
+#edit-bar .seg button + button { border-left: 1px solid var(--line); }
+#edit-bar .seg button[aria-pressed="true"] { background: #2b3550; color: var(--accent2); font-weight: 700; }
 /* マウスの画面では種類の切り替えは列名(帯)と Alt でできるので出さない。タッチは横向きでも出す */
 body.desktop #edit-types { display: none; }
+#edit-bar #edit-mode button { min-width: 44px; height: 38px; font-size: 1.05em; }
+#edit-bar #edit-suspect { border-color: rgb(255, 150, 0); color: rgb(255, 200, 140); }
 #edit-banner { display: flex; align-items: center; gap: 8px; padding: 4px 10px; background: #4a3a10; color: #ffe6a0; font-size: 0.85em; }
 #edit-banner span { flex: 1; }
 #edit-banner .pb { background: transparent; color: inherit; border: 0; min-width: 36px; height: 30px; cursor: pointer; }
@@ -274,7 +276,10 @@ body.touch .edit-pop button { padding: 12px 12px; }
 #edit-loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.75); z-index: 10; }
 #edit-loading .box { background: var(--panel); border-radius: 12px; padding: 20px 26px; min-width: 240px; text-align: center; }
 /* 狭い画面: 道具を下にまとめる */
-#screen-edit.compact #edit-bar .grp.tools { order: 3; flex: 1 1 100%; justify-content: space-between; }
+#screen-edit.compact #edit-bar .grp.tools { order: 3; flex: 1 1 100%; justify-content: space-between; flex-wrap: wrap; row-gap: 6px; }
+/* 狭い画面のタッチは 2 本指で拡大できるので −/＋ を出さない(ペン / 選択の切り替えが押し出されないように) */
+body.touch #screen-edit.compact #edit-zoom-out, body.touch #screen-edit.compact #edit-zoom-in { display: none; }
+#edit-mode { flex: none; }
 @media (max-width: 420px) {
   #edit-bar { gap: 4px 6px; padding-left: 4px; padding-right: 4px; }
   #edit-bar .pb { min-width: 40px; }

@@ -233,6 +233,18 @@ export class EditModel {
     return this._byKey.get(key) || null;
   }
 
+  /** 編集できる BPM の印を名前で引く(#IF の中は null)。 */
+  bpmMark(key) {
+    this._build();
+    if (!this._bpmByKey) this._bpmByKey = new Map(this._bpmMarks.filter((b) => !b.locked).map((b) => [b.key, b]));
+    return this._bpmByKey.get(key) || null;
+  }
+
+  /** 名前がチップか BPM の印か('chip' / 'bpm' / null)。 */
+  kindOf(key) {
+    return this.chip(key) ? 'chip' : this.bpmMark(key) ? 'bpm' : null;
+  }
+
   /**
    * 列 col で u に最も近い編集できるチップ(|Δu| <= tolU)。half(1 / 2)を渡すと、左右に分けたセルではその側だけ。
    * 同じ距離なら u の小さい方(描く順で上に来る方)。

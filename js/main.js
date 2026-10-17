@@ -357,24 +357,25 @@ class App {
   }
 
   /**
-   * 別の曲パックを開く前に、ファイルにしていない編集があれば確かめる(下書きには残る)。開いてよければ編集の状態を捨てる。
+   * 別の曲パックを開く前に、ファイルにしていない編集があれば確かめる(下書きには残る)。編集の状態は、新しい曲パックを
+   * 開けたときに捨てる(開けなかった・別の読み込みに追い越されたときは、今の曲パックの編集をそのまま残す)。
    * @returns {boolean} 開いてよければ true
    */
   _confirmPackSwitch() {
-    if ([...this._editSessions.values()].some((s) => s.unexported) && !window.confirm(t('edit.confirmReplacePack'))) return false;
-    this._editSessions.clear();
-    return true;
+    return !([...this._editSessions.values()].some((s) => s.unexported) && !window.confirm(t('edit.confirmReplacePack')));
   }
 
   async loadPackage(blob, name, opts) {
     if (!this._confirmPackSwitch()) return;
     const gen = ++this._loadGen;
+    this._packLoading = gen; // 読み込み中は今の曲パックの譜面を開かない(読み終えると曲パックが替わるので)
     this.setStatus(msg('load.zip'));
     try {
       const pkg = await SongPackage.fromZip(blob, name);
       if (gen !== this._loadGen) { pkg.dispose(); return; } // 後から別の読み込みが始まった
       if (this.pkg) this.pkg.dispose();
       this.pkg = pkg;
+      this._editSessions.clear();
       await this.showSongList();
       this.offerDraftRestore(pkg);
       if (!opts.fromCache && blob.size < 400 * 1024 * 1024) {
@@ -383,23 +384,29 @@ class App {
     } catch (e) {
       console.error(e);
       if (gen === this._loadGen) this.setStatus(msg('load.failed', { msg: e && e.message ? e.message : e }), true);
+    } finally {
+      if (this._packLoading === gen) this._packLoading = 0;
     }
   }
 
   async loadFolder(files) {
     if (!this._confirmPackSwitch()) return;
     const gen = ++this._loadGen;
+    this._packLoading = gen;
     this.setStatus(msg('load.folder'));
     try {
       const pkg = await SongPackage.fromFiles(files);
       if (gen !== this._loadGen) { pkg.dispose(); return; }
       if (this.pkg) this.pkg.dispose();
       this.pkg = pkg;
+      this._editSessions.clear();
       await this.showSongList();
       this.offerDraftRestore(pkg);
     } catch (e) {
       console.error(e);
       if (gen === this._loadGen) this.setStatus(msg('load.failed', { msg: e && e.message ? e.message : e }), true);
+    } finally {
+      if (this._packLoading === gen) this._packLoading = 0;
     }
   }
 
@@ -884,6 +891,7 @@ class App {
    *   startAtMs から演奏を始め、やめたら編集画面へ戻る。rolls は #RANDOM の乱数(編集していた分岐)、loopPos はループ(位置で持つ)
    */
   async startChart(song, chartRef, inst = INSTRUMENT.DRUMS, opts = {}) {
+    if (this._packLoading) return; // 別の曲パックを読み込み中(読み終えると今の曲パックは手放す)
     const c = this.config;
     const loadId = ++this._chartLoadSeq; // 戻ってから別の曲を始めたら、前の読み込みの失敗は画面に出さない
     this._playing = { song, chartRef, inst };
@@ -952,6 +960,7 @@ class App {
         $('loading-sub').textContent = name || '';
       });
       if (this.player !== player) return; // 読み込み中に戻った
+      this._playChart = chart; // ループを位置で持つため(やめるときには player.chart が消えていることがある)
       if (this.audio.failed.length) {
         console.warn('復号できなかった音源:', this.audio.failed);
         player.showStatus(t('load.soundsFailed', { n: this.audio.failed.length }), 4000);
@@ -1398,8 +1407,11 @@ class App {
     // テストプレイなら、止めた位置とループを持って編集画面へ戻る
     const back = this._returnToEditor;
     this._returnToEditor = null;
-    const lastMs = this.player ? this.player.songMs : 0;
-    const loopPos = this.player ? this._captureLoop(this.player) : null;
+    // 譜面を読み終える前にやめたら(読み込みの失敗も)、編集画面の位置とループはそのまま(undefined)
+    const ready = !!(this.player && (this.player.chart || this._playChart));
+    const lastMs = ready ? this.player.songMs : undefined;
+    const loopPos = ready ? this._captureLoop(this.player) : undefined;
+    this._playChart = null;
     const keepHome = !!opts.keepHomeHidden || !!back;
     cancelAnimationFrame(this.raf);
     this._chartLoadSeq++; // 読み込み中に戻ったら、その読み込みの失敗は出さない
@@ -1436,7 +1448,7 @@ class App {
   /** ループの区間を位置(pos)で持つ(編集でテンポが変わっても同じ所。ループしていなければ null)。 */
   _captureLoop(player) {
     const s = this.training;
-    const chart = player.chart;
+    const chart = player.chart || this._playChart; // Esc・トレーニング終了では player.chart が先に消える
     if (!chart || !s.loop || !s.loopRangeValid) return null;
     return { beginPos: msToPos(chart, s.loopBeginMs), endPos: msToPos(chart, s.loopEndMs), endAtEnd: s.loopEndMs >= chart.durationMs - 1 };
   }
@@ -1462,8 +1474,9 @@ class App {
    * @param {{atMs?: number, rolls?: number[], loopPos?: object}} [opts]
    */
   async openEditor(song, chartRef, opts = {}) {
-    if (this._editBusy || this.editor || !this.pkg) return;
+    if (this._editBusy || this.editor || !this.pkg || this._packLoading) return;
     this._editBusy = true;
+    $('draft-offer').hidden = true; // 下書きを戻すかの問いは、編集を始めたら古くなる
     try {
       await this.audio.ensureContext();
       this.cancelAssign();
@@ -1549,19 +1562,38 @@ class App {
     });
   }
 
-  /** 編集した譜面を入れた曲パックの ZIP を書き出す(元の ZIP の中身はそのまま。次に「前回の ZIP」で開ける)。 */
-  async exportEditedZip() {
+  /**
+   * 編集した譜面を入れた曲パックの ZIP を書き出す(元の ZIP の中身はそのまま。次に「前回の ZIP」で開ける)。
+   * onlyDir を渡すとその曲のフォルダだけ(「前回の ZIP」には残さない。開き直すとその曲だけの曲パックになるので)。
+   */
+  async exportEditedZip({ onlyDir = '' } = {}) {
     const pkg = this.pkg;
     if (!pkg) return;
-    for (const s of this._editSessions.values()) await s.commit();
-    const blob = await pkg.exportZip();
-    const name = editedZipName(pkg.name);
-    downloadBlob(blob, name);
-    if (pkg.zip && pkg.zip.blob && blob.size < 400 * 1024 * 1024) {
-      saveLastZip(blob, name).then((ok) => { if (ok) this.showLastButton(blob, name); });
+    try {
+      // 書き出している間も編集できるので、ZIP に入れた文書を覚えておき、それだけを「書き出した」にする
+      const put = [];
+      for (const s of this._editSessions.values()) {
+        const doc = s.doc;
+        await s.commit();
+        put.push([s, doc]);
+      }
+      const blob = await pkg.exportZip({ onlyDir });
+      const folder = onlyDir.replace(/\/$/, '');
+      const name = editedZipName(onlyDir ? folder.slice(folder.lastIndexOf('/') + 1) || pkg.name : pkg.name);
+      downloadBlob(blob, name);
+      if (!onlyDir && pkg.zip && pkg.zip.blob && blob.size < 400 * 1024 * 1024) {
+        saveLastZip(blob, name).then((ok) => { if (ok) this.showLastButton(blob, name); });
+      }
+      for (const [s, doc] of put) {
+        if (!onlyDir || normKey(s.path).startsWith(normKey(onlyDir))) s.history.markExported(doc);
+      }
+      if (this.editor) this.editor._toast(t('edit.exported', { name }));
+    } catch (e) {
+      console.error(e);
+      const m = t('edit.exportFailed', { msg: e && e.message ? e.message : e });
+      if (this.editor) this.editor._toast(m, null, 8000);
+      else this.setStatus(m, true);
     }
-    for (const s of this._editSessions.values()) s.history.markExported();
-    if (this.editor) this.editor._toast(t('edit.exported', { name }));
   }
 
   /** 曲パックを開いたとき、その曲パックの下書きがあれば戻すか聞く(戻すと一覧と演奏も直した譜面になる)。 */
@@ -1575,20 +1607,23 @@ class App {
       const original = await pkg.readOriginalBytes(d.path).catch(() => null);
       if (original && crc32(original) === d.baseCrc) drafts.push(d);
     }
-    if (!drafts.length || this.pkg !== pkg) return;
+    if (!drafts.length || this.pkg !== pkg || this.editor) return;
     $('draft-offer-text').textContent = t('edit.draftsFound', { n: drafts.length });
     box.hidden = false;
+    // 押したときに、もう編集画面で開いた譜面は除く(その譜面は編集の状態と新しい下書きの方が新しい)
+    const live = () => drafts.filter((d) => !this._editSessions.has(normKey(d.path)));
     $('draft-restore').onclick = async () => {
       box.hidden = true;
       if (this.pkg !== pkg) return;
-      for (const d of drafts) pkg.setOverride(d.path, d.bytes);
+      const ds = live();
+      for (const d of ds) pkg.setOverride(d.path, d.bytes);
       await pkg.rescan();
       this.renderSongList();
-      this.setStatus(msg('edit.draftsRestored', { n: drafts.length }));
+      this.setStatus(msg('edit.draftsRestored', { n: ds.length }));
     };
     $('draft-discard').onclick = async () => {
       box.hidden = true;
-      for (const d of drafts) await deleteDraft(pkg, d.path);
+      for (const d of live()) await deleteDraft(pkg, d.path);
     };
   }
 

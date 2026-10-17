@@ -1,6 +1,6 @@
 // 譜面の編集の中身(レーン・座標・モデル・操作・履歴・セッション・下書き)のテスト。画面は editview / editor のテスト。
 import { test, assert, assertEq, assertNear, assertDeepEq, fetchBytes } from './runner.js';
-import { parseDTX, replayRandom } from '../js/core/dtx.js';
+import { parseDTX, replayRandom, tempoAt } from '../js/core/dtx.js';
 import { encodeShiftJis, decodeText } from '../js/core/encoding.js';
 import { SongPackage } from '../js/core/song.js';
 import { DtxDoc } from '../js/edit/dtxdoc.js';
@@ -11,11 +11,15 @@ import {
 import { EditModel } from '../js/edit/model.js';
 import {
   EditError, opPlace, opPaint, opDelete, opMove, opSetType, opAddPartner, opSetValue, clampMove,
+  opSetBpm, gcBpmKeys, opBarLength, barOverflow, opInsertMeasure, opDeleteMeasure, measureDeleteSummary,
+  copyClip, opPaste, opDuplicate, opNudge,
 } from '../js/edit/ops.js';
 import { EditHistory } from '../js/edit/history.js';
 import { EditSession } from '../js/edit/session.js';
 import { saveDraft, loadDraft, deleteDraft, listDrafts, draftKey } from '../js/edit/drafts.js';
 import { EditorPlayer } from '../js/edit/editplayer.js';
+import { loadSidecar, suspectsOf, suspectOrder } from '../js/edit/sidecar.js';
+import { ZipArchive } from '../js/core/zip.js';
 
 const model = (text, rolls = []) => new EditModel(DtxDoc.fromText(text), { rolls });
 const notes = (doc) => parseDTX(doc.text).notes.map((n) => `${n.measure}:${n.tick}:${n.channel.toString(16)}:${n.wavId}`).sort().join(' ');
@@ -68,6 +72,26 @@ test('editgeo: u <-> (measure, tick) with bar lengths, nearest snap, steps, lead
   // 7/8(0.875)の 1/16 は 14 等分
   const g2 = new MeasureGeometry(parseDTX('#00002: 0.875\n#00011: 01\n').tempoMap);
   assertEq(g2.snap(1 / 16, 16).tick, Math.floor(384 / 14));
+  // 線の tick が割り切れない小節でも、次の線へ進み(同じ tick に留まらない)、14 本目のあとは次の小節の頭
+  const walk = (geo, m, d, dir) => {
+    const out = [];
+    let c = { measure: m, tick: dir > 0 ? 0 : 0 };
+    if (dir < 0) c = { measure: m + 1, tick: 0 };
+    for (let i = 0; i < 40; i++) {
+      c = geo.step(c.measure, c.tick, d, dir);
+      if (c.measure !== m) break;
+      out.push(c.tick);
+    }
+    return { ticks: out, end: c };
+  };
+  const f = walk(g2, 0, 16, 1);
+  assertEq(f.ticks.length, 13, f.ticks.join());
+  assert(f.ticks.every((tk, i) => tk === Math.floor((384 * (i + 1)) / 14)), f.ticks.join());
+  assertDeepEq(f.end, { measure: 1, tick: 0 });
+  assertEq(walk(g2, 0, 16, -1).ticks.reverse().join(), [0, ...f.ticks].join(), '戻りも同じ線');
+  const g3 = new MeasureGeometry(parseDTX('#00002: 0.75\n#00011: 01\n').tempoMap);
+  const f3 = walk(g3, 0, 12, 1);
+  assertEq(f3.ticks.join(), [1, 2, 3, 4, 5, 6, 7, 8].map((k) => Math.floor((384 * k) / 9)).join());
 });
 
 // ---- lanes ----
@@ -186,6 +210,16 @@ test('editops: move (beat kept across bar lengths, block clamp, cross-column re-
   // ブロックで寄せる: 小節 001 の頭より前(リードイン)へは出ない
   assertDeepEq(clampMove(m, [sd.key], -10, 0), { du: -sd.u, dcol: 0 });
   assertDeepEq(clampMove(m, [sd.key], 0, 9), { du: 0, dcol: 5 });
+  // 999 小節より先へ動かすと、999 小節の最後の tick で止まる(断らない)
+  const late = model('#99912: 01\n');
+  const lc = late.chips[0];
+  const lateMoved = opMove(late, [lc.key], { du: 50, dcol: 0 });
+  const mc = new EditModel(lateMoved.doc).chips[0];
+  assertEq(`${mc.measure}:${mc.tick}`, '999:383');
+  // 塗りは分岐の中のチップとぶつかるセルを飛ばす(塗り全体は捨てない)
+  const br = model('#RANDOM 1\n#IF 1\n#00112: 0001\n#ENDIF\n');
+  const painted = opPaint(br, [0, 192].map((tick) => ({ measure: 1, tick, channel: 0x12, value: '02' })));
+  assertEq(new EditModel(painted.doc).chips.filter((c) => !c.locked && c.channel === 0x12).map((c) => c.tick).join(), '0');
   // 列を移ると移った先の今の種類とペンの音。keepValue なら値を残す
   const r3 = opMove(m, [sd.key], { du: 0, dcol: 1, pens, activeTypes: active });
   assert(r3.doc.text.includes('#00114: 000H') && !r3.doc.text.includes('#00112'), r3.doc.text);
@@ -378,3 +412,228 @@ test('editplayer: private settings (dojo.training untouched), all AUTO, plays pa
 function posToMsSafe(chart, pos) {
   return (625 * pos) / chart.bpm;
 }
+
+// ---- BPM・小節長・小節の挿入 / 削除・貼り付け・複製(P2) ----
+const ops2 = (text, rolls = []) => new EditModel(DtxDoc.fromText(text), { rolls });
+const bpmAtMeasure = (doc, m, tick = 0) => {
+  const c = parseDTX(doc.text);
+  return tempoAt(c, (m + 1) * 384 + tick).bpm;
+};
+
+test('editops2: BPM changes write ch 08 + #BPMzz (reused by value, #IF-aware allocation), keep ch 03 for integers, header BPM at 000:000', () => {
+  const m = ops2('#TITLE: t\n#BPM: 120\n#00111: 01\n');
+  const r = opSetBpm(m, { measure: 1, tick: 192, bpm: 150 });
+  // 定義はヘッダの #BPM の後ろ(データ行より前)、新しい組は同じ小節のチャンネルの順(08 は 11 の前)
+  assertEq(r.doc.text, '#TITLE: t\n#BPM: 120\n#BPM01: 150\n#00108: 0001\n#00111: 01\n');
+  assertEq(bpmAtMeasure(r.doc, 1, 192), 150);
+  // 同じ値は番号を使い回す / 120 と 120.0001 は別
+  const m2 = new EditModel(r.doc);
+  const r2 = opSetBpm(m2, { measure: 2, tick: 0, bpm: 150 });
+  assert(!r2.doc.text.includes('#BPM02'), 'reused #BPM01');
+  assert(r2.doc.text.includes('#00208: 01'));
+  const r3 = opSetBpm(m2, { measure: 2, tick: 0, bpm: 150.0001 });
+  assert(r3.doc.text.includes('#BPM02: 150.0001'), r3.doc.text);
+  // 2 回定義された番号・#IF の中の番号は使わない
+  const dup = ops2('#BPM: 120\n#BPM01: 150\n#BPM01: 150\n#IF 1\n#BPM02: 99\n#ENDIF\n#00111: 01\n');
+  const r4 = opSetBpm(dup, { measure: 1, tick: 0, bpm: 150 });
+  assert(r4.doc.text.includes('#BPM03: 150') && r4.doc.text.includes('#00108: 03'), r4.doc.text);
+  // ch 03 の印は整数(1〜255)なら ch 03 のまま、そうでなければ ch 08
+  const c3 = ops2('#BPM: 120\n#00103: 78\n#00111: 01\n');
+  const mark = c3.bpmMarks[0];
+  assertEq(mark.bpm, 120);
+  assert(opSetBpm(c3, { measure: 1, tick: 0, bpm: 140 }).doc.text.includes('#00103: 8C'));
+  const r5 = opSetBpm(c3, { measure: 1, tick: 0, bpm: 140.5 });
+  assert(!r5.doc.text.includes('#00103') && r5.doc.text.includes('#00108: 01') && r5.doc.text.includes('#BPM01: 140.5'), r5.doc.text);
+  // #BASEBPM: 定義は差分。曲の BPM(#BPM)は差分にしない
+  const base = ops2('#BPM: 120\n#BASEBPM: 100\n#00111: 01\n');
+  assert(throwsCode(() => opSetBpm(base, { measure: 1, tick: 0, bpm: 90 }), 'bpmBase'));
+  assert(opSetBpm(base, { measure: 1, tick: 0, bpm: 150 }).doc.text.includes('#BPM01: 50'));
+  assertEq(opSetBpm(base, { measure: 0, tick: 0, bpm: 130, header: true }).doc.text, '#BPM: 130\n#BASEBPM: 100\n#00111: 01\n');
+  assert(throwsCode(() => opSetBpm(m, { measure: 1, tick: 0, bpm: 1000.5 }), 'bpmRange'));
+  // 足して使わなくなった #BPMzz は書き出すときに消す(元からある定義は残す)
+  const dm = new EditModel(r.doc);
+  const del = opDelete(dm, [dm.bpmMarks[0].key]);
+  assertEq(gcBpmKeys(del.doc, m.doc).text, '#TITLE: t\n#BPM: 120\n#00111: 01\n');
+  const keepOrig = ops2('#BPM: 120\n#BPM01: 150\n#00111: 01\n');
+  assertEq(gcBpmKeys(keepOrig.doc, keepOrig.doc).text, keepOrig.doc.text);
+});
+
+test('editops2: bar length (this bar only writes the return line; from-here stops at the next change; keep beats vs stretch; refusal with #IF)', () => {
+  const m = ops2('#00111: 01000100\n#00113: 00000001\n#00211: 01\n#00402: 0.5\n');
+  const one = opBarLength(m, { measure: 1, value: 0.75, scope: 'one', keepBeats: true });
+  assertEq(one.removed, 1, 'BD 1:288 → 384 はみ出す');
+  // 00102 は同じ小節の 11 の前、00202(戻す行)は 00113 の後ろ(00113 は空になって消える)
+  assertEq(one.doc.text, '#00102: 0.75\n#00111: 010001\n#00202: 1\n#00211: 01\n#00402: 0.5\n');
+  // 拍の位置: 1:192(3 拍目)は 0.75 小節の 256 tick = 3 拍目のまま
+  const c = parseDTX(one.doc.text);
+  const hh = c.notes.filter((n) => n.channel === 0x11 && n.measure === 1).map((n) => n.timeMs);
+  assertDeepEq(hh, [4000, 5000], '120 BPM: 4000 + 2 拍(1000 ms)');
+  const from = opBarLength(m, { measure: 1, value: 0.75, scope: 'from', keepBeats: false });
+  assertEq(from.doc.text, '#00102: 0.75\n#00111: 01000100\n#00113: 00000001\n#00211: 01\n#00402: 0.5\n', 'stretch keeps ticks; until bar 004');
+  assertEq(barOverflow(m, { measure: 1, value: 0.75 }), 1);
+  // 同じ値の行は残す(差分を小さく)
+  const same = ops2('#00102: 0.75\n#00202: 0.750\n#00211: 01\n');
+  assertEq(opBarLength(same, { measure: 2, value: 0.75 }).doc, same.doc, '変わらなければ同じ文書');
+  // #IF の中の ch 02 が関わるなら変えない
+  const locked = ops2('#IF 1\n#00302: 0.5\n#ENDIF\n#00111: 01\n');
+  assert(throwsCode(() => opBarLength(locked, { measure: 1, value: 0.75 }), 'barLocked'));
+  assert(throwsCode(() => opBarLength(m, { measure: 1, value: 0 }), 'barRange'));
+});
+
+test('editops2: insert / delete a bar (later chips move by one bar, length and opening tempo carried, summary)', () => {
+  const src = '#BPM: 120\n#BPM01: 150\n#00211: 01\n#00202: 0.75\n#00208: 01\n#00311: 02\n';
+  const m = ops2(src);
+  const ins = opInsertMeasure(m, 2);
+  // 新しい 002 は押した小節(0.75、頭で 150 BPM)と同じ。元の 002 は 003 へ
+  assert(ins.doc.text.includes('#00302: 0.75') && ins.doc.text.includes('#00202: 0.75'), ins.doc.text);
+  assert(ins.doc.text.includes('#00208: 01') && ins.doc.text.includes('#00308: 01'), 'tempo copied');
+  const before = parseDTX(m.doc.text).notes.find((n) => n.wavId === '02').timeMs;
+  const after = parseDTX(ins.doc.text).notes.find((n) => n.wavId === '02').timeMs;
+  assertEq(after - before, 1200, '0.75 小節 @150 BPM = 1200 ms 後ろへ');
+  // 消す: 小節 002 の BPM(150)は次の小節の頭へ、後ろの小節の長さも保つ
+  const sum = measureDeleteSummary(m, 2);
+  assertDeepEq(sum, { drums: 1, bgm: 0, tempo: 1, other: 0, lockedLines: 0, carriedBpm: 150 });
+  const del = opDeleteMeasure(m, 2);
+  assertEq(del.doc.text, '#BPM: 120\n#BPM01: 150\n#00202: 0.75\n#00208: 01\n#00211: 02\n');
+  assertEq(bpmAtMeasure(del.doc, 2), 150);
+  // 999 を超える挿入はしない
+  assert(throwsCode(() => opInsertMeasure(ops2('#99911: 01\n'), 5), 'measureLimit'));
+});
+
+test('editops2: copy / paste keeps beat offsets across bar lengths, pasted chips win, BPM pasted by value; duplicate is bar-relative; nudge', () => {
+  const m = ops2('#BPM: 120\n#BPM01: 140\n#00111: 0101\n#00112: 0001\n#00108: 01\n#00302: 0.75\n#00313: 01\n');
+  const keys = m.chips.filter((c) => c.measure === 1).map((c) => c.key).concat(m.bpmMarks.map((b) => b.key));
+  const clip = copyClip(m, keys);
+  assertEq(clip.items.length, 3);
+  assertEq(clip.bpm.length, 1);
+  assertEq(clip.bpm[0].bpm, 140);
+  const geo = m.geometry;
+  const r = opPaste(m, clip, { u0: geo.u(3, 0), modelOf: (d) => new EditModel(d) });
+  // 0.75 小節に貼っても拍(0.5 小節 = 2 拍)の位置: 384·0.5/0.75 = 256
+  assert(r.doc.text.includes('#00311: 010001') && r.doc.text.includes('#00312: 000001'), r.doc.text);
+  assert(r.doc.text.includes('#00313: 01'), 'BD stays (different channel)');
+  assert(r.doc.text.includes('#00308: 01') && !r.doc.text.includes('#BPM02'), 'BPM 140 reuses #BPM01');
+  assertEq(r.select.length, 4);
+  // 複製: 選んだ小節の数だけ後ろへ(tick はそのまま)
+  const d = opDuplicate(m, m.chips.filter((c) => c.measure === 1).map((c) => c.key));
+  assert(d.doc.text.includes('#00211: 0101') && d.doc.text.includes('#00212: 0001'), d.doc.text);
+  // 微調整(1 ガイド = 1/16 小節)
+  const sd = m.chips.find((c) => c.channel === 0x12);
+  const n = opNudge(m, [sd.key], { du: 1 / 16 });
+  assertDeepEq(parseDTX(n.doc.text).notes.filter((x) => x.channel === 0x12).map((x) => x.tick), [216]);
+  // 選んだ BPM の印も動く
+  const bm = opMove(m, [m.bpmMarks[0].key], { du: 0.25, dcol: 0 });
+  assert(bm.doc.text.includes('#00108: 00010000'), bm.doc.text);
+});
+
+test('editops2: bonus marks follow their chip on move and delete', () => {
+  // 0x4F の値 04 = SD(レーン 3)のボーナス
+  const m = ops2('#00112: 01\n#0014F: 04\n');
+  const sd = m.chips.find((c) => c.channel === 0x12);
+  assert(sd.bonus);
+  const mv = opMove(m, [sd.key], { du: 0.25, dcol: 1, pens: new Map([[0x14, '07']]), activeTypes: [0, 0, 0, 0, 0, 0, 0, 0, 0] });
+  assertEq(mv.doc.text, '#00114: 00070000\n#0014F: 00050000\n', 'HT のボーナス(05)になってついていく');
+  assertEq(opDelete(m, [sd.key]).doc.text, '');
+});
+
+test('sidecar: the vid2dtx confidence file marks chips below 0.7 (moved chips lose it), visited lowest first; broken files are ignored', async () => {
+  const files = new Map([
+    ['a.dtx.conf.json', JSON.stringify({ chips: [
+      { m: 1, tick: 0, ch: 19, conf: 0.2, why: 'x' }, { m: 1, tick: 192, ch: 19, conf: 0.5, origin_s: 1.5 },
+      { m: 1, tick: 96, ch: 17, conf: 0.95 }, { m: 'bad', tick: 0, ch: 19, conf: 0.1 },
+    ] })],
+    ['b.dtx.conf.json', '{ not json'],
+  ]);
+  const pkg = { entry: (p) => (files.has(p) ? { name: p } : null), readBytes: async (e) => new TextEncoder().encode(files.get(e.name)) };
+  const sc = await loadSidecar(pkg, 'a.dtx');
+  assertEq(sc.size, 3);
+  assertEq(sc.get('1.0.19').why, 'x');
+  assertEq(await loadSidecar(pkg, 'b.dtx'), null);
+  assertEq(await loadSidecar(pkg, 'c.dtx'), null);
+  const m = model('#00113: 01000100\n#00111: 00030000\n');
+  const sus = suspectsOf(m, sc);
+  assertEq(sus.size, 2);
+  assertEq(suspectOrder(m, sus).map((x) => `${x.chip.tick}:${x.conf}`).join(), '0:0.2,192:0.5');
+  const moved = model(opMove(m, [m.chips.find((c) => c.channel === 0x13 && c.tick === 0).key], { du: 0.125, dcol: 0 }).doc.text);
+  assertEq(suspectsOf(moved, sc).size, 1, '動かしたチップは枠が外れる');
+});
+
+test('song: exportZip({onlyDir}) writes only that song folder (edited chart included, other folders left out)', async () => {
+  const src = (await fetchBytes('fixtures/pack_sjis.zip')).buffer;
+  const pkg = await SongPackage.fromZip(src, 'pack.zip');
+  const path = '道場テスト/譜面.dtx';
+  pkg.setOverride(path, encodeShiftJis('#TITLE: 編集\r\n#00113: 01\r\n'));
+  pkg.setOverride('ほか/x.dtx', encodeShiftJis('#TITLE: ほか\r\n'));
+  const out = await ZipArchive.open(await pkg.exportZip({ onlyDir: '道場テスト/' }));
+  assert(out.entries.length > 1);
+  assert(out.entries.every((e) => e.name.startsWith('道場テスト/')), out.entries.map((e) => e.name).join());
+  assertEq(decodeText(await out.read(out.find(path))), '#TITLE: 編集\r\n#00113: 01\r\n');
+  const all = await ZipArchive.open(await pkg.exportZip());
+  assert(all.find('ほか/x.dtx'), '曲パック全体には入る');
+});
+
+test('editops2 review: bar length change on a bar with its own ch 02, ×2 duplicates removed together, coalescing only for the same selection', () => {
+  // 0.75 → 0.5(先頭 2 文字が同じ値でも書き換える)
+  const m = ops2('#00502: 0.75\n#00602: 1\n#00512: 010101\n');
+  const r = opBarLength(m, { measure: 5, value: 0.5, scope: 'one', keepBeats: true });
+  assert(r.doc.text.includes('#00502: 0.5\n'), r.doc.text);
+  assertEq(r.removed, 1);
+  assertEq(new EditModel(r.doc).geometry.len(5), 0.5);
+  // 同じ行が 2 つ(×2)を両方消す・両方動かす・両方の種類を変える
+  const d = ops2('#00113: 01\n#00113: 01\n#00116: 01\n#00116: 01\n');
+  const bd = d.chips.filter((c) => c.channel === 0x13).map((c) => c.key);
+  assertEq(bd.length, 2);
+  assertEq(new EditModel(opDelete(d, bd).doc).chips.filter((c) => c.channel === 0x13).length, 0, '×2 を両方消す');
+  const mv = new EditModel(opMove(d, bd, { du: 0.25, dcol: 0, keepValue: true }).doc);
+  assertEq(mv.chips.filter((c) => c.channel === 0x13).map((c) => c.tick).join(), '96', '元のセルに残らない(動かした 2 つは 1 つにまとまる)');
+  const cy = d.chips.filter((c) => c.channel === 0x16).map((c) => c.key);
+  const flipped = new EditModel(opSetType(d, cy, { keepValue: true }).doc);
+  assertEq(flipped.chips.filter((c) => c.channel === 0x16).length, 0, 'CY が残らない');
+  // 微調整のまとめ: 前の手の結果の選択のまま続けたときだけ
+  const h = new EditHistory(d.doc);
+  const d1 = DtxDoc.fromText('#00113: 02\n');
+  const d2 = DtxDoc.fromText('#00113: 03\n');
+  const d3 = DtxDoc.fromText('#00113: 04\n');
+  h.push(d1, { coalesceKey: 'nudge', select: ['a'], selectBefore: ['x'], now: 0 });
+  h.push(d2, { coalesceKey: 'nudge', select: ['b'], selectBefore: ['a'], now: 100 });
+  assertEq(h.index, 1, '同じ選択のまま: まとめる');
+  h.push(d3, { coalesceKey: 'nudge', select: ['c'], selectBefore: ['z'], now: 200 });
+  assertEq(h.index, 2, '選び直した: 別の手');
+});
+
+test('editops2 review: bonus marks never move to a chip that replaces a bonus chip; CY↔RD re-values the mark', () => {
+  // SD 1:0 はボーナス、1:96 はボーナスでない。1:96 を 1:0 へ動かすと、動かしたチップはボーナスにならない
+  const m = ops2('#00112: 01010000\n#0014F: 04\n');
+  const plain = m.chips.find((c) => c.channel === 0x12 && c.tick === 96);
+  const r = opMove(m, [plain.key], { du: -0.25, dcol: 0, keepValue: true });
+  const c = parseDTX(r.doc.text);
+  assertEq(c.notes.filter((n) => n.channel === 0x12).length, 1);
+  assertEq(c.notes.filter((n) => n.bonus).length, 0, '置き換えたチップのボーナスを引き継がない');
+  assertEq(c.bonusChipCount, 0, '印も消える');
+  // 両方ボーナスなら、印は 1 つだけ
+  const both = ops2('#00112: 01010000\n#0014F: 04040000\n');
+  const b96 = both.chips.find((x) => x.channel === 0x12 && x.tick === 96);
+  const c2 = parseDTX(opMove(both, [b96.key], { du: -0.25, dcol: 0, keepValue: true }).doc.text);
+  assertEq(`${c2.notes.filter((n) => n.bonus).length}/${c2.bonusChipCount}`, '1/1');
+  // CY(レーン 8、値 09)のボーナスを RD にすると、印は 0A(レーン 9)
+  const cy = ops2('#00116: 01\n#0014F: 09\n');
+  const t = parseDTX(opSetType(cy, [cy.chips[0].key], { keepValue: true }).doc.text);
+  assertEq(t.notes.filter((n) => n.bonus && n.channel === 0x19).length, 1, 'RD のボーナス');
+});
+
+test('editops2 review: BPM numbers avoid dangling ch 08 references; locked BPM marks and #IF bar lengths are respected', () => {
+  // 定義の無い 01 を指す ch 08 がある: 新しい定義は 02
+  const dang = ops2('#BPM: 120\n#00508: 01\n#00111: 01\n');
+  const r = opSetBpm(dang, { measure: 1, tick: 0, bpm: 200 });
+  assert(r.doc.text.includes('#BPM02: 200'), r.doc.text);
+  assert(!r.doc.text.includes('#BPM01:'), 'bar 005 のテンポは変わらない');
+  // 表示している分岐の BPM の印へは動かさない・複製しない
+  const lk = ops2('#BPM: 120\n#BPM01: 150\n#BPM02: 90\n#00208: 01\n#RANDOM 1\n#IF 1\n#00308: 02\n#ENDIF\n');
+  const mark = lk.bpmMarks.find((b) => !b.locked);
+  assert(throwsCode(() => opMove(lk, [mark.key], { du: 1, dcol: 0 }), 'locked'));
+  assert(throwsCode(() => opDuplicate(lk, [mark.key]), 'locked'));
+  // #IF の中に小節長があれば、小節の挿入・削除はしない(ほかの分岐の長さを変えないため)
+  const bl = ops2('#RANDOM 2\n#IF 1\n#00302: 0.75\n#ENDIF\n#00111: 01\n#00811: 01\n');
+  assert(throwsCode(() => opInsertMeasure(bl, 6), 'measureLocked'));
+  assert(throwsCode(() => opDeleteMeasure(bl, 6), 'measureLocked'));
+});

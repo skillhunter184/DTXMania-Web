@@ -223,7 +223,13 @@ export class AudioEngine {
    */
   async loadChartSounds(pkg, chart, onProgress, opts = {}) {
     await this.ensureContext();
-    if (!opts.keepVoices) this.stopAll();
+    if (!opts.keepVoices) {
+      // 別の譜面を読むときは前の譜面の音をすぐ手放す(読み込み中に同じ番号で前の曲の音が鳴らないように。
+      // 鳴らせない間は合成音)。前のバッファを読み込みの間も使うのは、編集画面で音を足したとき(keepVoices)だけ
+      this.stopAll();
+      this.buffers = new Map();
+      this.failed = [];
+    }
     const gen = (this._soundLoadGen = (this._soundLoadGen || 0) + 1); // 後から始まった読み込みがあれば、こちらの結果は使わない
     const reuse = this._decodedPkg === pkg && this._decoded ? this._decoded : new Map();
     const decoded = new Map(); // ファイル(小文字のパス)→ 復号した AudioBuffer(この読み込みで使うものだけ持ち続ける)
@@ -267,7 +273,7 @@ export class AudioEngine {
       })());
     }
     await Promise.all(runners);
-    // 読み込み中も前のバッファで鳴らせるよう、揃ってから差し替える
+    // 揃ってから差し替える(keepVoices のときは読み込み中も前のバッファで鳴らせる)
     if (gen !== this._soundLoadGen) return buffers;
     this.buffers = buffers;
     this.failed = failed;

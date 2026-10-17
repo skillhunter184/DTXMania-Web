@@ -39,6 +39,36 @@ export async function shareFile(bytes, name) {
   }
 }
 
+/** 名前を付けて保存ができるか(Chromium の File System Access。本アプリの追加)。 */
+export function canSaveAs() {
+  return typeof window.showSaveFilePicker === 'function';
+}
+
+/** 保存先を選んで書く。選ぶのをやめたら null。書いたファイルの handle を返す(次の Ctrl+S はそこへ上書きする)。 */
+export async function saveAsFile(bytes, suggestedName) {
+  let handle;
+  try {
+    handle = await window.showSaveFilePicker({ suggestedName, types: [{ description: 'DTX', accept: { 'application/octet-stream': ['.dtx'] } }] });
+  } catch (e) {
+    if (e && e.name === 'AbortError') return null;
+    throw e;
+  }
+  await writeHandle(handle, bytes);
+  return handle;
+}
+
+/** handle のファイルへ上書きする(書けなければ例外。呼ぶ側はダウンロードに切り替える)。 */
+export async function writeHandle(handle, bytes) {
+  const w = await handle.createWritable();
+  try {
+    await w.write(bytes);
+  } catch (e) {
+    await w.abort(); // 書きかけのものでファイルを置き換えない(close で確定する)
+    throw e;
+  }
+  await w.close();
+}
+
 /** パスのファイル名。 */
 export function baseName(path) {
   const i = path.lastIndexOf('/');
