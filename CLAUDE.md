@@ -76,6 +76,7 @@ build.bat
   Ctrl などの修飾キーは割り当てない(Ctrl を押したまま F4 / W でブラウザがタブを閉じ、ページからは止められない)。
 - 譜面の編集画面のショートカット(`js/edit/editor.js`)は演奏の `RESERVED_CODES` と別。Space と F1 は何もしない
   (選んでいるボタン・ダイアログの決定にもさせない)。文字のキーは `e.code`、記号は `e.key` で見る(JIS 配列の [ ] など)。
+  「叩いて入力」の間だけは、設定のキー割り当て(`config.bindings`)のキーがレーンになる(Space の BD も)。
 - 時計は「譜面時刻を不変にして時計の進み方を変える」モデル。詳細は `docs/architecture.md`。
 - 絵はスキンの画像(6 枚の組。ドラムの 4 枚とギター / ベースの 2 枚。`skins/README.md`)で描く。既定のスキン `skins/default/` は `tools/skinart/` の描画から
   `python tools/make_skin.py` で作る画像で、絵を変えたら画像も作り直してコミットする。アプリは描画コードを読まない。

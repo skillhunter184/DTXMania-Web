@@ -67,6 +67,8 @@ export class EditView {
       loop: null, // {u0, u1}
       flash: new Map(), // 列 → 光らせる終わりの時刻(performance.now)
       suspects: null, // Map<key, conf>(vid2dtx の確信度)
+      pending: null, // [{column, u, channel}](叩いて入力の和音・録音しかけ。赤い枠)
+      otherBranches: false, // #IF の表示していない分岐のチップも薄く描く
     };
   }
 
@@ -342,7 +344,20 @@ export class EditView {
       const i1 = lowerBoundU(list, hi + pad);
       for (let i = i1 - 1; i >= i0; i--) {
         const c = list[i];
-        if (c.locked && !c.active) continue;
+        if (c.locked && !c.active) {
+          // 表示していない分岐(「ほかの分岐も表示」のときだけ、点線の枠で薄く)
+          if (st.otherBranches) {
+            const [x0, x1] = this._chipX(c.column, 0);
+            g.save();
+            g.globalAlpha = 0.35;
+            g.setLineDash([this.css(3), this.css(3)]);
+            g.strokeStyle = 'rgba(200,200,255,0.9)';
+            g.lineWidth = this.css(1.5);
+            g.strokeRect(x0 + 1, this.y(c.u) - ch / 2, x1 - x0 - 2, ch);
+            g.restore();
+          }
+          continue;
+        }
         if (hide && hide.has(c.key)) continue;
         if (c.n > 0) continue; // 重なった同じチップは 1 つだけ描き、×n を付ける
         const alpha = st.erase && st.erase.has(c.key) ? 0.25 : c.locked ? 0.45 : 1;
@@ -373,6 +388,14 @@ export class EditView {
         this._chip(p.column, p.u, p.channel, p.half || 0, 0.85);
         const [x0, x1] = this._chipX(p.column, p.half || 0);
         this._frame(x0, this.y(p.u) - ch / 2, x1 - x0, ch, 'rgb(102,217,255)', this.css(2));
+      }
+    }
+    // 叩いて入力の和音・録音しかけ(まだ文書に無い)
+    if (st.pending) {
+      for (const p of st.pending) {
+        this._chip(p.column, p.u, p.channel, 0, 0.85);
+        const [x0, x1] = this._chipX(p.column, 0);
+        this._frame(x0, this.y(p.u) - ch / 2, x1 - x0, ch, 'rgb(255,70,70)', this.css(2));
       }
     }
     // 置く位置の影

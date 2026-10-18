@@ -8,7 +8,7 @@
 // - #IF の中で表示している分岐のチップとぶつかるなら置かない(EditError('locked'))
 // - 999 小節より後ろには書かない(EditError('measureLimit'))
 
-import { TICKS_PER_MEASURE, toBase36, tryParseBpm, parseHex } from '../core/dtx.js';
+import { TICKS_PER_MEASURE, toBase36, tryParseBpm, parseHex, posToMs, msToPos } from '../core/dtx.js';
 import { groupKey, MAX_MEASURE, formatBarLength } from './dtxdoc.js';
 import { chipKey } from './model.js';
 import { COLUMN_TYPES, COLUMN_COUNT, channelsConflict, otherType, laneOfChannel, isEditableChannel } from './lanes.js';
@@ -292,15 +292,20 @@ export function opSetType(model, keys, { pens, keepValue = false } = {}) {
 export function opSetValue(model, keys, value) {
   const e = new GroupEdit(model.doc);
   const out = [];
+  const kept = []; // もうその値だったチップ(選んだままにする)
   for (const k of keys) {
     const c = model.chip(k);
-    if (!c || c.value === value) continue;
+    if (!c) continue;
+    if (c.value === value) {
+      kept.push(c);
+      continue;
+    }
     e.remove(c);
     e.add(c.measure, c.tick, c.channel, value);
     out.push(c);
   }
   const doc = e.apply();
-  return { doc, select: out.map((c) => e.keyAfter(doc, c.measure, c.tick, c.channel, value)) };
+  return { doc, select: kept.concat(out).map((c) => e.keyAfter(doc, c.measure, c.tick, c.channel, value)) };
 }
 
 // ---- 動かす ----
@@ -823,4 +828,248 @@ export function bpmOfMark(chart, channel, value) {
   const base = chart.baseBpm || 0;
   if (channel === 0x03) return base + parseHex(value);
   return chart.bpmDefs.has(value) ? base + chart.bpmDefs.get(value) : null;
+}
+
+// ---- 譜面の情報・音源(P3) ----
+
+/** 譜面の情報の欄に出すヘッダ(この順に並べる)。 */
+export const INFO_FIELDS = ['TITLE', 'ARTIST', 'COMMENT', 'GENRE', 'BPM', 'DLEVEL', 'PREVIEW', 'PREIMAGE', 'STAGEFILE', 'BACKGROUND'];
+
+/**
+ * 譜面の情報(ヘッダ)を書く。空なら行を消す((変更) DTXCreator は空の #TITLE を「(no title)」と書く)。
+ * #BPM は 0.0001〜1000(消せない。曲全体のテンポが変わるので)、#DLEVEL は 0〜999 の整数(100 以上は 10 倍の小数 2 桁。parseDTX と同じ読み)。
+ * #IF の外の同じコマンドの行をすべて書き直す(DtxDoc.withHeader)。
+ */
+export function opHeader(model, cmd, value) {
+  const up = String(cmd).toUpperCase();
+  if (!INFO_FIELDS.includes(up)) throw new Error('unknown header: ' + cmd);
+  let v = value == null ? '' : String(value).replace(/[\r\n;]/g, ' ').trim();
+  if (up === 'BPM') {
+    const n = Number(v.replace(',', '.'));
+    if (!(n >= 0.0001 && n <= 1000)) throw new EditError('bpmRange');
+    v = formatBpm(n);
+  } else if (up === 'DLEVEL' && v !== '') {
+    if (!/^\d{1,3}$/.test(v)) throw new EditError('levelRange');
+    v = String(parseInt(v, 10));
+  }
+  const cur = model.doc.header(up);
+  if ((cur === null ? '' : cur.trim()) === v) return { doc: model.doc, select: [] };
+  return { doc: model.doc.withHeader(up, v === '' ? null : v), select: [] };
+}
+
+const WAV_CMD = /^WAV([0-9A-Z]{2})$/;
+const VOL_CMD = /^(?:VOLUME|WAVVOL)([0-9A-Z]{2})$/;
+const PAN_CMD = /^(?:PAN|WAVPAN)([0-9A-Z]{2})$/;
+
+/**
+ * 音源の番号ごとの定義(#IF の外)。{id, file, label, volume, pan, bgm, redefined, lines}
+ * volume / pan は書いていなければ null(既定の 100 / 0)。redefined: #WAV / #VOLUME / #PAN のどれかが 2 回以上、
+ * または #IF の中にもある(どれが効くかが分岐や行の順で変わるので、この画面では変えない)。
+ */
+export function wavDefinitions(doc) {
+  const { headers, headerCounts, ifCmds } = doc.index;
+  const map = new Map();
+  const get = (id) => {
+    let d = map.get(id);
+    if (!d) map.set(id, (d = { id, file: '', label: '', volume: null, pan: null, bgm: false, redefined: false, wavLine: -1, volLines: [], panLines: [], bgmLines: [] }));
+    return d;
+  };
+  for (const h of headers) {
+    let m;
+    if ((m = WAV_CMD.exec(h.cmd))) {
+      const d = get(m[1]);
+      const text = doc.lines[h.idx].text;
+      const semi = text.indexOf(';');
+      d.file = h.param.trim();
+      d.label = semi >= 0 ? text.slice(semi + 1).trim() : '';
+      d.wavLine = h.idx;
+      if (headerCounts.get(h.cmd) > 1 || ifCmds.has(h.cmd)) d.redefined = true;
+    } else if ((m = VOL_CMD.exec(h.cmd))) {
+      const d = get(m[1]);
+      const v = parseInt(h.param, 10);
+      if (Number.isFinite(v)) d.volume = Math.min(Math.max(v, 0), 100);
+      d.volLines.push(h.idx);
+      if (d.volLines.length > 1 || ifCmds.has(h.cmd)) d.redefined = true;
+    } else if ((m = PAN_CMD.exec(h.cmd)) && !(h.cmd === 'PANEL' && !/^[-+]?\d+$/.test(h.param.trim()))) {
+      const d = get(m[1]);
+      const v = parseInt(h.param, 10);
+      if (Number.isFinite(v)) d.pan = Math.min(Math.max(v, -100), 100);
+      d.panLines.push(h.idx);
+      if (d.panLines.length > 1 || ifCmds.has(h.cmd)) d.redefined = true;
+    } else if (h.cmd === 'BGMWAV') {
+      const id = h.param.trim().toUpperCase();
+      if (/^[0-9A-Z]{2}$/.test(id)) {
+        const d = get(id);
+        d.bgm = true;
+        d.bgmLines.push(h.idx);
+      }
+    }
+  }
+  // #IF の中で定義した番号も変えない(#VOLUME と #WAVVOL のような別名も同じ番号として)
+  for (const cmd of ifCmds) {
+    const m = WAV_CMD.exec(cmd) || VOL_CMD.exec(cmd) || PAN_CMD.exec(cmd);
+    if (m && cmd !== 'PANEL') get(m[1]).redefined = true;
+  }
+  return map;
+}
+
+/** 新しい定義の行を足す場所(#WAV / #VOLUME / #PAN の最後の行の後ろ。無ければ最初のデータ行より前のヘッダの最後)。 */
+function wavInsertAfter(doc) {
+  const { headers, firstObject } = doc.index;
+  const limit = firstObject < 0 ? Infinity : firstObject;
+  let any = -1;
+  let wav = -1;
+  for (const h of headers) {
+    if (h.idx >= limit) break;
+    any = h.idx;
+    if (WAV_CMD.test(h.cmd) || VOL_CMD.test(h.cmd) || PAN_CMD.test(h.cmd) || h.cmd === 'BGMWAV') wav = h.idx;
+  }
+  if (wav >= 0) return wav;
+  if (any >= 0) return any;
+  return firstObject < 0 ? doc.lines.length - (doc.lines.length && doc.lines[doc.lines.length - 1].text === '' ? 2 : 1) : firstObject - 1;
+}
+
+/**
+ * 音源の定義を変える / 足す(DTXCreator のサウンドプロパティ)。p: {file, label, volume(0〜100), pan(-100〜100), bgm}
+ * のうち渡したものだけ変える。音量 100・位置 0 は行を書かない(DTXCreator と同じ)。#BGMWAV は DTXCreator の「BGM として使う」で、
+ * NX は読まない(本アプリも)。何度も定義された番号は変えない(EditError('wavRedefined'))。
+ * 書き方は DTXCreator と同じ `#WAVzz: ファイル\t;ラベル`。音量・位置は、ファイルが #WAVVOL / #WAVPAN を使っていればそれ、無ければ #VOLUME / #PAN。
+ */
+export function opSetWav(model, id, p) {
+  id = String(id).toUpperCase();
+  if (!/^[0-9A-Z]{2}$/.test(id) || id === '00') throw new Error('bad wav id: ' + id);
+  const doc = model.doc;
+  const d = wavDefinitions(doc).get(id) || { id, file: '', label: '', volume: null, pan: null, bgm: false, redefined: false, wavLine: -1, volLines: [], panLines: [], bgmLines: [] };
+  if (d.redefined) throw new EditError('wavRedefined');
+  const clean = (s) => String(s).replace(/[\r\n;]/g, ' ').trim();
+  const file = p.file !== undefined ? clean(p.file) : d.file;
+  const label = p.label !== undefined ? clean(p.label) : d.label;
+  let volume = p.volume !== undefined ? p.volume : d.volume;
+  let pan = p.pan !== undefined ? p.pan : d.pan;
+  if (volume !== null && !(Number.isInteger(volume) && volume >= 0 && volume <= 100)) throw new EditError('wavVolumeRange');
+  if (pan !== null && !(Number.isInteger(pan) && pan >= -100 && pan <= 100)) throw new EditError('wavPanRange');
+  if (volume === 100) volume = null;
+  if (pan === 0) pan = null;
+  const bgm = p.bgm !== undefined ? !!p.bgm : d.bgm;
+  const edits = new Map();
+  const after = [];
+  const usesAlias = (re) => doc.index.headers.some((h) => re.test(h.cmd));
+  const lineOf = (i) => doc.lines[i].text;
+  const rewrite = (i, value, keepComment) => {
+    const old = lineOf(i);
+    const lead = old.match(/^[ \t]*/)[0];
+    const semi = old.indexOf(';');
+    const comment = keepComment && semi >= 0 ? '\t' + old.slice(semi) : '';
+    const rawCmd = doc.index.headers.find((h) => h.idx === i).rawCmd;
+    const text = lead + '#' + rawCmd + ': ' + value + comment;
+    if (text !== old) edits.set(i, text);
+  };
+  // #WAV
+  const wavText = '#WAV' + id + ': ' + file + (label ? '\t;' + label : '');
+  if (d.wavLine >= 0) {
+    if (!file) edits.set(d.wavLine, null);
+    else {
+      const old = lineOf(d.wavLine);
+      const lead = old.match(/^[ \t]*/)[0];
+      const rawCmd = doc.index.headers.find((h) => h.idx === d.wavLine).rawCmd;
+      const text = lead + '#' + rawCmd + ': ' + file + (label ? '\t;' + label : '');
+      if (text !== old && !(file === d.file && label === d.label)) edits.set(d.wavLine, text);
+    }
+  } else if (file) after.push(wavText);
+  // #VOLUME / #PAN(ファイルが無ければ書かない。DTXCreator も #WAV の無い #VOLUME は落とす)
+  const sync = (lines, value, newCmd) => {
+    if (value === null || !file) {
+      for (const i of lines) edits.set(i, null);
+      return;
+    }
+    if (lines.length) for (const i of lines) rewrite(i, String(value), true);
+    else after.push('#' + newCmd + ': ' + value);
+  };
+  sync(d.volLines, volume, (usesAlias(/^WAVVOL[0-9A-Z]{2}$/) && !usesAlias(/^VOLUME[0-9A-Z]{2}$/) ? 'WAVVOL' : 'VOLUME') + id);
+  sync(d.panLines, pan, (usesAlias(/^WAVPAN[0-9A-Z]{2}$/) && !usesAlias(/^PAN[0-9A-Z]{2}$/) ? 'WAVPAN' : 'PAN') + id);
+  // #BGMWAV
+  if (bgm && file && !d.bgmLines.length) after.push('#BGMWAV: ' + id);
+  if ((!bgm || !file) && d.bgmLines.length) for (const i of d.bgmLines) edits.set(i, null);
+  if (!edits.size && !after.length) return { doc, select: [] };
+  // 足す行は、その番号の #WAV の行の後ろ(無ければ音源の定義の最後)
+  const at = d.wavLine >= 0 ? Math.max(d.wavLine, ...d.volLines, ...d.panLines) : wavInsertAfter(doc);
+  return { doc: doc.withLines(edits, after.length ? [{ after: at, texts: after }] : []), select: [] };
+}
+
+/** 使っていない音源の番号(#WAV の定義にも、チップにも、also(ペンの番号など)にも無いもの)。 */
+export function freeWavNumber(model, also = []) {
+  const used = new Set(model.usedIds);
+  for (const id of also) used.add(id);
+  for (const id of wavDefinitions(model.doc).keys()) used.add(id);
+  for (let n = 1; n < 36 * 36; n++) {
+    const id = toBase36(n);
+    if (!used.has(id)) return id;
+  }
+  return null;
+}
+
+/**
+ * BGM(ch 01)のチップを ms だけずらす(+ で遅く。本アプリの追加。DTXCreator には無い)。時間で動かしてから tick に丸める
+ * (120 BPM で 1 tick ≒ 5 ms)。小節 000 より前に出るなら断る(EditError('bgmShiftRange'))。#IF の中は動かさない。
+ */
+export function opShiftBgm(model, ms) {
+  if (!Number.isFinite(ms) || ms === 0) return { doc: model.doc, select: [] };
+  const chart = model.chart;
+  const e = new GroupEdit(model.doc);
+  const moves = [];
+  for (const g of model.doc.index.groups.values()) {
+    if (g.channel !== 0x01) continue;
+    const seen = new Map();
+    for (const c of g.chips) {
+      const k = c.tick + '.' + c.value;
+      const n = seen.get(k) || 0;
+      seen.set(k, n + 1);
+      const pos = (g.measure + 1) * TICKS_PER_MEASURE + c.tick;
+      const np = Math.round(msToPos(chart, posToMs(chart, pos) + ms));
+      let measure = Math.floor(np / TICKS_PER_MEASURE) - 1;
+      const tick = np - (measure + 1) * TICKS_PER_MEASURE;
+      if (measure < 0) throw new EditError('bgmShiftRange');
+      if (measure > MAX_MEASURE) throw new EditError('measureLimit');
+      moves.push({ from: { measure: g.measure, channel: 0x01, tick: c.tick, value: c.value, n }, measure, tick, value: c.value });
+    }
+  }
+  if (!moves.length) return { doc: model.doc, select: [] };
+  for (const mv of moves) e.remove(mv.from);
+  for (const mv of moves) e.add(mv.measure, mv.tick, 0x01, mv.value);
+  return { doc: e.apply(), select: [] };
+}
+
+/**
+ * 新しい難易度の譜面の文書(本アプリの追加)。元の譜面の #IF の外のヘッダ・コメントと、BGM・小節長・BPM の行(ch 01 / 02 / 03 / 08)を写す。
+ * レベル(#DLEVEL / #GLEVEL / #BLEVEL と小数の行)は消す。先頭に `; Created by DTXMania Web`(BOM を見ない読み込みでも失うのはこの行だけ)。
+ * Shift-JIS・CRLF。
+ * @param {import('./dtxdoc.js').DtxDoc} src
+ */
+export function newChartText(src) {
+  const out = ['; Created by DTXMania Web'];
+  let depth = 0;
+  for (let i = 0; i < src.lines.length; i++) {
+    const text = src.lines[i].text;
+    const s = text.replace(/^[ \t]+/, '');
+    const up = s.slice(1).toUpperCase();
+    if (s[0] === '#' && up.startsWith('ENDIF')) {
+      if (depth > 0) depth--;
+      continue;
+    }
+    if (s[0] === '#' && up.startsWith('IF')) {
+      depth++;
+      continue;
+    }
+    if (depth > 0) continue;
+    // レベル(ドラムもギター / ベースも)は消す。ギター / ベースのチップは写さないので、そのレベルが残ると曲の一覧でギター / ベースの譜面になる
+    if (s[0] === '#' && (up.startsWith('RANDOM') || /^(?:[DGB]LEVEL|PLAYLEVEL|[DGB]LVDEC)/.test(up))) continue;
+    if (s[0] === '#' && /^[0-9]{3}[0-9A-Z]{2}/.test(up)) {
+      const ch = parseInt(up.slice(3, 5), 16);
+      if (![0x01, 0x02, 0x03, 0x08].includes(ch)) continue;
+    }
+    if (i === 0 && text.trim() === '') continue;
+    out.push(text);
+  }
+  while (out.length > 1 && out[out.length - 1].trim() === '') out.pop();
+  return out.join('\r\n') + '\r\n';
 }

@@ -241,6 +241,36 @@ body.portrait .tmenu-footer { display: none; }
 body.desktop #edit-types { display: none; }
 #edit-bar #edit-mode button { min-width: 44px; height: 38px; font-size: 1.05em; }
 #edit-bar #edit-suspect { border-color: rgb(255, 150, 0); color: rgb(255, 200, 140); }
+#edit-bar #edit-step.on { background: rgba(110, 30, 30, 0.85); border-color: rgb(255, 110, 110); color: rgb(255, 200, 200); }
+#edit-bar #edit-step.rec::before { content: "● "; color: rgb(255, 80, 80); }
+#edit-bar #edit-panel.on { background: #2b3550; color: var(--accent2); }
+/* 横のパネル(js/edit/panel.js)。広い窓は右に寄せ、それより狭い広い配置は右から重ね、狭い配置は下から出す */
+#edit-side { position: absolute; top: 0; right: 0; bottom: 0; width: 320px; max-width: 92%; z-index: 4; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); box-shadow: -6px 0 18px rgba(0, 0, 0, 0.45); }
+#screen-edit.panel-dock #edit-side { box-shadow: none; }
+#screen-edit.panel-open.panel-dock #edit-stage { right: 320px; }
+#screen-edit.compact #edit-side { top: auto; left: 0; width: auto; max-width: none; height: 55%; border-left: 0; border-top: 1px solid var(--line); box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.45); padding-bottom: env(safe-area-inset-bottom); }
+#edit-side .side-tabs { display: flex; flex: none; border-bottom: 1px solid var(--line); }
+#edit-side .side-tabs button { flex: 1; background: transparent; color: var(--muted); border: 0; padding: 10px 4px; font-size: 0.9em; cursor: pointer; min-height: 40px; }
+#edit-side .side-tabs button[aria-selected="true"] { color: var(--accent2); box-shadow: inset 0 -2px 0 var(--accent2); font-weight: 700; }
+#edit-side .side-tabs .side-close { flex: none; width: 40px; font-size: 1.2em; }
+#edit-side .side-body { flex: 1; overflow: auto; padding: 10px 12px; font-size: 0.9em; -webkit-overflow-scrolling: touch; }
+#edit-side h4 { margin: 14px 0 6px; font-size: 0.95em; color: var(--muted); }
+#edit-side .side-head { margin: 0 0 8px; font-weight: 700; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+#edit-side .side-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+#edit-side .side-dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; margin: 6px 0; align-items: center; }
+#edit-side .side-dl dt { color: var(--muted); }
+#edit-side .side-dl dd { margin: 0; min-width: 0; }
+#edit-side select, #edit-side input[type="text"] { width: 100%; box-sizing: border-box; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px; font-size: 1em; min-height: 34px; }
+#edit-side .side-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px; }
+#edit-side .side-field > span:first-child { color: var(--muted); font-size: 0.9em; }
+#edit-side .side-wavs { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+#edit-side .side-wavs th { text-align: left; color: var(--muted); font-weight: 400; padding: 4px; border-bottom: 1px solid var(--line); }
+#edit-side .side-wavs td { padding: 5px 4px; border-bottom: 1px solid rgba(61, 74, 107, 0.4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+#edit-side .side-wavs tr { cursor: pointer; }
+#edit-side .side-wavs tr.sel td { background: #2b3550; }
+#edit-side .side-wavs td.warn { color: rgb(255, 200, 120); }
+#edit-dialog label.field { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+#edit-dialog label.field input { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px; font-size: 1em; }
 #edit-banner { display: flex; align-items: center; gap: 8px; padding: 4px 10px; background: #4a3a10; color: #ffe6a0; font-size: 0.85em; }
 #edit-banner span { flex: 1; }
 #edit-banner .pb { background: transparent; color: inherit; border: 0; min-width: 36px; height: 30px; cursor: pointer; }
@@ -248,6 +278,7 @@ body.desktop #edit-types { display: none; }
 #edit-stage { position: absolute; inset: 0; display: flex; }
 #edit-canvas { display: block; flex: 1; min-width: 0; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; outline: none; }
 #edit-rail { position: relative; flex: none; width: 22px; background: #10141f; border-left: 1px solid var(--line); touch-action: none; cursor: pointer; }
+#edit-rail-map { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 #edit-rail-thumb { position: absolute; left: 3px; right: 3px; height: 28px; margin-top: -14px; background: rgba(255, 214, 64, 0.8); border-radius: 4px; pointer-events: none; }
 #edit-status { display: flex; align-items: center; gap: 16px; padding: 4px 10px; padding-bottom: max(4px, env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85em; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; }
 #edit-pos { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

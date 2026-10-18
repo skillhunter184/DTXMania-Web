@@ -611,3 +611,89 @@ export class FileSetArchive {
     return this.entries.find((e) => e.name.toLowerCase() === key) || null;
   }
 }
+
+/**
+ * フォルダのハンドル(File System Access の showDirectoryPicker)から作る FileSetArchive(本アプリの追加。譜面の編集の
+ * 「フォルダへ上書き保存」のため)。ファイルのハンドルを持ち、書き戻せる。Chromium だけ。
+ */
+export class HandleArchive extends FileSetArchive {
+  /**
+   * @param {FileSystemDirectoryHandle} dir 選んだフォルダ
+   * @param {{path: string, file: File, handle: FileSystemFileHandle}[]} items パスはフォルダからの相対('/' 区切り)
+   */
+  constructor(dir, items) {
+    super([]);
+    this.dir = dir;
+    this._handles = new Map();
+    for (const it of items) this._add(it.path, it.file, it.handle);
+  }
+
+  _add(path, file, handle) {
+    const entry = { name: path, size: file.size, compressedSize: file.size, method: 0, crc: 0, localOffset: 0, isDir: false, utf8: true, flags: 0 };
+    this.entries.push(entry);
+    this._files.set(entry, file);
+    this._handles.set(entry, handle);
+    return entry;
+  }
+
+  /** フォルダの中のファイルを全部たどって作る(隠しファイル・. で始まるフォルダは飛ばす)。 */
+  static async open(dir) {
+    const items = [];
+    const walk = async (d, prefix) => {
+      for await (const [name, h] of d.entries()) {
+        if (name.startsWith('.')) continue;
+        if (h.kind === 'directory') await walk(h, prefix + name + '/');
+        else items.push({ path: prefix + name, file: await h.getFile(), handle: h });
+      }
+    };
+    await walk(dir, '');
+    return new HandleArchive(dir, items);
+  }
+
+  /** 書き込めるか(許可が無ければ聞く。ボタン・キーの操作の中で呼ぶ)。 */
+  async ensureWritable() {
+    const opts = { mode: 'readwrite' };
+    if (this.dir.queryPermission && (await this.dir.queryPermission(opts)) === 'granted') return true;
+    return !!(this.dir.requestPermission && (await this.dir.requestPermission(opts)) === 'granted');
+  }
+
+  /** パスのエントリ(同じ名前を先に。無ければ大文字小文字を見ない。大文字小文字を分けるファイルシステムで別のファイルに書かないよう)。 */
+  find(name) {
+    const p = name.replace(/\\/g, '/');
+    return this.entries.find((e) => e.name === p) || super.find(p);
+  }
+
+  /** パスのファイルがあるか(このアーカイブが知っているもの)。 */
+  has(path) {
+    return !!this.find(path);
+  }
+
+  /** パスへ書く(無いフォルダ・ファイルは作る)。書いたら File を読み直す(古い File は読めなくなるので)。 */
+  async writeFile(path, bytes) {
+    let entry = this.find(path);
+    let handle = entry ? this._handles.get(entry) : null;
+    if (!handle) {
+      const parts = path.replace(/\\/g, '/').split('/');
+      const name = parts.pop();
+      let d = this.dir;
+      for (const p of parts) if (p) d = await d.getDirectoryHandle(p, { create: true });
+      handle = await d.getFileHandle(name, { create: true });
+    }
+    const w = await handle.createWritable();
+    try {
+      await w.write(bytes);
+    } catch (e) {
+      await w.abort();
+      throw e;
+    }
+    await w.close();
+    const file = await handle.getFile();
+    entry = entry || this.find(path); // 待っている間に同じパスを書いたもの
+    if (entry) {
+      this._handles.set(entry, handle);
+      this._files.set(entry, file);
+      entry.size = entry.compressedSize = file.size;
+    } else entry = this._add(path.replace(/\\/g, '/'), file, handle);
+    return entry;
+  }
+}

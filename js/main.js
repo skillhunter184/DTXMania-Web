@@ -3,12 +3,14 @@
 import { SongPackage, normKey } from './core/song.js';
 import { AudioEngine } from './core/audio.js';
 import { loadJSON, saveJSON, saveLastZip, loadLastZip, saveSkinFiles, loadSkinFiles } from './core/storage.js';
-import { LANE_NAMES, INSTRUMENT, gbPart, replayRandom, msToPos, posToMs } from './core/dtx.js';
+import { LANE_NAMES, INSTRUMENT, gbPart, replayRandom, msToPos, posToMs, levelText } from './core/dtx.js';
 import { crc32 } from './core/zip.js';
 import { EditSession } from './edit/session.js';
 import { EditorScreen } from './edit/editor.js';
 import { loadDraft, deleteDraft, listDrafts } from './edit/drafts.js';
 import { resumeDialog } from './edit/dialogs.js';
+import { DtxDoc } from './edit/dtxdoc.js';
+import { newChartText } from './edit/ops.js';
 import { downloadBlob, editedZipName } from './edit/save.js';
 import { chartHasInstrument } from './core/instmerge.js';
 import { TrainingSettings, LOOP_UNIT, stepLoopTime, formatLoopTime } from './game/training.js';
@@ -86,12 +88,6 @@ function clockText(ms) {
 const INSTRUMENT_NAMES = ['song.drums', 'song.guitar', 'song.bass'];
 
 /** #DLEVEL / #GLEVEL / #BLEVEL の表示(DTXMania と同じ 2 桁レベルは 1/10、3 桁は 1/100 の小数表記)。 */
-function levelText(level, dec) {
-  if (!level) return '';
-  const v = level >= 100 ? level / 10 : level / 10 + (dec || 0) / 100;
-  return v.toFixed(2);
-}
-
 class App {
   constructor() {
     // 表示言語は設定(config)とは別に dojo.lang に置く(index.html の <head> のスクリプトも読むため)
@@ -287,6 +283,20 @@ class App {
       if (files.length) this.loadFolder(files);
       e.target.value = '';
     });
+    // 譜面の編集: 上書き保存できるフォルダ(File System Access。Chrome / Edge だけ。本アプリの追加)
+    const rw = $('btn-folder-rw');
+    if (rw && typeof window.showDirectoryPicker === 'function') {
+      rw.hidden = false;
+      rw.addEventListener('click', async () => {
+        let dir;
+        try {
+          dir = await window.showDirectoryPicker({ id: 'dtx-songs', mode: 'readwrite' });
+        } catch (e) {
+          return; // 選ぶのをやめた
+        }
+        this.loadFolder(null, dir);
+      });
+    }
     const onDrop = (e) => {
       const items = e.dataTransfer && e.dataTransfer.files ? [...e.dataTransfer.files] : [];
       if (!items.length) return;
@@ -389,13 +399,14 @@ class App {
     }
   }
 
-  async loadFolder(files) {
+  /** フォルダから読む。dir(showDirectoryPicker のハンドル)を渡すと、譜面の編集でそのフォルダへ上書き保存できる。 */
+  async loadFolder(files, dir = null) {
     if (!this._confirmPackSwitch()) return;
     const gen = ++this._loadGen;
     this._packLoading = gen;
     this.setStatus(msg('load.folder'));
     try {
-      const pkg = await SongPackage.fromFiles(files);
+      const pkg = dir ? await SongPackage.fromHandle(dir) : await SongPackage.fromFiles(files);
       if (gen !== this._loadGen) { pkg.dispose(); return; }
       if (this.pkg) this.pkg.dispose();
       this.pkg = pkg;
@@ -485,6 +496,15 @@ class App {
             b.appendChild(dot);
           }
           row.appendChild(b);
+        }
+        // 譜面の編集: その曲に新しい難易度の譜面を作る(本アプリの追加)
+        if (editing && inst === INSTRUMENT.DRUMS) {
+          const nb = document.createElement('button');
+          nb.className = 'new-chart';
+          nb.textContent = t('edit.newChart');
+          nb.setAttribute('aria-label', t('edit.newChartLabel', { title: song.title }));
+          nb.onclick = () => this.newChart(song);
+          row.appendChild(nb);
         }
         meta.appendChild(row);
       }
@@ -1493,11 +1513,13 @@ class App {
       if (!session) {
         const original = await pkg.readOriginalBytes(chartRef.path);
         const isNew = original === null;
-        const originalBytes = original || (await pkg.readBytes(chartRef.path));
         let draft = await loadDraft(pkg, chartRef.path);
+        // 新しい難易度の「元」は作ったときの写し(下書きが持つ。下書きから戻した譜面は、重ねたものが下書きの中身なので)
+        const originalBytes = original || (isNew && draft && draft.base ? new Uint8Array(draft.base) : await pkg.readBytes(chartRef.path));
         if (draft) {
           $('edit-loading').hidden = true;
-          const choice = await resumeDialog($('edit-dialog'), draft, draft.baseCrc !== crc32(originalBytes));
+          const baseChanged = isNew ? false : draft.baseCrc !== crc32(originalBytes);
+          const choice = await resumeDialog($('edit-dialog'), draft, baseChanged);
           if (choice === 'original') {
             await deleteDraft(pkg, chartRef.path);
             draft = null;
@@ -1524,6 +1546,43 @@ class App {
     } finally {
       this._editBusy = false;
     }
+  }
+
+  /**
+   * 曲に新しい難易度の譜面を作って編集画面で開く(本アプリの追加。docs/spec/chart-editor.md「新しい難易度」)。
+   * 曲の最初の譜面から、ヘッダと BGM・小節長・BPM の行を写した `<名前>_edit.dtx` を同じフォルダに作る(曲パックに重ねる。
+   * set.def は書き換えないので、曲の一覧には別の曲として出る)。
+   */
+  async newChart(song) {
+    if (this._editBusy || this.editor || !this.pkg || this._packLoading) return;
+    const pkg = this.pkg;
+    // 写すのはドラムの譜面(楽器別のファイルに分かれた曲でも)
+    const src = song.charts.find((c) => chartHasInstrument(c.header, INSTRUMENT.DRUMS)) || song.charts[0];
+    let path;
+    this._editBusy = true; // 続けて押しても 1 つだけ作る(一覧を作り直し終えるまで)
+    try {
+      const bytes = await pkg.readBytes(src.path);
+      if (this.pkg !== pkg || this._packLoading) return; // 読んでいる間に曲パックが替わった
+      const dir = src.path.slice(0, src.path.lastIndexOf('/') + 1);
+      const stem = src.path.slice(dir.length).replace(/\.[^.]*$/, '');
+      path = dir + stem + '_edit.dtx';
+      for (let i = 2; pkg.entry(path); i++) path = dir + stem + '_edit' + i + '.dtx';
+      const out = DtxDoc.fromText(newChartText(DtxDoc.fromBytes(bytes)), { encoding: 'shift_jis', eol: '\r\n' }).toBytes();
+      pkg.setOverride(path, out.bytes);
+      await pkg.rescan();
+    } catch (e) {
+      console.error(e);
+      this.setStatus(msg('load.failed', { msg: e && e.message ? e.message : e }), true);
+      return;
+    } finally {
+      this._editBusy = false;
+    }
+    if (this.pkg !== pkg) return;
+    this.renderSongList();
+    const key = normKey(path);
+    const newSong = pkg.songs.find((s) => s.charts.some((c) => normKey(c.path) === key));
+    if (!newSong) return;
+    await this.openEditor(newSong, newSong.charts.find((c) => normKey(c.path) === key));
   }
 
   /** 編集画面を閉じて曲の一覧へ(確かめない。編集は曲パックに重ね、下書きにも残る)。 */
@@ -1605,7 +1664,8 @@ class App {
     for (const d of await listDrafts(pkg)) {
       if (this.pkg !== pkg) return;
       const original = await pkg.readOriginalBytes(d.path).catch(() => null);
-      if (original && crc32(original) === d.baseCrc) drafts.push(d);
+      // 元の譜面が下書きを作ったときのままのもの、または新しい難易度(元のファイルが無い)
+      if (original ? crc32(original) === d.baseCrc : d.isNew) drafts.push(d);
     }
     if (!drafts.length || this.pkg !== pkg || this.editor) return;
     $('draft-offer-text').textContent = t('edit.draftsFound', { n: drafts.length });

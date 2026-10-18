@@ -121,8 +121,10 @@ export class EditSession {
 
   /** 曲パックに重ねる(曲の一覧・テストプレイ・ZIP の書き出しが読む)。元と同じなら重ねたものを外す。 */
   async commit() {
-    if (!this.isNew && this.sameAsOriginal) this.pkg.setOverride(this.path, null);
-    else this.pkg.setOverride(this.path, this.outputBytes().bytes);
+    // フォルダへ上書き保存したあとは、そのときのバイト列がファイルの中身(同じなら重ねない)
+    const out = this.outputBytes().bytes;
+    if (this.diskBytes ? sameBytes(out, this.diskBytes) : !this.isNew && this.sameAsOriginal) this.pkg.setOverride(this.path, null);
+    else this.pkg.setOverride(this.path, out);
     await this.pkg.refreshHeader(this.path);
   }
 
@@ -131,13 +133,16 @@ export class EditSession {
     return {
       path: this.path,
       bytes: this.outputBytes().bytes,
-      baseCrc: crc32(this.originalBytes),
+      // 元の譜面の CRC(フォルダへ上書きしたあとは、そのときのファイル)
+      baseCrc: crc32(this.diskBytes || this.originalBytes),
       title: (this.song && this.song.title) || '',
       label: (this.chartRef && this.chartRef.label) || '',
       view: this.view,
       pens: [...this.pens],
       activeTypes: this.activeTypes.slice(),
       rolls: this.rolls.slice(),
+      isNew: this.isNew, // 新しい難易度(元のファイルが無い。曲パックを開き直したときに戻せるように)
+      base: this.isNew ? this.originalBytes : undefined, // 新しい難易度の「元」(作ったときの写し)
     };
   }
 }

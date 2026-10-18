@@ -314,6 +314,13 @@ function setLevel(chart, part, param) {
   }
 }
 
+/** 難易度の表示(曲の一覧と同じ。7.50 など)。level は 0〜100(100 以上は 10 倍の値)、dec は小数 2 桁目。 */
+export function levelText(level, dec) {
+  if (!level) return '';
+  const v = level >= 100 ? level / 10 : level / 10 + (dec || 0) / 100;
+  return v.toFixed(2);
+}
+
 function setLevelDec(chart, part, param) {
   const v = parseLevelInt(param);
   if (Number.isFinite(v)) chart.levelDec[part] = Math.min(Math.max(v, 0), 10);

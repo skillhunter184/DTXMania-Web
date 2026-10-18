@@ -7,8 +7,11 @@ import { MeasureGeometry, posOf } from './geometry.js';
 import { COLUMN_COUNT, COLUMN_OF, TYPE_OF, COLUMN_TYPES, isEditableChannel } from './lanes.js';
 
 /** 値が #WAV の番号でないチャンネル(小節長・BPM・フィルイン・拍線の制御)。 */
-const NON_WAV_CHANNELS = new Set([0x02, 0x03, 0x08, 0x53, 0xc1, 0xc2]);
+// #WAV の番号でないチャンネル(小節長・BPM・フィルイン・小節線の表示、BGA / 動画(#BMP / #AVI の番号)、ボーナスの印(レーン + 1)、小節線・拍線)
+const NON_WAV_CHANNELS = new Set([0x02, 0x03, 0x08, 0x53, 0xc1, 0xc2, 0x04, 0x07, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x60, 0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0x51]);
 const CH_BGM = 0x01;
+/** 編集画面に何かの形で出すチャンネル(BGM・小節長・BPM・フィルイン・ボーナスの印)。 */
+const SHOWN_OTHER = new Set([0x01, 0x02, 0x03, 0x08, 0x53, 0x4c, 0x4d, 0x4e, 0x4f]);
 const CH_BPM = 0x03;
 const CH_BPM_EX = 0x08;
 const CH_FILL = 0x53;
@@ -109,6 +112,12 @@ export class EditModel {
     const valueCounts = new Map(); // チャンネル → (値 → 数)(ペンの初期値)
     const channelCounts = new Map(); // チャンネル → 数(列の種類の初期値)
     const used = new Set(); // 使われている #WAV の番号
+    const uses = new Map(); // #WAV の番号 → 使っているチップの数(#IF の中も。音源の一覧)
+    let other = 0; // 編集画面に出さないチップの数(SE・ギター / ベース・BGA など。#IF の外)
+    const use = (v) => {
+      used.add(v);
+      uses.set(v, (uses.get(v) || 0) + 1);
+    };
     const count = (ch, v) => {
       let m = valueCounts.get(ch);
       if (!m) valueCounts.set(ch, (m = new Map()));
@@ -145,7 +154,8 @@ export class EditModel {
 
     for (const g of this.doc.index.groups.values()) {
       const { measure, channel } = g;
-      if (!NON_WAV_CHANNELS.has(channel)) for (const c of g.chips) used.add(c.value);
+      if (!NON_WAV_CHANNELS.has(channel)) for (const c of g.chips) use(c.value);
+      if (!isEditableChannel(channel) && !SHOWN_OTHER.has(channel) && !(channel >= 0x31 && channel <= 0x3c)) other += g.chips.length;
       if (isEditableChannel(channel)) pushChips(measure, channel, g.chips, false, true);
       else if (channel >= 0x31 && channel <= 0x3c && COLUMN_OF.has(channel - 0x20)) {
         for (const c of g.chips) hidden.push({ measure, tick: c.tick, channel, column: COLUMN_OF.get(channel - 0x20), u: geo.u(measure, c.tick) });
@@ -168,7 +178,7 @@ export class EditModel {
     }
     this._locked = this.doc.locked(replayRandom(this.rolls));
     for (const l of this._locked) {
-      if (!NON_WAV_CHANNELS.has(l.channel)) for (const c of l.chips) used.add(c.value);
+      if (!NON_WAV_CHANNELS.has(l.channel)) for (const c of l.chips) use(c.value);
       if (isEditableChannel(l.channel)) pushChips(l.measure, l.channel, l.chips, true, l.active);
       else if ((l.channel === CH_BPM || l.channel === CH_BPM_EX) && l.active) {
         for (const c of l.chips) {
@@ -212,6 +222,8 @@ export class EditModel {
     this._valueCounts = valueCounts;
     this._channelCounts = channelCounts;
     this._used = used;
+    this._uses = uses;
+    this._other = other;
   }
 
   /** すべてのドラムのチップ(編集できるものと #IF の中のもの。u の順)。 */
@@ -226,6 +238,10 @@ export class EditModel {
   get channelCounts() { this._build(); return this._channelCounts; }
   /** 使われている・定義されている #WAV の番号。 */
   get usedIds() { this._build(); return this._used; }
+  /** #WAV の番号 → 使っているチップの数。 */
+  get wavUses() { this._build(); return this._uses; }
+  /** 編集画面に出さないチップの数(SE・ギター / ベース・BGA など。そのまま残る)。 */
+  get otherChips() { this._build(); return this._other; }
 
   /** 編集できるチップを名前で引く。 */
   chip(key) {

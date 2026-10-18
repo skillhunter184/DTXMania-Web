@@ -228,12 +228,14 @@ export class AudioEngine {
       // 鳴らせない間は合成音)。前のバッファを読み込みの間も使うのは、編集画面で音を足したとき(keepVoices)だけ
       this.stopAll();
       this.buffers = new Map();
+      this.bufferFiles = new Map();
       this.failed = [];
     }
     const gen = (this._soundLoadGen = (this._soundLoadGen || 0) + 1); // 後から始まった読み込みがあれば、こちらの結果は使わない
     const reuse = this._decodedPkg === pkg && this._decoded ? this._decoded : new Map();
     const decoded = new Map(); // ファイル(小文字のパス)→ 復号した AudioBuffer(この読み込みで使うものだけ持ち続ける)
     const buffers = new Map();
+    const files = new Map(); // id → 読んだときの #WAV のファイル(編集で #WAV のファイルを変えたら読み直すため)
     const failed = [];
     const ids = requiredWavIds(chart);
     const byPath = new Map(); // 同じファイルを指す id は一度だけ復号する
@@ -262,6 +264,7 @@ export class AudioEngine {
         if (!buf) failed.push({ id, file });
       }
       buffers.set(id, buf);
+      files.set(id, file || '');
       done++;
       if (onProgress) onProgress(done, total, file || id);
     };
@@ -276,6 +279,7 @@ export class AudioEngine {
     // 揃ってから差し替える(keepVoices のときは読み込み中も前のバッファで鳴らせる)
     if (gen !== this._soundLoadGen) return buffers;
     this.buffers = buffers;
+    this.bufferFiles = files;
     this.failed = failed;
     this._decoded = decoded;
     this._decodedPkg = pkg;

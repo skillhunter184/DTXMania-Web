@@ -10,9 +10,13 @@ const PREFIX = 'draft:';
 /** 残す下書きの数(古いものから消す)。 */
 export const MAX_DRAFTS = 30;
 
-/** 曲パックの見分け(同じ名前・同じ大きさの ZIP、同じ名前・同じファイル数のフォルダ)。 */
+/**
+ * 曲パックの見分け(同じ名前・同じ大きさの ZIP、同じ名前・同じファイル数のフォルダ)。上書き保存できるフォルダ(HandleArchive)は
+ * 名前だけ(保存で .bak や足した音源が増え、ファイル数が変わるので。元の譜面が変わったかは下書きの baseCrc で見る)。
+ */
 export function packId(pkg) {
   const zip = pkg.zip;
+  if (pkg.writable) return `${pkg.name || ''}|folder`;
   return `${pkg.name || ''}|${zip && zip.blob ? zip.blob.size : 'dir' + (zip ? zip.entries.length : 0)}`;
 }
 

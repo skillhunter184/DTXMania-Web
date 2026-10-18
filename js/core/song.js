@@ -5,7 +5,7 @@
 //   .dtx から参照する #WAVxx は曲フォルダ基準の相対パス(区切りは '\' が多い)
 // ファイル名の大文字小文字・区切り文字・Unicode 正規化(macOS の NFD)の違いは吸収する。
 
-import { ZipArchive, FileSetArchive, ZipWriter, crc32 } from './zip.js';
+import { ZipArchive, FileSetArchive, HandleArchive, ZipWriter, crc32 } from './zip.js';
 import { decodeText } from './encoding.js';
 import { parseSetDef, parseBoxDef } from './setdef.js';
 import { parseDTX, parseDTXHeader } from './dtx.js';
@@ -70,7 +70,12 @@ export class SongPackage {
     if (bytes === null) {
       if (!prev) return;
       this._overrides.delete(key);
-      if (prev.added) this.index.delete(key);
+      if (prev.added) {
+        // 足したファイルを外す。フォルダへ書いたあと(アーカイブにある)なら、そのファイルを指す
+        const e = this.zip.find ? this.zip.find(prev.entry.name) : null;
+        if (e) this.index.set(key, e);
+        else this.index.delete(key);
+      }
       return;
     }
     let entry = this.index.get(key);
@@ -86,6 +91,11 @@ export class SongPackage {
   override(path) {
     const o = this._overrides.get(normKey(path));
     return o ? o.bytes : null;
+  }
+
+  /** 重ねて足したファイル(元の曲パックに無いもの)。[{path, bytes}] */
+  addedFiles() {
+    return [...this._overrides.values()].filter((o) => o.added).map((o) => ({ path: o.entry.name, bytes: o.bytes }));
   }
 
   /** 重ねたファイルがあるか。 */
@@ -158,6 +168,36 @@ export class SongPackage {
     const pkg = new SongPackage(new FileSetArchive(list, root), name || root);
     await pkg._scan();
     return pkg;
+  }
+
+  /**
+   * フォルダのハンドル(showDirectoryPicker)から作る。譜面の編集で、そのフォルダへ上書き保存できる(HandleArchive)。
+   * @param {FileSystemDirectoryHandle} dir
+   */
+  static async fromHandle(dir) {
+    const pkg = new SongPackage(await HandleArchive.open(dir), dir.name || '');
+    await pkg._scan();
+    return pkg;
+  }
+
+  /**
+   * フォルダへ書いたファイルを曲パックの中身にする(重ねていたものは「足したもの」でなくなる)。
+   * @param {string} path
+   * @param {object} entry HandleArchive.writeFile が返すエントリ
+   */
+  adoptWritten(path, entry) {
+    const key = normKey(path);
+    this.index.set(key, entry);
+    const o = this._overrides.get(key);
+    if (o) {
+      o.entry = entry;
+      o.added = false;
+    }
+  }
+
+  /** フォルダへ書き戻せる曲パックか(HandleArchive)。 */
+  get writable() {
+    return this.zip instanceof HandleArchive;
   }
 
   /** パス(大文字小文字・正規化無視)でエントリを引く。 */

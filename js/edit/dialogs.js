@@ -240,3 +240,92 @@ export async function barDialog(dlg, o) {
   const v = await runDialog(dlg, form, { focus: input, check: (value) => value !== 'ok' || valid(read()) });
   return v === 'ok' ? { action: 'ok', ...read() } : { action: 'cancel' };
 }
+
+/**
+ * サウンドプロパティ(DTXCreator の「サウンドプロパティ」。ラベル・ファイル・音量 0〜100・位置 -100〜100・BGM として使う)。
+ * @param {{id: string, file: string, label: string, volume: number, pan: number, bgm: boolean}} o
+ * @returns {Promise<{action: 'ok'|'cancel', file?: string, label?: string, volume?: number, pan?: number, bgm?: boolean}>}
+ */
+export async function soundDialog(dlg, o) {
+  dlg.innerHTML = '';
+  const form = el('form', { method: 'dialog' });
+  form.append(el('h3', { textContent: t('edit.soundProps') + ' — ' + o.id }));
+  const text = (label, value) => {
+    const input = el('input', { type: 'text', value: value || '', spellcheck: false });
+    form.append(el('label', { className: 'field' }, [label + ' ', input]));
+    return input;
+  };
+  const label = text(t('edit.wavLabel'), o.label);
+  const file = text(t('edit.wavFile'), o.file);
+  const num = (lab, value, min, max) => {
+    const input = el('input', { type: 'number', value: String(value), min: String(min), max: String(max), step: '1', className: 'num' });
+    form.append(el('label', { className: 'field' }, [`${lab} (${min}〜${max}) `, input]));
+    return input;
+  };
+  const volume = num(t('edit.wavVolume'), o.volume, 0, 100);
+  const pan = num(t('edit.wavPan'), o.pan, -100, 100);
+  const bgm = el('input', { type: 'checkbox', checked: !!o.bgm });
+  form.append(el('label', { className: 'check' }, [bgm, ' ' + t('edit.soundIsBgm')]));
+  const err = el('p', { className: 'note warn', hidden: true });
+  form.append(err);
+  form.append(el('div', { className: 'btn-row' }, [
+    el('button', { type: 'submit', value: 'ok', className: 'btn small', textContent: t('edit.ok') }),
+    el('button', { type: 'submit', value: 'cancel', className: 'btn small secondary', textContent: t('edit.cancel') }),
+  ]));
+  dlg.append(form);
+  const int = (input, min, max) => {
+    const v = readNumber(input.value);
+    return Number.isInteger(v) && v >= min && v <= max ? v : NaN;
+  };
+  const v = await runDialog(dlg, form, {
+    focus: label,
+    check: (value) => {
+      if (value !== 'ok') return true;
+      const bad = Number.isNaN(int(volume, 0, 100)) ? volume : Number.isNaN(int(pan, -100, 100)) ? pan : null;
+      if (!bad) return true;
+      err.textContent = t('edit.wavNumberRange');
+      err.hidden = false;
+      bad.focus();
+      return false;
+    },
+  });
+  if (v !== 'ok') return { action: 'cancel' };
+  return { action: 'ok', file: file.value.trim(), label: label.value.trim(), volume: int(volume, 0, 100), pan: int(pan, -100, 100), bgm: bgm.checked };
+}
+
+/**
+ * 数を 1 つ聞く(BGM をずらすなど)。
+ * @param {{title: string, prompt: string, value: number, min: number, max: number, integer?: boolean}} o
+ * @returns {Promise<{action: 'ok'|'cancel', value?: number}>}
+ */
+export async function numberDialog(dlg, o) {
+  dlg.innerHTML = '';
+  const form = el('form', { method: 'dialog' });
+  form.append(el('h3', { textContent: o.title }), el('p', { textContent: o.prompt }));
+  const input = el('input', { type: 'text', inputMode: 'decimal', value: String(o.value), className: 'num' });
+  input.setAttribute('aria-label', o.title);
+  form.append(input);
+  const err = el('p', { className: 'note warn', hidden: true, textContent: t('edit.numberRange', { min: o.min, max: o.max }) });
+  form.append(err);
+  form.append(el('div', { className: 'btn-row' }, [
+    el('button', { type: 'submit', value: 'ok', className: 'btn small', textContent: t('edit.ok') }),
+    el('button', { type: 'submit', value: 'cancel', className: 'btn small secondary', textContent: t('edit.cancel') }),
+  ]));
+  dlg.append(form);
+  const read = () => {
+    const n = readNumber(input.value);
+    if (!(n >= o.min && n <= o.max)) return NaN;
+    return o.integer ? (Number.isInteger(n) ? n : NaN) : n;
+  };
+  const v = await runDialog(dlg, form, {
+    focus: input,
+    check: (value) => {
+      if (value !== 'ok' || !Number.isNaN(read())) return true;
+      err.hidden = false;
+      input.focus();
+      input.select();
+      return false;
+    },
+  });
+  return v === 'ok' ? { action: 'ok', value: read() } : { action: 'cancel' };
+}

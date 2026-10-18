@@ -23,8 +23,9 @@ import { COLUMN_TYPES, TYPE_OF, channelsConflict, otherType, channelName, laneOf
 import {
   EditError, opPlace, opPaint, opDelete, opErase, opMove, opSetType, opSetValue, opAddPartner, moveTargets, moveBpmTargets,
   clampMove, opNudge, copyClip, opPaste, opDuplicate, opSetBpm, opBarLength, barOverflow, opInsertMeasure, opDeleteMeasure,
-  measureDeleteSummary, formatBpm,
+  measureDeleteSummary, formatBpm, opSetWav, freeWavNumber,
 } from './ops.js';
+import { EditPanel } from './panel.js';
 import { EditView, HEADER_CSS } from './view.js';
 import { TouchGestures, G } from './gestures.js';
 import { EditorPlayer } from './editplayer.js';
@@ -46,6 +47,11 @@ const ERR = {
   barLocked: 'edit.errBarLocked',
   barRange: 'edit.barRange',
   measureLocked: 'edit.errMeasureLocked',
+  levelRange: 'edit.errLevelRange',
+  wavRedefined: 'edit.wavRedefined',
+  wavVolumeRange: 'edit.wavNumberRange',
+  wavPanRange: 'edit.wavNumberRange',
+  bgmShiftRange: 'edit.errBgmShift',
 };
 
 /** 操作の名前(元に戻す・やり直すのお知らせ)。 */
@@ -66,6 +72,7 @@ const OP = {
 };
 
 const PREVIEW_VOLUME = 0.9;
+const STEP_CHORD_MS = 60; // 叩いて入力: この間に叩いたものは同じセルに置く(和音)
 const DRAFT_DEBOUNCE_MS = 1500;
 const SPEEDS = [10, 15, 20, 25, 30]; // 再生速度(playSpeed。20 = x1.0。DTXCreator の x0.5〜x1.5)
 
@@ -80,6 +87,12 @@ function shortcutKey(e) {
   if (e.key === 'Process' || e.keyCode === 229) return e.code === 'Slash' && e.shiftKey ? '?' : SYMBOL_OF_CODE[e.code] || null;
   if (e.key === '=') return '+';
   return e.key && e.key.length === 1 && '[]-+?'.includes(e.key) ? e.key : null;
+}
+
+function sameBytes(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 function msClock(ms) {
@@ -123,6 +136,11 @@ export class EditorScreen {
     this._suspectCache = null; // {doc, map}
     this._lastSuspect = null; // 最後に回った要確認 {conf, u}
     this.touch = new TouchGestures(this._touchHandlers());
+    this.panel = new EditPanel(this);
+    this.stepArmed = false; // 叩いて入力
+    this._chord = null; // 叩いて入力の和音 {cell, cells, timer}
+    this._recorded = []; // 再生中に録音したチップ(止めたときに 1 手)
+    this._wavVoice = null; // 音源のタブで試聴している音
     this._closed = false;
   }
 
@@ -147,6 +165,9 @@ export class EditorScreen {
     this.root.hidden = false;
     this._buildGuideSelect();
     this._bindDom();
+    $('edit-side').hidden = !c.editPanelOpen;
+    $('edit-panel').classList.toggle('on', !!c.editPanelOpen);
+    this.panel.layout();
     this.onResize();
     const v = s.view;
     const g = GUIDES.includes(c.editGuide) ? c.editGuide : 16;
@@ -203,6 +224,11 @@ export class EditorScreen {
     const toast = $('edit-toast');
     toast.hidden = true;
     toast.innerHTML = '';
+    if (this._wavVoice) this.app.audio.stopVoice(this._wavVoice);
+    this._wavVoice = null;
+    this._wavPending = null;
+    this._wavTok = (this._wavTok || 0) + 1;
+    this._stopStep(); // 録音しかけのチップを 1 手にする・叩いて入力の和音を閉じる
     this.app.releaseWakeLock();
     await this.flushDraft();
     await this.session.commit();
@@ -222,7 +248,11 @@ export class EditorScreen {
     this._draftTimer = 0;
     const s = this.session;
     this._saveView();
-    if (s.modified && !s.sameAsOriginal) await saveDraft(s.pkg, s.path, s.draftValue());
+    // 残すのは、ファイル(フォルダへ上書きしたもの・元の譜面)と違うとき。新しい難易度は、フォルダへ書くまで残す
+    // (曲パックに重ねただけなので、ページを開き直すと下書きにしか無い)
+    const out = s.outputBytes().bytes;
+    const keep = s.diskBytes ? !sameBytes(out, s.diskBytes) : s.isNew || (s.modified && !s.sameAsOriginal);
+    if (keep) await saveDraft(s.pkg, s.path, s.draftValue());
     else await deleteDraft(s.pkg, s.path);
   }
 
@@ -274,6 +304,8 @@ export class EditorScreen {
     btn('edit-follow', () => { this.follow = true; this._syncButtons(); });
     btn('edit-test', () => this.testPlay());
     btn('edit-suspect', () => this.nextSuspect());
+    btn('edit-panel', () => this.panel.toggle());
+    btn('edit-step', () => this._toggleStep());
     for (const b of document.querySelectorAll('#edit-mode button')) {
       this._on(b, 'click', () => { b.blur(); this._setMode(b.dataset.mode); });
     }
@@ -327,6 +359,7 @@ export class EditorScreen {
     const before = this.view.layout;
     this.view.resize(w, h, window.devicePixelRatio || 1);
     this.root.classList.toggle('compact', this.view.layout === 'compact');
+    this.panel.layout();
     if (before !== this.view.layout) {
       // 向きを変えて配置が替わったら、その配置の拡大率にする(再生位置の u は変えない)
       const z = this.config.editZoom && this.config.editZoom[this.view.layout];
@@ -366,6 +399,7 @@ export class EditorScreen {
       if (p.state === PLAYER_STATE.STANDBY) {
         // 最後まで鳴って止まった
         this.app.releaseWakeLock();
+        this._commitRecorded();
         this._syncButtons();
       }
     }
@@ -379,6 +413,7 @@ export class EditorScreen {
       this.view.draw(now);
       this._updateRail();
       this._updateStatus();
+      this.panel.refresh();
     }
     if (more) this._raf = requestAnimationFrame((n) => this._frame(n));
   }
@@ -392,6 +427,7 @@ export class EditorScreen {
     // 選択はどちらのモードでも見せる(ペンのモードでも R・Delete が選択に効くので)。ペンで書くと選択は外れる
     st.selection = s.selection;
     st.showIds = !!this.config.editShowIds;
+    st.otherBranches = !!this.config.editOtherBranches;
     st.suspects = this.sidecar && this.config.editConfidence !== false ? this._suspectMap() : null;
     const lp = s.loopPos;
     const geo = this.model.geometry;
@@ -416,6 +452,45 @@ export class EditorScreen {
     const f = Math.max(0, Math.min(1, (this.view.uHead + 1) / total));
     const pct = ((1 - f) * 100).toFixed(2) + '%';
     if (thumb.style.top !== pct) thumb.style.top = pct;
+    this._drawRailMap(total);
+  }
+
+  /** 右のバーにチップの密度を描く(どこに譜面があるかが分かるように。本アプリの追加)。文書か大きさが変わったときだけ。 */
+  _drawRailMap(total) {
+    const rail = $('edit-rail');
+    let cv = $('edit-rail-map');
+    if (!rail) return;
+    if (!cv) {
+      cv = document.createElement('canvas');
+      cv.id = 'edit-rail-map';
+      cv.setAttribute('aria-hidden', 'true');
+      rail.prepend(cv);
+    }
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.max(1, Math.round(rail.clientWidth * dpr));
+    const hh = Math.max(1, Math.round(rail.clientHeight * dpr));
+    const doc = this.model.doc;
+    if (this._railMapFor && this._railMapFor.doc === doc && this._railMapFor.w === w && this._railMapFor.h === hh) return;
+    this._railMapFor = { doc, w, h: hh };
+    if (cv.width !== w) cv.width = w;
+    if (cv.height !== hh) cv.height = hh;
+    const g = cv.getContext('2d');
+    g.clearRect(0, 0, w, hh);
+    const bins = new Float32Array(hh);
+    for (const c of this.model.chips) {
+      if (c.locked && !c.active) continue;
+      const y = Math.floor((1 - (c.u + 1) / total) * (hh - 1));
+      if (y >= 0 && y < hh) bins[y]++;
+    }
+    let max = 0;
+    for (const v of bins) max = Math.max(max, v);
+    if (!max) return;
+    g.fillStyle = 'rgba(102, 217, 255, 0.55)';
+    for (let y = 0; y < hh; y++) {
+      if (!bins[y]) continue;
+      const len = Math.max(1, Math.round((w - 2) * Math.min(1, Math.sqrt(bins[y] / max))));
+      g.fillRect((w - len) / 2, y, len, 1);
+    }
   }
 
   _updateStatus() {
@@ -460,6 +535,12 @@ export class EditorScreen {
     play.textContent = playing ? '■' : '▶';
     play.classList.toggle('on', playing);
     $('edit-follow').hidden = !(playing && !this.follow);
+    const step = $('edit-step');
+    step.setAttribute('aria-pressed', String(!!this.stepArmed));
+    step.classList.toggle('on', !!this.stepArmed);
+    step.classList.toggle('rec', !!this.stepArmed && playing);
+    const label = this.stepArmed && playing ? t('edit.record') : t('edit.stepInput');
+    if (step.textContent !== label) step.textContent = label;
   }
 
   _syncTypes() {
@@ -513,6 +594,10 @@ export class EditorScreen {
     const selectBefore = opts.selectBefore || [...this.session.selection];
     const changed = this.session.apply(r, { label: opts.label, selectBefore, focusU: opts.focusU, coalesceKey: opts.coalesceKey });
     if (this.mode === 'pen' && !opts.keepSel) this.session.selection = new Set();
+    else if (opts.keepSel && r.select && !r.select.length) {
+      // 何も選ばない操作(譜面情報・音源・BGM をずらす)は、今の選択を残す(無くなったものは外す)
+      this.session.selection = new Set(selectBefore.filter((k) => this.model.kindOf(k)));
+    }
     if (changed) {
       this._afterDocChange();
       this._scheduleDraft();
@@ -1444,6 +1529,14 @@ export class EditorScreen {
   _keyDown(e) {
     if (this.root.hidden) return;
     const tgt = e.target;
+    if (tgt && tgt.tagName === 'SELECT' && this.stepArmed && !e.ctrlKey && !e.metaKey && !e.altKey && !e.isComposing && this._laneOfCode(e.code) >= 0) {
+      // 叩いて入力の間は、パネルの選択欄にフォーカスがあってもレーンのキーは譜面へ(Space で選択欄が開かないように)
+      e.preventDefault();
+      tgt.blur();
+      this.canvas.focus({ preventScroll: true });
+      if (!e.repeat) this.onPadHit(this._laneOfCode(e.code), e.timeStamp || performance.now(), 'key');
+      return;
+    }
     if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.tagName === 'SELECT' || tgt.isContentEditable)) return;
     if (e.isComposing) return;
     // Space は BD のキーなので、選んでいるボタン(ダイアログ・メニューの決定も)を押させない(CLAUDE.md。決定は Enter)
@@ -1473,6 +1566,15 @@ export class EditorScreen {
         case 'KeyD': e.preventDefault(); this.duplicate(); return;
         case 'KeyA': e.preventDefault(); this.selectAll(); return;
         default: return;
+      }
+    }
+    // 叩いて入力のときは、レーンに割り当てたキー(設定のキー割り当て)が先(Space の BD も)。割り当てていないキーはいつもどおり
+    if (this.stepArmed && !e.altKey) {
+      const lane = this._laneOfCode(e.code);
+      if (lane >= 0) {
+        e.preventDefault();
+        if (!e.repeat) this.onPadHit(lane, e.timeStamp || performance.now(), 'key');
+        return;
       }
     }
     const hasSel = this._selKeys().length > 0;
@@ -1735,6 +1837,102 @@ export class EditorScreen {
     this._setMode('select');
   }
 
+  /** 同じ音(#WAV の番号)のチップをすべて選ぶ(DTXCreator の検索の一部。本アプリはこれだけ)。 */
+  selectByValue(id) {
+    this._selectKeys(this.model.chips.filter((c) => !c.locked && c.value === id).map((c) => c.key));
+  }
+
+  /** チップと同じ音のチップをすべて選ぶ。 */
+  selectSameSound(key) {
+    const c = this.model.chip(key);
+    if (c) this.selectByValue(c.value);
+  }
+
+  /**
+   * 音源を試聴する(鳴っていれば止める。長い BGM も止められるように)。チップがまだ使っていない番号(読み込んでいない)は、
+   * ここで読んで鳴らす。
+   */
+  async previewWav(id) {
+    const audio = this.app.audio;
+    // 鳴り終わった音は「鳴っている」に数えない(押すたびに止める / 鳴らすが入れ替わらないように)
+    if (this._wavVoice && audio.allVoices && !audio.allVoices.has(this._wavVoice)) this._wavVoice = null;
+    if (this._wavPending === id) {
+      // 読んでいる間にもう一度押した: やめる
+      this._wavPending = null;
+      this._wavTok = (this._wavTok || 0) + 1;
+      return;
+    }
+    if (this._wavVoice) {
+      audio.stopVoice(this._wavVoice);
+      const same = this._wavVoice.key === id;
+      this._wavVoice = null;
+      if (same) return;
+    }
+    const tok = (this._wavTok = (this._wavTok || 0) + 1);
+    this._wavPending = id;
+    await audio.ensureContext();
+    if (this._closed || tok !== this._wavTok) return;
+    const chart = this.model.chart;
+    const { volume, pan } = AudioEngine.gainPan(chart, id);
+    const opts = { volume: volume * PREVIEW_VOLUME, pan, bus: 'chip', key: id };
+    if (audio.hasBuffer(id) && (!audio.bufferFiles || audio.bufferFiles.get(id) === (chart.wavDefs.get(id) || ''))) {
+      this._wavPending = null;
+      this._wavVoice = audio.play(id, opts);
+      return;
+    }
+    const file = this.model.wavFile(id);
+    const ent = file ? this.session.pkg.resolve(chart.dir, file) : null;
+    let buf = null;
+    try {
+      if (ent) buf = await audio.decode(await this.session.pkg.readBytes(ent), ent.name);
+    } catch (e) {
+      console.warn('音源を読めません:', file, e);
+    }
+    if (this._closed || tok !== this._wavTok) return;
+    this._wavPending = null;
+    if (!buf) {
+      this._toast(t('edit.wavFailed', { file: file || id }));
+      return;
+    }
+    this._wavVoice = audio.playBuffer(buf, opts);
+  }
+
+  /**
+   * 音源を足す(本アプリの追加。DTXCreator はフォルダのファイルを選ぶ)。ファイルを曲のフォルダに入れ(曲パックに重ねる。
+   * 同じ名前で中身の違うファイルがあれば名前を変える)、空いている番号に #WAV を書く。音は ZIP の書き出し・フォルダへの
+   * 上書き保存で一緒に書く(下書きには入らない)。
+   */
+  async importSound(file) {
+    const s = this.session;
+    const pkg = s.pkg;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (this._closed) return;
+    // ペンの番号も避ける(まだ #WAV の無いペンの番号に音が付くと、その列に置くチップの音が変わる)
+    const id = freeWavNumber(this.model, this.session.pens.values());
+    if (!id) {
+      this._toast(t('edit.wavFull'));
+      return;
+    }
+    const raw = file.name.replace(/[\\/:*?"<>|;\r\n]/g, '_').trim() || 'sound.wav';
+    const dot = raw.lastIndexOf('.');
+    const stem = dot > 0 ? raw.slice(0, dot) : raw;
+    const ext = dot > 0 ? raw.slice(dot) : '';
+    let name = raw;
+    for (let i = 2; i < 1000; i++) {
+      const ent = pkg.entry(s.dir + name);
+      if (!ent) break;
+      const cur = await pkg.readBytes(ent).catch(() => null);
+      if (cur && sameBytes(cur, bytes)) break; // 同じ中身のファイルはそのまま使う
+      name = `${stem} (${i})${ext}`;
+    }
+    if (!pkg.entry(s.dir + name)) pkg.setOverride(s.dir + name, bytes);
+    const r = this._commit(() => opSetWav(this.model, id, { file: name, label: stem }), { label: 'edit.opWav', keepSel: true, selectBefore: this._selKeys() });
+    if (r) {
+      this.panel._soundSel = id;
+      this._toast(t('edit.wavAdded', { file: name, id }));
+    }
+  }
+
   /** 選んだものを 1 ガイド(fine: 1 tick)動かす(↑↓。続けて押すと 1 秒の間は 1 手にまとめる)。値はそのまま。 */
   _nudge(dir, fine) {
     const keys = this._selKeys();
@@ -1939,6 +2137,7 @@ export class EditorScreen {
       const other = otherType(c.channel);
       if (other !== null && !channelsConflict(c.channel, other)) items.push({ label: t('edit.addPartner', { type: channelName(other) }), run: () => this._addPartner(c.key) });
     }
+    if (chips.length === 1) items.push({ label: t('edit.selectSameSound'), run: () => this.selectSameSound(chips[0]) });
     items.push({ sep: true }, ...this._measureItems(measure, u), { sep: true });
     items.push({ label: t('edit.playHere'), run: () => { this.view.uHead = cellU; this.play(); } });
     items.push({ label: t('edit.testHere'), run: () => this.testPlay(cellU) });
@@ -2024,7 +2223,9 @@ export class EditorScreen {
     const chart = this.model.chart;
     const ids = requiredWavIds(chart);
     const audio = this.app.audio;
-    if (keepVoices && ids.every((id) => audio.buffers.has(id))) return;
+    // 足りない番号・#WAV のファイルを変えた番号があるときだけ読む(読んだことのあるファイルは復号し直さない)
+    const files = audio.bufferFiles;
+    if (keepVoices && ids.every((id) => audio.buffers.has(id) && (!files || files.get(id) === (chart.wavDefs.get(id) || '')))) return;
     const doc = this.model.doc;
     this._soundLoading = true;
     this._soundInfo = t('load.sounds', { done: 0, total: ids.length });
@@ -2077,6 +2278,8 @@ export class EditorScreen {
     s.metronomeVolume = c.editMetronome ? 60 : 0;
     s.autoPlay = c.editDrumSound !== false;
     s.playSpeed = SPEEDS.includes(c.editSpeed) ? c.editSpeed : 20;
+    // 録音(叩いて入力)の時刻は演奏と同じく判定タイミング調整を足す(トレーニングの設定から読むだけ。保存はしない)
+    s.judgeOffsetMs = this.app.training ? this.app.training.judgeOffsetMs | 0 : 0;
     const lr = this._loopRange;
     s.loop = !!lr;
     if (lr) {
@@ -2140,6 +2343,7 @@ export class EditorScreen {
     if (!p || p.state === PLAYER_STATE.STANDBY) return;
     // (変更) 止めた位置にとどまる(演奏画面の停止は開始位置へ戻る。DTXCreator の「現在の位置」と同じ考え)
     p.enterStandby(false, p.songMs);
+    this._commitRecorded();
     if (this._loopRange) {
       this._loopRange = null;
       this._applyPlayOptions();
@@ -2149,17 +2353,109 @@ export class EditorScreen {
     this._render();
   }
 
-  /** 打鍵(キー・MIDI・タッチ)。今は試し聞きと列の光だけ(叩いて入力は使わない)。 */
+  /**
+   * 打鍵(キー・MIDI・タッチ)。いつもは試し聞きと列の光だけ。「叩いて入力」のときは、止まっていれば再生位置に置き、
+   * 再生中なら録音する(本アプリの追加。docs/spec/chart-editor.md「叩いて入力」)。
+   */
   onPadHit(lane, ts, src) {
-    void ts;
     const ch = padChannel(lane, src, this.session.activeTypes);
     if (ch === null) return;
-    this._previewSound(ch, this._pen(ch));
+    const value = this._pen(ch);
+    this._previewSound(ch, value);
     const col = COLUMN_TYPES.findIndex((tt) => tt.includes(ch));
     if (col >= 0) {
       this.view.state.flash.set(col, performance.now() + 150);
       this._render();
     }
+    if (!this.stepArmed || this._closed) return;
+    const p = this.player;
+    if (p && p.state === PLAYER_STATE.PLAYING) this._recordHit(ch, value, Number.isFinite(ts) ? ts : performance.now());
+    else if (!p || p.state === PLAYER_STATE.STANDBY) this._stepHit(ch, value);
+  }
+
+  /** 「叩いて入力」を入れる / 切る(切ると、録音しかけのチップと和音を 1 手にする)。 */
+  _toggleStep(on = !this.stepArmed) {
+    if (!on) this._stopStep();
+    this.stepArmed = on;
+    this._syncButtons();
+    this._toast(t(on ? 'edit.stepOn' : 'edit.stepOff'));
+  }
+
+  /** キーのコードのレーン(設定のキー割り当て。無ければ -1)。 */
+  _laneOfCode(code) {
+    const b = this.config.bindings || [];
+    for (let lane = 0; lane < b.length; lane++) if (b[lane] && b[lane].includes(code)) return lane;
+    return -1;
+  }
+
+  /**
+   * 止まっているときの打鍵: 再生位置のセル(ガイドに合わせる)にペンの音で置く。続けて 60 ms の間に叩いたものは同じセルに
+   * 置いて 1 手(和音)。閉じたら 1 ガイド進む(⋯ の「叩いたら進む」)。同じチャンネルのチップがあれば鳴らすだけ。
+   */
+  _stepHit(ch, value) {
+    const geo = this.model.geometry;
+    if (!this._chord) {
+      const cell = geo.snap(Math.max(0, this.view.uHead), this._snapGuide(false)) || { measure: 0, tick: 0 };
+      if (cell.measure > MAX_MEASURE) {
+        this._toast(t('edit.measureLimit'));
+        return;
+      }
+      this._chord = { cell, cells: [], timer: setTimeout(() => this._closeChord(), STEP_CHORD_MS) };
+    }
+    const c = this._chord;
+    if (!c.cells.some((x) => x.channel === ch)) c.cells.push({ measure: c.cell.measure, tick: c.cell.tick, channel: ch, value });
+    this.view.state.pending = c.cells.map((x) => ({ column: COLUMN_TYPES.findIndex((tt) => tt.includes(x.channel)), u: geo.u(x.measure, x.tick), channel: x.channel }));
+    this._render();
+  }
+
+  _closeChord() {
+    const c = this._chord;
+    if (!c) return;
+    this._chord = null;
+    clearTimeout(c.timer);
+    if (!this._recorded.length) this.view.state.pending = null;
+    if (!c.cells.length) return;
+    const geo = this.model.geometry;
+    this._commit(() => opPaint(this.model, c.cells), { label: OP.place, focusU: geo.u(c.cell.measure, c.cell.tick) });
+    if (this.config.editStepAdvance !== false && !this._closed) {
+      const next = geo.step(c.cell.measure, c.cell.tick, this.view.guide || 16, 1);
+      this.follow = false;
+      this.view.uHead = geo.u(next.measure, next.tick);
+      this._clampHead();
+    }
+    this._render();
+  }
+
+  /** 再生中の打鍵: 叩いた譜面時刻(演奏の判定と同じ式)のセルに録音する。止めたときに 1 手。 */
+  _recordHit(ch, value, ts) {
+    const p = this.player;
+    const songIn = p.songAt(Math.min(p.realFromPerf(ts), p.nowReal())) + p._w(p.judgeOffsetMs);
+    const geo = this.model.geometry;
+    const u = geo.uOfPos(msToPos(p.chart, songIn));
+    const d = this._snapGuide(false);
+    if (u < -0.5 / (d || TICKS_PER_MEASURE)) return; // リードインで叩いたものは置かない(小節 000 の頭に寄せない)
+    const cell = geo.snap(Math.max(0, u), d);
+    if (!cell || cell.measure > MAX_MEASURE) return;
+    if (this._recorded.some((x) => x.measure === cell.measure && x.tick === cell.tick && x.channel === ch)) return;
+    this._recorded.push({ measure: cell.measure, tick: cell.tick, channel: ch, value });
+    this.view.state.pending = this._recorded.map((x) => ({ column: COLUMN_TYPES.findIndex((tt) => tt.includes(x.channel)), u: geo.u(x.measure, x.tick), channel: x.channel }));
+    this._render();
+  }
+
+  /** 録音したチップを 1 手にする(止めたとき)。 */
+  _commitRecorded() {
+    const cells = this._recorded;
+    this._recorded = [];
+    if (!this._chord) this.view.state.pending = null;
+    if (!cells.length) return;
+    const r = this._commit(() => opPaint(this.model, cells), { label: 'edit.record', focusU: this.model.geometry.u(cells[0].measure, cells[0].tick) });
+    if (r) this._toast(t('edit.recorded', { n: r.select.length }));
+  }
+
+  /** 叩いて入力の途中のものを片付ける(和音を閉じ、録音を 1 手にする)。 */
+  _stopStep() {
+    this._closeChord();
+    this._commitRecorded();
   }
 
   // ---- テストプレイ・保存 ----
@@ -2178,6 +2474,12 @@ export class EditorScreen {
    */
   async saveDtx() {
     const s = this.session;
+    if (!s.fileHandle && s.pkg.writable) {
+      // 上書きは 1 つずつ(続けて押しても、あとの方が新しい中身を書く)
+      this._saveQ = (this._saveQ || Promise.resolve()).then(() => this.saveInPlace());
+      await this._saveQ;
+      return;
+    }
     const doc = s.doc;
     const r = s.outputBytes();
     let name = baseName(s.path);
@@ -2198,6 +2500,57 @@ export class EditorScreen {
       }
     } else downloadBytes(r.bytes, name);
     this._saved(r, name, doc);
+  }
+
+  /** .dtx をダウンロードする(上書きできる曲パックでも、ファイルとして欲しいとき)。 */
+  downloadDtx() {
+    const s = this.session;
+    const doc = s.doc;
+    const r = s.outputBytes();
+    const name = baseName(s.path);
+    downloadBytes(r.bytes, name);
+    this._saved(r, name, doc);
+  }
+
+  /**
+   * 「フォルダを開く(上書き保存できる)」で開いた曲パックの譜面を、そのフォルダのファイルへ上書きする(本アプリの追加)。
+   * この画面で初めて上書きする前に、元のファイルを <名前>.bak に写す(.bak が既にあれば触らない。vid2dtx と同じ)。
+   * 足した音源(曲パックに重ねたファイル)も書く。書けなければダウンロードにして知らせる。
+   */
+  async saveInPlace() {
+    const s = this.session;
+    const arch = s.pkg.zip;
+    const doc = s.doc;
+    const r = s.outputBytes();
+    const name = baseName(s.path);
+    try {
+      if (!(await arch.ensureWritable())) throw new Error('permission denied');
+      if (!s.isNew && !s._bakDone) {
+        const bak = s.path + '.bak';
+        if (!arch.has(bak)) await arch.writeFile(bak, s.originalBytes);
+        s._bakDone = true;
+      }
+      for (const f of s.pkg.addedFiles()) {
+        if (!/\.(dtx|gda|g2d|bms|bme)$/i.test(f.path) && !arch.has(f.path)) s.pkg.adoptWritten(f.path, await arch.writeFile(f.path, f.bytes));
+      }
+      // 書いたファイルを曲パックの中身にする(新しい難易度も、重ねたものを外したあと一覧・演奏から読める)
+      s.pkg.adoptWritten(s.path, await arch.writeFile(s.path, r.bytes));
+      s.diskBytes = r.bytes;
+      await deleteDraft(s.pkg, s.path); // ファイルにしたので下書きは要らない
+    } catch (e) {
+      console.warn('フォルダへ上書きできません(ダウンロードにします):', e);
+      downloadBytes(r.bytes, name);
+      s.history.markExported(doc);
+      this._toast(t('edit.overwriteFailed', { file: name, name }), null, 8000);
+      this._syncButtons();
+      return;
+    }
+    if (this._closed) return;
+    s.history.markExported(doc);
+    const ch = s.encodingChoice;
+    const fellBack = r.changedEncoding && r.encoding === 'utf-8' && !(ch && ch.encoding === 'utf-8');
+    this._toast(fellBack ? t('edit.savedUtf8') : t('edit.savedInPlace', { name }), null, fellBack ? 8000 : 3000);
+    this._syncButtons();
   }
 
   /** 名前を付けて保存(Ctrl+Shift+S。Chromium だけ。ほかのブラウザはダウンロード)。次の Ctrl+S は同じファイルへ上書きする。 */
@@ -2265,7 +2618,9 @@ export class EditorScreen {
     const c = this.config;
     const s = this.session;
     const bytes = s.outputBytes().bytes;
-    const items = [{ label: t('edit.saveDtx'), run: () => this.saveDtx() }];
+    const items = s.pkg.writable
+      ? [{ label: t('edit.saveInPlace'), run: () => this.saveDtx() }, { label: t('edit.saveDtx'), run: () => this.downloadDtx() }]
+      : [{ label: t('edit.saveDtx'), run: () => this.saveDtx() }];
     if (canSaveAs()) items.push({ label: t('edit.saveAs'), run: () => this.saveAs() });
     if (canShareFile(bytes, baseName(s.path))) items.push({ label: t('edit.share'), run: () => this._share() });
     const fromFolder = !(s.pkg.zip && s.pkg.zip.blob);
@@ -2293,6 +2648,8 @@ export class EditorScreen {
     items.push({ label: t('edit.showIds'), checked: !!c.editShowIds, run: () => this._toggleOption('editShowIds') });
     items.push({ label: t('edit.previewSound'), checked: c.editPreviewSound !== false, run: () => this._toggleOption('editPreviewSound') });
     if (this.sidecar) items.push({ label: t('edit.confidence'), checked: c.editConfidence !== false, run: () => this._toggleOption('editConfidence') });
+    if (this.model.doc.index.lockedObjects) items.push({ label: t('edit.otherBranches'), checked: !!c.editOtherBranches, run: () => this._toggleOption('editOtherBranches') });
+    items.push({ label: t('edit.stepAdvance'), checked: c.editStepAdvance !== false, run: () => this._toggleOption('editStepAdvance') });
     items.push({ label: t('edit.help'), run: () => this._toggleHelp(true) });
     items.push({ sep: true });
     items.push({ label: t('edit.discard'), danger: true, disabled: !s.modified, run: () => this._discard() });
@@ -2302,7 +2659,7 @@ export class EditorScreen {
 
   _toggleOption(key) {
     const c = this.config;
-    const def = key === 'editDrumSound' || key === 'editPreviewSound' || key === 'editConfidence';
+    const def = key === 'editDrumSound' || key === 'editPreviewSound' || key === 'editConfidence' || key === 'editStepAdvance';
     const cur = def ? c[key] !== false : !!c[key];
     c[key] = !cur;
     this.app.saveConfig();
@@ -2465,6 +2822,7 @@ export class EditorScreen {
       ['M', t('edit.metronome')],
       ['R', t('edit.typeFlip')],
       ['N', t('edit.nextSuspect')],
+      [t('edit.stepInput'), t('edit.helpStep')],
       ['Alt', t('edit.helpAltClick')],
       ['Shift', t('edit.helpShiftClick')],
       [t('edit.rightClick'), t('edit.helpRightClick')],

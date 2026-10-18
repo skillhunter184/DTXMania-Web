@@ -48,6 +48,7 @@
         <label class="btn"><span data-i18n="home.pickZip">ZIP を選ぶ</span><input type="file" id="file-zip" accept=".zip,application/zip,application/x-zip-compressed"></label>
         <label class="btn secondary"><span data-i18n="home.pickFolder">フォルダを選ぶ</span><input type="file" id="file-dir" webkitdirectory multiple></label>
         <button id="btn-last" class="btn secondary" hidden>前回の ZIP を開く</button>
+        <button type="button" id="btn-folder-rw" class="btn secondary" title="選んだフォルダの譜面へ、編集画面の「保存」でそのまま上書きできます(Chrome / Edge)" data-i18n="edit.openFolderRw" data-i18n-title="edit.openFolderRwTitle" hidden>フォルダを開く(上書き保存できる)</button>
       </div>
       <p class="note" data-i18n="home.dropNote">set.def があれば難易度ごとに、無ければ .dtx ごとに一覧します。ドラム・ギター・ベースの譜面は楽器ごとの行に並び、楽器別のファイルに分かれた同じ曲は 1 つにまとめます。音源は wav / ogg / mp3 / xa に対応。動画は再生しません。</p>
     </div>
@@ -258,6 +259,8 @@
         <button id="edit-follow" class="pb" title="再生位置を追う" aria-label="再生位置を追う" data-i18n-title="edit.follow" data-i18n-aria-label="edit.follow" hidden>⇩</button>
         <button id="edit-test" class="pb text" data-i18n="edit.testPlay">テストプレイ</button>
         <button id="edit-suspect" class="pb text" data-i18n="edit.nextSuspect" hidden>次の要確認</button>
+        <button id="edit-step" class="pb text" aria-pressed="false" title="叩いた列を再生位置に置く(再生中は録音)" data-i18n="edit.stepInput" data-i18n-title="edit.stepTitle">叩いて入力</button>
+        <button id="edit-panel" class="pb" title="パネル" aria-label="パネル" data-i18n-title="edit.panel" data-i18n-aria-label="edit.panel">☰</button>
       </div>
       <div class="grp types" id="edit-types" role="group" aria-label="チップの種類" data-i18n-aria-label="edit.types">
         <span>HH</span><div class="seg" data-col="1"><button type="button" data-i18n="edit.hhClosed">閉</button><button type="button" data-i18n="edit.hhOpen">開</button></div>
@@ -271,6 +274,7 @@
         <canvas id="edit-canvas" tabindex="0" role="application" aria-label="譜面" data-i18n-aria-label="edit.canvas"></canvas>
         <div id="edit-rail" aria-label="譜面の位置" data-i18n-aria-label="edit.rail"><div id="edit-rail-thumb"></div></div>
       </div>
+      <aside id="edit-side" aria-label="パネル" data-i18n-aria-label="edit.panel" hidden></aside>
     </div>
     <div id="edit-status" aria-live="polite"><span id="edit-pos"></span><span id="edit-info"></span></div>
     <div id="edit-toast" role="status" hidden></div>

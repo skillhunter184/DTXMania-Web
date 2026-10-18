@@ -12,7 +12,7 @@ import { EditModel } from '../js/edit/model.js';
 import {
   EditError, opPlace, opPaint, opDelete, opMove, opSetType, opAddPartner, opSetValue, clampMove,
   opSetBpm, gcBpmKeys, opBarLength, barOverflow, opInsertMeasure, opDeleteMeasure, measureDeleteSummary,
-  copyClip, opPaste, opDuplicate, opNudge,
+  copyClip, opPaste, opDuplicate, opNudge, opHeader, opSetWav, wavDefinitions, freeWavNumber, opShiftBgm, newChartText,
 } from '../js/edit/ops.js';
 import { EditHistory } from '../js/edit/history.js';
 import { EditSession } from '../js/edit/session.js';
@@ -636,4 +636,152 @@ test('editops2 review: BPM numbers avoid dangling ch 08 references; locked BPM m
   const bl = ops2('#RANDOM 2\n#IF 1\n#00302: 0.75\n#ENDIF\n#00111: 01\n#00811: 01\n');
   assert(throwsCode(() => opInsertMeasure(bl, 6), 'measureLocked'));
   assert(throwsCode(() => opDeleteMeasure(bl, 6), 'measureLocked'));
+});
+
+test('editops3: header fields (rewrite every occurrence, remove when empty, BPM / DLEVEL checks), new chart template', () => {
+  const m = ops2('#TITLE: 古い\n#ARTIST: a\n#BPM: 120\n#DLEVEL: 50\n#00111: 01\n');
+  assertEq(opHeader(m, 'TITLE', '新しい; 曲').doc.text, '#TITLE: 新しい  曲\n#ARTIST: a\n#BPM: 120\n#DLEVEL: 50\n#00111: 01\n', '; はコメントになるので空白に');
+  assertEq(opHeader(m, 'ARTIST', '  ').doc.text, '#TITLE: 古い\n#BPM: 120\n#DLEVEL: 50\n#00111: 01\n', '空 = 行を消す');
+  assertEq(opHeader(m, 'GENRE', 'Rock').doc.text, '#TITLE: 古い\n#ARTIST: a\n#BPM: 120\n#DLEVEL: 50\n#GENRE: Rock\n#00111: 01\n', '無ければヘッダの最後に足す');
+  assertEq(opHeader(m, 'TITLE', '古い').doc, m.doc, '同じなら同じ文書');
+  assertEq(opHeader(m, 'BPM', '145.50').doc.text.split('\n')[2], '#BPM: 145.5');
+  assert(throwsCode(() => opHeader(m, 'BPM', ''), 'bpmRange'));
+  assert(throwsCode(() => opHeader(m, 'DLEVEL', '7.5'), 'levelRange'));
+  assertEq(opHeader(m, 'DLEVEL', '075').doc.text.split('\n')[3], '#DLEVEL: 75');
+  // 新しい難易度: #IF の外のヘッダと BGM / 小節長 / BPM の行だけ。#DLEVEL は消す
+  const src = DtxDoc.fromText('#TITLE: t\n#DLEVEL: 50\n#WAV01: bgm.ogg\n#BPM01: 150\n#00101: 01\n#00102: 0.75\n#00108: 01\n#00112: 01\n#RANDOM 2\n#IF 1\n#00213: 01\n#ENDIF\n');
+  assertEq(newChartText(src), '; Created by DTXMania Web\r\n#TITLE: t\r\n#WAV01: bgm.ogg\r\n#BPM01: 150\r\n#00101: 01\r\n#00102: 0.75\r\n#00108: 01\r\n');
+});
+
+test('editops3: sound definitions (#WAV / #VOLUME / #PAN / #BGMWAV, label, aliases, redefined ids are read-only), free number, BGM shift', () => {
+  const m = ops2('#WAV01: bd.wav\t;BD\n#VOLUME01: 80\n#WAV02: sd.wav\n#00113: 01\n#00112: 02\n');
+  const defs = wavDefinitions(m.doc);
+  assertDeepEq([defs.get('01').file, defs.get('01').label, defs.get('01').volume, defs.get('01').pan], ['bd.wav', 'BD', 80, null]);
+  // 音量 100 は行を消す、位置・BGM は足す(その番号の定義の後ろ)
+  const r = opSetWav(m, '01', { volume: 100, pan: -30, bgm: true });
+  assertEq(r.doc.text, '#WAV01: bd.wav\t;BD\n#PAN01: -30\n#BGMWAV: 01\n#WAV02: sd.wav\n#00113: 01\n#00112: 02\n');
+  // ファイルとラベル
+  assertEq(opSetWav(m, '02', { file: 'snare.wav', label: 'SD' }).doc.text.split('\n')[2], '#WAV02: snare.wav\t;SD');
+  // 新しい番号は音源の定義の最後に足す
+  assertEq(opSetWav(m, '03', { file: 'ht.wav', volume: 50 }).doc.text, '#WAV01: bd.wav\t;BD\n#VOLUME01: 80\n#WAV02: sd.wav\n#WAV03: ht.wav\n#VOLUME03: 50\n#00113: 01\n#00112: 02\n');
+  // ファイルを空にすると定義ごと消す
+  assertEq(opSetWav(m, '01', { file: '' }).doc.text, '#WAV02: sd.wav\n#00113: 01\n#00112: 02\n');
+  // #WAVVOL を使うファイルはそのまま #WAVVOL
+  const alias = ops2('#WAV01: a.wav\n#WAVVOL01: 70\n#WAV02: b.wav\n');
+  assertEq(opSetWav(alias, '02', { volume: 40 }).doc.text, '#WAV01: a.wav\n#WAVVOL01: 70\n#WAV02: b.wav\n#WAVVOL02: 40\n');
+  assert(throwsCode(() => opSetWav(m, '01', { volume: 101 }), 'wavVolumeRange'));
+  // 何度も定義された番号は変えない
+  const red = ops2('#WAV01: a.wav\n#WAV01: b.wav\n');
+  assert(wavDefinitions(red.doc).get('01').redefined);
+  assert(throwsCode(() => opSetWav(red, '01', { file: 'c.wav' }), 'wavRedefined'));
+  assertEq(freeWavNumber(m), '03');
+  // BGM をずらす: 120 BPM で 1 拍 500 ms = 96 tick
+  const b = ops2('#BPM: 120\n#WAV0A: bgm.ogg\n#00101: 0A\n');
+  assertEq(opShiftBgm(b, 500).doc.text, '#BPM: 120\n#WAV0A: bgm.ogg\n#00101: 000A0000\n');
+  assert(throwsCode(() => opShiftBgm(b, -3000), 'bgmShiftRange'), 'リードインより前には出さない');
+  // 使用数・編集画面に出さないチップの数
+  const u = ops2('#00113: 0101\n#00101: 01\n#00161: 02\n#0014F: 06\n');
+  assertEq(u.wavUses.get('01'), 3);
+  assertEq(u.wavUses.get('06') || 0, 0, 'ボーナスの印は音源の番号ではない');
+  assertEq(u.otherChips, 1, 'SE の 1 個');
+});
+
+/** File System Access のフォルダのハンドルの代わり(テスト用。path → バイト列)。 */
+function fakeDir(files) {
+  const mkfile = (name, bytes) => ({
+    kind: 'file', name, bytes,
+    async getFile() { return new File([this.bytes], name); },
+    async createWritable() {
+      const self = this;
+      let buf = null;
+      return { async write(b) { buf = new Uint8Array(b); }, async close() { self.bytes = buf; }, async abort() { buf = null; } };
+    },
+  });
+  const mkdir = (name) => ({
+    kind: 'directory', name, children: new Map(),
+    async *entries() { for (const e of this.children) yield e; },
+    async getDirectoryHandle(n, o = {}) {
+      let c = this.children.get(n);
+      if (!c && o.create) this.children.set(n, (c = mkdir(n)));
+      if (!c) throw new DOMException('not found', 'NotFoundError');
+      return c;
+    },
+    async getFileHandle(n, o = {}) {
+      let c = this.children.get(n);
+      if (!c && o.create) this.children.set(n, (c = mkfile(n, new Uint8Array())));
+      if (!c) throw new DOMException('not found', 'NotFoundError');
+      return c;
+    },
+    async queryPermission() { return 'granted'; },
+  });
+  const root = mkdir('pack');
+  for (const [path, bytes] of Object.entries(files)) {
+    const parts = path.split('/');
+    const name = parts.pop();
+    let d = root;
+    for (const p of parts) {
+      if (!d.children.has(p)) d.children.set(p, mkdir(p));
+      d = d.children.get(p);
+    }
+    d.children.set(name, mkfile(name, bytes));
+  }
+  return root;
+}
+
+test('song: a folder opened with a directory handle can be written back (HandleArchive: .bak, new sound files, re-read after writing); the overlay follows the bytes on disk', async () => {
+  const enc = (s) => new TextEncoder().encode(s);
+  const root = fakeDir({ 'Song/a.dtx': enc('#TITLE: a\r\n#00113: 01\r\n'), 'Song/bd.wav': new Uint8Array([1, 2, 3]), '.hidden/x.dtx': enc('#TITLE: x\r\n') });
+  const pkg = await SongPackage.fromHandle(root);
+  assert(pkg.writable);
+  assertEq(pkg.songs.length, 1, '. で始まるフォルダは読まない');
+  const arch = pkg.zip;
+  assert(await arch.ensureWritable());
+  assert(!arch.has('Song/a.dtx.bak'));
+  await arch.writeFile('Song/a.dtx.bak', enc('old'));
+  await arch.writeFile('Song/a.dtx', enc('#TITLE: b\r\n'));
+  await arch.writeFile('Song/new/tom.wav', new Uint8Array([9]));
+  assert(arch.has('Song/a.dtx.bak') && arch.has('Song/new/tom.wav'));
+  assertEq(new TextDecoder().decode(root.children.get('Song').children.get('a.dtx').bytes), '#TITLE: b\r\n');
+  assertEq(new TextDecoder().decode(await pkg.readBytes('Song/a.dtx')), '#TITLE: b\r\n', '書いたあとも読める(File を読み直す)');
+  assertDeepEq([...root.children.get('Song').children.get('new').children.get('tom.wav').bytes], [9]);
+  // セッション: フォルダへ書いたあとは、そのバイト列と同じなら重ねない
+  const orig = enc('#TITLE: a\r\n#00113: 01\r\n');
+  const ses = new EditSession({ pkg, song: pkg.songs[0], chartRef: pkg.songs[0].charts[0], originalBytes: orig });
+  ses.diskBytes = orig;
+  await ses.commit();
+  assertEq(pkg.override('Song/a.dtx'), null);
+  ses.diskBytes = enc('#TITLE: other\r\n');
+  await ses.commit();
+  assert(pkg.override('Song/a.dtx'), 'ディスクと違えば重ねる');
+});
+
+test('editops3 review: new chart drops every level line; #PANEL text is not a pan; sound ids defined inside #IF are read-only; a new chart saved to the folder stays in the pack', async () => {
+  const src = DtxDoc.fromText('#TITLE: t\n#DLEVEL: 50\n#GLEVEL: 40\n#BLEVEL: 30\n#GLVDEC: 5\n#00101: 01\n');
+  assertEq(newChartText(src), '; Created by DTXMania Web\r\n#TITLE: t\r\n#00101: 01\r\n');
+  const panel = ops2('#PANEL: 3rd stage\n#WAVEL: el.wav\n');
+  assertEq(wavDefinitions(panel.doc).get('EL').pan, null, '#PANEL の文字は位置ではない');
+  assertEq(opSetWav(panel, 'EL', { volume: 50 }).doc.text, '#PANEL: 3rd stage\n#WAVEL: el.wav\n#VOLUMEEL: 50\n', '#PANEL を消さない');
+  const iff = ops2('#WAV01: a.wav\n#RANDOM 2\n#IF 1\n#VOLUME01: 50\n#WAV02: b.wav\n#ENDIF\n');
+  assert(wavDefinitions(iff.doc).get('01').redefined, '#IF の中に #VOLUME01');
+  assert(wavDefinitions(iff.doc).get('02').redefined, '#IF の中だけで定義');
+  assertEq(freeWavNumber(iff), '03');
+  // フォルダへ書いた新しい難易度は、重ねたものを外しても曲パックに残る
+  const enc = (s) => new TextEncoder().encode(s);
+  const root = fakeDir({ 'Song/a.dtx': enc('#TITLE: a\r\n#00113: 01\r\n') });
+  const pkg = await SongPackage.fromHandle(root);
+  const path = 'Song/a_edit.dtx';
+  const tpl = enc('#TITLE: a\r\n');
+  pkg.setOverride(path, tpl);
+  await pkg.rescan();
+  const song = pkg.songs.find((x) => x.charts.some((c) => c.path === path));
+  const ses = new EditSession({ pkg, song, chartRef: song.charts.find((c) => c.path === path), originalBytes: tpl, isNew: true });
+  pkg.adoptWritten(path, await pkg.zip.writeFile(path, tpl));
+  ses.diskBytes = tpl;
+  await ses.commit();
+  assert(pkg.entry(path), '曲パックに残る');
+  assertEq(new TextDecoder().decode(await pkg.readBytes(path)), '#TITLE: a\r\n');
+  assert((await pkg.loadChart(path)).title === 'a');
+  assertEq(draftKey(pkg, path).split(':')[1], 'pack|folder', '上書きできるフォルダの下書きのキーはファイル数を見ない');
+  // 新しい難易度の下書きは「元」(作ったときの写し)を持つ
+  assertDeepEq([...ses.draftValue().base], [...tpl]);
 });

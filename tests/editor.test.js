@@ -501,3 +501,150 @@ test('editor: choosing Shift-JIS saves with the normal toast; a click that did n
     await h.done();
   }
 });
+
+test('editor P3: side panel (toggle, chip / bar / info / sound tabs), header edit is one step, sound properties via the panel', async () => {
+  const h = await openEditor(CHART);
+  const { ed, session, key, click, at } = h;
+  try {
+    const side = h.sec.querySelector('#edit-side');
+    assert(side.hidden, '初めは閉じている');
+    h.sec.querySelector('#edit-panel').click();
+    await sleep(5);
+    assert(!side.hidden && ed.panel.open);
+    assert(h.app.config.editPanelOpen, '開いたことを覚える');
+    // チップのタブ: 選ぶと数と音の選択肢
+    key('KeyS', { key: 's' });
+    await click(at(5, 1, 0));
+    ed.panel.refresh(true);
+    assert(side.textContent.includes('1 個を選択中'), side.textContent.slice(0, 120));
+    // 音を変える(パネルの選択肢)
+    const sel = side.querySelector('.side-dl select');
+    sel.value = '02';
+    sel.dispatchEvent(new Event('change'));
+    assertEq(ed.model.chips.find((c) => c.channel === 0x13 && c.measure === 1 && c.tick === 0).value, '02');
+    // 小節のタブ
+    ed.panel.setTab('measure');
+    assert(side.textContent.includes('小節 001') || side.textContent.includes('小節 000'), side.textContent.slice(0, 120));
+    // 譜面情報: 書き終えたら 1 手
+    ed.panel.setTab('info');
+    const idx = session.history.index;
+    const title = side.querySelector('#edit-h-title');
+    title.value = '新しい題名';
+    title.dispatchEvent(new Event('change'));
+    assertEq(ed.model.doc.header('TITLE'), '新しい題名');
+    assertEq(session.history.index, idx + 1);
+    assertEq(session.history.label, 'edit.opHeader');
+    const lv = side.querySelector('#edit-h-dlevel');
+    lv.value = '7.5';
+    lv.dispatchEvent(new Event('change'));
+    assertEq(session.history.index, idx + 1, '読めない #DLEVEL は書かない');
+    // 音源のタブ: 一覧と、番号を選んでプロパティ
+    ed.panel.setTab('sounds');
+    const rows = [...side.querySelectorAll('.side-wavs tr')].slice(1).map((r) => r.firstChild.textContent);
+    assertEq(rows.join(), '01,02,03,05', '定義した番号と、チップが使っている番号(定義なし)');
+    side.querySelectorAll('.side-wavs tr')[2].click();
+    await sleep(5);
+    const props = [...side.querySelectorAll('button')].find((b) => b.textContent === 'サウンドプロパティ');
+    props.click();
+    await sleep(5);
+    const dlg = h.dialog();
+    assert(dlg.open);
+    dlg.querySelectorAll('input[type=number]')[1].value = '-40';
+    await h.dialogButton('ok');
+    assert(ed.model.doc.text.includes('#PAN02: -40'), ed.model.doc.text);
+    // 閉じる
+    side.querySelector('.side-close').click();
+    assert(side.hidden);
+  } finally {
+    await h.done();
+  }
+});
+
+test('editor P3: step input (chord of hits is one step and advances one grid line; lane keys while armed), recording commits on stop', async () => {
+  const h = await openEditor(CHART);
+  const { ed, session, key, geo } = h;
+  try {
+    h.app.config.bindings = [['KeyA'], ['KeyS'], ['KeyW'], ['KeyD'], ['KeyF'], ['Space'], ['KeyJ'], ['KeyK'], ['KeyL'], ['Semicolon']];
+    ed.view.uHead = geo().u(2, 96);
+    h.sec.querySelector('#edit-step').click();
+    assert(ed.stepArmed);
+    assertEq(h.sec.querySelector('#edit-step').getAttribute('aria-pressed'), 'true');
+    const idx = session.history.index;
+    ed.onPadHit(3, performance.now(), 'midi'); // SD
+    key('Space', { key: ' ' }); // BD(Space は BD のキー)
+    await sleep(120);
+    const at296 = ed.model.chips.filter((c) => c.measure === 2 && c.tick === 96).map((c) => c.channel.toString(16)).sort();
+    assertEq(at296.join(), '12,13');
+    assertEq(session.history.index, idx + 1, '和音は 1 手');
+    assertEq(Math.round((ed.view.uHead - geo().u(2, 96)) * 384), 24, '1 ガイド(1/16)進む');
+    // 割り当てていない文字のキーはいつもどおり(P は再生 / 停止のまま。S は HH のレーンなので選択のモードにならない)
+    key('KeyS', { key: 's' });
+    await sleep(120);
+    assertEq(ed.mode, 'pen', 'S は HH');
+    assert(ed.model.chips.some((c) => c.channel === 0x11 && c.measure === 2 && c.tick === 120), 'HH を置いた');
+    // 録音(再生中の打鍵): 偽の再生で、叩いた時刻のセルに置き、止めたら 1 手
+    const ms = 4000 + 500; // 120 BPM: 小節 001 の頭 = 4000 ms(リードイン 2000 + 小節 000)。+1 拍
+    ed.player = Object.assign(Object.create(ed.player), {
+      state: 'playing', chart: ed.model.chart, songAt: () => ms, realFromPerf: (x) => x, nowReal: () => Infinity, _w: () => 0, judgeOffsetMs: 0,
+    });
+    ed.onPadHit(4, performance.now(), 'midi'); // HT
+    ed.onPadHit(4, performance.now(), 'midi'); // 同じセルの同じチャンネルは 1 つ
+    assertEq((ed.view.state.pending || []).length, 1);
+    const idx2 = session.history.index;
+    ed._commitRecorded();
+    assertEq(session.history.index, idx2 + 1);
+    assertEq(session.history.label, 'edit.record');
+    assert(ed.model.chips.some((c) => c.channel === 0x14 && c.measure === 1 && c.tick === 96), 'HT 1:96');
+    assert(h.sec.querySelector('#edit-toast').textContent.includes('1 個を録音しました'));
+    ed.player = Object.getPrototypeOf(ed.player);
+    h.sec.querySelector('#edit-step').click();
+    assert(!ed.stepArmed);
+  } finally {
+    await h.done();
+  }
+});
+
+test('editor P3 review: importing sounds (pen ids avoided, same name renamed, same bytes reused, ; in the name), header edits keep the selection, lead-in hits are not recorded', async () => {
+  const h = await openEditor(CHART);
+  const { ed, session, key, click, at, pkg } = h;
+  try {
+    const dir = session.dir;
+    ed.session.pens.set(0x1a, '04'); // LC のペンは 04(まだ #WAV が無い)
+    const pens = new Set(ed.session.pens.values());
+    await ed.importSound(new File([new Uint8Array([1, 2, 3])], 'Tom.wav'));
+    const defs = () => ed.model.doc.text.split(/\r?\n/).filter((l) => l.startsWith('#WAV'));
+    const added = defs().find((l) => l.includes('Tom.wav'));
+    const id = added && added.slice(4, 6);
+    assert(id && !pens.has(id) && !['01', '02', '03', '05'].includes(id), 'ペン・チップの番号は使わない: ' + added);
+    assert(pkg.override(dir + 'Tom.wav'));
+    await ed.importSound(new File([new Uint8Array([9, 9])], 'Tom.wav'));
+    assert(defs().some((l) => l.includes('Tom (2).wav')), '中身の違う同じ名前は名前を変える: ' + defs().join(' / '));
+    const n = defs().length;
+    await ed.importSound(new File([new Uint8Array([1, 2, 3])], 'Tom.wav'));
+    assert(defs()[n] && defs()[n].includes(': Tom.wav'), '同じ中身はそのファイルを使う');
+    await ed.importSound(new File([new Uint8Array([4])], 'a;b.wav'));
+    assert(defs().some((l) => l.includes(': a_b.wav')) && pkg.override(dir + 'a_b.wav'), '; は _');
+    // 譜面情報を変えても選択は残る
+    key('KeyS', { key: 's' });
+    await click(at(5, 1, 0));
+    assertEq(session.selection.size, 1);
+    h.sec.querySelector('#edit-panel').click();
+    ed.panel.setTab('info');
+    const title = h.sec.querySelector('#edit-h-title');
+    title.value = 'x';
+    title.dispatchEvent(new Event('change'));
+    assertEq(session.selection.size, 1, '選択はそのまま');
+    // リードインで叩いたものは録音しない
+    ed.stepArmed = true;
+    const lead = 1000; // リードイン(0〜2000 ms)の中
+    ed.player = Object.assign(Object.create(ed.player), {
+      state: 'playing', chart: ed.model.chart, songAt: () => lead, realFromPerf: (x) => x, nowReal: () => Infinity, _w: () => 0, judgeOffsetMs: 0,
+    });
+    ed.onPadHit(3, performance.now(), 'midi');
+    assertEq(ed._recorded.length, 0);
+    ed.player = Object.getPrototypeOf(ed.player);
+    ed.stepArmed = false;
+  } finally {
+    await h.done();
+  }
+});

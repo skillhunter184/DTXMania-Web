@@ -44,6 +44,8 @@
 | `js/edit/editor.js` / `view.js` / `gestures.js` / `dialogs.js` | DTXC `CMainForm`(ツールバー・メニュー・ショートカット)、vid2dtx の編集の操作 | (変更) タッチ・Apple Pencil の身振り、ペン / 選択のモード |
 | `js/edit/editplayer.js` | DTXC の「再生」(DTXViewer を起動) | (変更) 演奏の `Player` を継承して全部 AUTO で鳴らす。トレーニングの設定に触れない |
 | `js/edit/sidecar.js` | vid2dtx の確信度のファイル(`<譜面>.dtx.conf.json`) | 読むだけ |
+| `js/edit/panel.js` | DTXC の右側のタブ(WAV の一覧・譜面情報)、`CSoundPropertiesDialog` | (変更) 横のパネルにまとめた(チップ / 小節 / 譜面情報 / 音源)。WAV の一覧は使っている番号だけ(DTXC は 1295 行)。何度も定義した番号は変えない |
+| `HandleArchive`(js/core/zip.js) | vid2dtx の上書き保存(`.bak` を残す) | (追加) File System Access のフォルダのハンドルから読み、書き戻せる。初めて上書きする前に `.bak`(既にあれば触らない) |
 
 ## 時計モデル
 
@@ -178,3 +180,7 @@ STANDBY ──演奏開始/リスタート──▶ START IN(実時間で待つ)
   行き来するたびに長い BGM を復号し直さない)。別の譜面を読むときは前の譜面の音をすぐ手放す。編集で番号を足したときは
   鳴っている音を止めずに読み足す(`keepVoices`)
 - **ZIP の書き出し**は元のエントリを圧縮したまま写し(`ZipWriter.copyEntry`)、編集した譜面だけを入れ替える
+- **フォルダへの上書き**(「フォルダを開く(上書き保存できる)」で開いた曲パック。`HandleArchive`)は、書いたあと File を読み直し、
+  セッションはそのバイト列(`diskBytes`)を「ディスクの中身」として持つ(同じなら曲パックに重ねない)
+- **叩いて入力**は `onPadHit`(電子ドラムは main.js から、キーは編集画面が設定のキー割り当てで引く)。止まっていれば 60 ms の和音を
+  1 手にして進み、再生中は `Player` の判定と同じ式で譜面時刻を出して録音し、止めたときに 1 手
