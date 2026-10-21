@@ -260,6 +260,7 @@
         <button id="edit-test" class="pb text" data-i18n="edit.testPlay">テストプレイ</button>
         <button id="edit-suspect" class="pb text" data-i18n="edit.nextSuspect" hidden>次の要確認</button>
         <button id="edit-step" class="pb text" aria-pressed="false" title="叩いた列を再生位置に置く(再生中は録音)" data-i18n="edit.stepInput" data-i18n-title="edit.stepTitle">叩いて入力</button>
+        <button id="edit-preview-btn" class="pb text" aria-pressed="false" title="演奏画面と同じレーンのプレビューを右に並べる (V)" data-i18n="edit.preview" data-i18n-title="edit.previewTitle">プレビュー</button>
         <button id="edit-panel" class="pb" title="パネル" aria-label="パネル" data-i18n-title="edit.panel" data-i18n-aria-label="edit.panel">☰</button>
       </div>
       <div class="grp types" id="edit-types" role="group" aria-label="チップの種類" data-i18n-aria-label="edit.types">
@@ -273,6 +274,7 @@
       <div id="edit-stage">
         <canvas id="edit-canvas" tabindex="0" role="application" aria-label="譜面" data-i18n-aria-label="edit.canvas"></canvas>
         <div id="edit-rail" aria-label="譜面の位置" data-i18n-aria-label="edit.rail"><div id="edit-rail-thumb"></div></div>
+        <canvas id="edit-preview" aria-label="演奏画面のプレビュー" data-i18n-aria-label="edit.previewLabel" hidden></canvas>
       </div>
       <aside id="edit-side" aria-label="パネル" data-i18n-aria-label="edit.panel" hidden></aside>
     </div>

@@ -23,7 +23,7 @@ export const GHOST_FILL = GHOST_RGB.map(([r, g, b]) => `rgba(${r},${g},${b},0.28
 export const GHOST_STROKE = GHOST_RGB.map(([r, g, b]) => `rgba(${r},${g},${b},0.95)`);
 const REPLAY_COLOR = 'rgb(255,170,90)';
 export const FONT = '"Segoe UI", "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif';
-const PORTRAIT_MARGIN = 80;
+export const PORTRAIT_MARGIN = 80;
 
 // 演出の下敷き(元実装に無い追加)。新しい Renderer の最初の数フレームは、演奏中に出る演出を本番と同じ関数で
 // 静止部分 base の下(全面の黒塗りの後、base を貼る前)に描く。base に覆われるので画面は変わらない。

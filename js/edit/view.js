@@ -89,12 +89,13 @@ export class EditView {
    * @param {number} cssW キャンバスの CSS 幅
    * @param {number} cssH
    * @param {number} dpr
+   * @param {'wide'|'compact'|null} [layout] 配置(省けば幅で決める。演奏画面のプレビューを並べるときに狭い配置にする)
    */
-  resize(cssW, cssH, dpr = 1) {
+  resize(cssW, cssH, dpr = 1, layout = null) {
     this.cssW = Math.max(1, cssW);
     this.cssH = Math.max(1, cssH);
     this.dpr = Math.min(2, dpr || 1);
-    this.layout = this.cssW >= COMPACT_BELOW ? 'wide' : 'compact';
+    this.layout = layout || (this.cssW >= COMPACT_BELOW ? 'wide' : 'compact');
     this.view = VIEWS[this.layout];
     this.s = Math.min(this.cssW / this.view.w, 1);
     this.offX = (this.cssW - this.view.w * this.s) / 2;

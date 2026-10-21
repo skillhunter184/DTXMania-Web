@@ -858,6 +858,11 @@ export const STRINGS = {
   'edit.record': ['録音', 'Record'],
   'edit.recorded': ['{n} 個を録音しました', 'Recorded {n} {n|chip|chips}'],
   'edit.otherBranches': ['ほかの分岐も表示', 'Show other branches'],
+  'edit.preview': ['プレビュー', 'Preview'],
+  'edit.previewTitle': ['演奏画面と同じレーンのプレビューを右に並べる (V)', 'Show a play-screen preview of the lanes on the right (V)'],
+  'edit.previewLabel': ['演奏画面のプレビュー', 'Play-screen preview'],
+  'edit.previewPanel': ['横のパネルを閉じると、プレビューを出します', 'Close the side panel to show the preview'],
+  'edit.previewNarrow': ['画面が狭いので、プレビューは広げたときに出します', 'The screen is too narrow for the preview; it appears when there is room'],
   'edit.helpStep': ['叩いた列(キー・電子ドラム)を再生位置に置いて進む。再生中は録音', 'Hits (keys or e-drums) are placed at the playhead, which then advances; while playing they are recorded'],
 };
 

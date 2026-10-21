@@ -25,8 +25,9 @@ import {
   clampMove, opNudge, copyClip, opPaste, opDuplicate, opSetBpm, opBarLength, barOverflow, opInsertMeasure, opDeleteMeasure,
   measureDeleteSummary, formatBpm, opSetWav, freeWavNumber,
 } from './ops.js';
-import { EditPanel } from './panel.js';
-import { EditView, HEADER_CSS } from './view.js';
+import { EditPanel, PANEL_DOCK_MIN, PANEL_DOCK_W } from './panel.js';
+import { PreviewRenderer, previewWidth, PREVIEW_MIN_W } from './preview.js';
+import { EditView, HEADER_CSS, COMPACT_BELOW } from './view.js';
 import { TouchGestures, G } from './gestures.js';
 import { EditorPlayer } from './editplayer.js';
 import { saveDraft, deleteDraft } from './drafts.js';
@@ -77,7 +78,7 @@ const DRAFT_DEBOUNCE_MS = 1500;
 const SPEEDS = [10, 15, 20, 25, 30]; // 再生速度(playSpeed。20 = x1.0。DTXCreator の x0.5〜x1.5)
 
 /** 文字のショートカット(e.code で見る。キーボードの配列・IME に左右されない)。 */
-const LETTER_OF_CODE = { KeyE: 'e', KeyS: 's', KeyP: 'p', KeyT: 't', KeyM: 'm', KeyR: 'r', KeyN: 'n' };
+const LETTER_OF_CODE = { KeyE: 'e', KeyS: 's', KeyP: 'p', KeyT: 't', KeyM: 'm', KeyR: 'r', KeyN: 'n', KeyV: 'v' };
 /** 記号のショートカットの e.code(IME が入力中で e.key が 'Process' のときだけ使う。JIS 配列では [ ] の位置が違うので、ふだんは e.key)。 */
 const SYMBOL_OF_CODE = { BracketLeft: '[', BracketRight: ']', Minus: '-', Equal: '+', NumpadSubtract: '-', NumpadAdd: '+' };
 
@@ -137,6 +138,10 @@ export class EditorScreen {
     this._lastSuspect = null; // 最後に回った要確認 {conf, u}
     this.touch = new TouchGestures(this._touchHandlers());
     this.panel = new EditPanel(this);
+    this.previewRenderer = null; // 演奏画面のプレビュー(js/edit/preview.js)
+    this._previewSize = null; // {w, h}(CSS px)。出していなければ null
+    this._previewUntil = 0; // 止めたあと、プレビューの演出(ファイア・判定の文字)が消えるまで描く
+    this._previewBlock = null; // 出すはずのプレビューを出せないわけ('panel' / 'size')。お知らせの文言
     this.stepArmed = false; // 叩いて入力
     this._chord = null; // 叩いて入力の和音 {cell, cells, timer}
     this._recorded = []; // 再生中に録音したチップ(止めたときに 1 手)
@@ -234,6 +239,8 @@ export class EditorScreen {
     await this.session.commit();
     if (this.player) this.player.dispose();
     this.player = null;
+    if (this.previewRenderer) this.previewRenderer._releaseBase();
+    this.previewRenderer = null;
     this.root.hidden = true;
     void opts;
   }
@@ -305,6 +312,11 @@ export class EditorScreen {
     btn('edit-test', () => this.testPlay());
     btn('edit-suspect', () => this.nextSuspect());
     btn('edit-panel', () => this.panel.toggle());
+    btn('edit-preview-btn', () => this._togglePreview());
+    // プレビューの上でのホイールは譜面を送る(プレビューは押しても何もしない)
+    const pv = $('edit-preview');
+    this._on(pv, 'wheel', (e) => this._wheel(e), { passive: false });
+    this._on(pv, 'contextmenu', (e) => e.preventDefault());
     btn('edit-step', () => this._toggleStep());
     for (const b of document.querySelectorAll('#edit-mode button')) {
       this._on(b, 'click', () => { b.blur(); this._setMode(b.dataset.mode); });
@@ -352,12 +364,46 @@ export class EditorScreen {
   onResize() {
     const stage = $('edit-stage');
     const rail = $('edit-rail');
-    const w = Math.max(1, stage.clientWidth - (rail ? rail.offsetWidth : 0));
+    const railW = rail ? rail.offsetWidth : 0;
     const h = Math.max(1, stage.clientHeight);
+    // 演奏画面のプレビュー(出すなら右に。狭すぎれば出さない)。配置は場所の幅と横のパネルだけで決め、高さやプレビューの幅には
+    // よらせない(よらせると、狭い配置のツールバーの段・横のパネルの寄せ方で場所の大きさが変わり、配置が毎フレーム入れ替わる)。
+    // 広い配置ならそれを狭い配置に落とすほどは取らない。ただし、横のパネルを寄せない窓で広い配置のままでは並べられない幅
+    // (COMPACT_BELOW + PREVIEW_MIN_W 未満)なら、狭い配置にして並べる(それより狭い窓では出るのに、広げると消えないように。
+    // 狭い配置にしたからには、低い窓でも出す)。
+    // 広い配置で横のパネルを右から重ねているときは、プレビューがその下に隠れるので出さない(パネルを閉じると出る)
+    const pv = $('edit-preview');
+    const on = !!this.config.editPreview;
+    const canDock = this.panel.open && window.innerWidth >= PANEL_DOCK_MIN;
+    // 場所の幅は、これから決める寄せ方でのもの(パネルの寄せ方のクラスは下の panel.layout() で変わるので、今の場所を測ると、
+    // 寄せたパネルを閉じた直後などに一度だけ別の配置になり、拡大率も入れ替わる)
+    const stageW = $('edit-main').clientWidth - (canDock ? PANEL_DOCK_W : 0);
+    const avail = stageW - railW;
+    const forceCompact = on && !canDock && avail >= COMPACT_BELOW && avail < COMPACT_BELOW + PREVIEW_MIN_W;
+    const covered = this.panel.open && !canDock && !forceCompact && avail >= COMPACT_BELOW;
+    let pw = 0;
+    if (forceCompact) pw = previewWidth(avail, h);
+    else if (on && !covered) pw = previewWidth(avail, h, COMPACT_BELOW);
+    // 出せないわけ(お知らせ用)。パネルが隠しているか、パネルを閉じれば出る幅になるなら 'panel'、ほかは 'size'
+    this._previewBlock = !on || pw ? null : covered || (canDock && previewWidth(avail + PANEL_DOCK_W, h, COMPACT_BELOW)) ? 'panel' : 'size';
+    pv.hidden = !pw;
+    // 描く大きさは左の区切り線(1px。box-sizing: border-box で幅に含まれる)を除いたもの
+    this._previewSize = pw ? { w: pw - 1, h } : null;
+    if (pw) {
+      pv.style.width = pw + 'px';
+      pv.style.height = h + 'px';
+    } else if (this.previewRenderer) {
+      this.previewRenderer._releaseBase(); // しまったら静止部分の作り置きをすぐ手放す(iOS のキャンバスの総量の上限)
+    }
+    const pvBtn = $('edit-preview-btn');
+    pvBtn.classList.toggle('on', !!this.config.editPreview);
+    pvBtn.setAttribute('aria-pressed', String(!!this.config.editPreview));
+    const w = Math.max(1, avail - pw);
     this.canvas.style.width = w + 'px';
     this.canvas.style.height = h + 'px';
     const before = this.view.layout;
-    this.view.resize(w, h, window.devicePixelRatio || 1);
+    this.view.resize(w, h, window.devicePixelRatio || 1, forceCompact ? 'compact' : null);
+    if (pw && this.previewRenderer) this._resizePreview();
     this.root.classList.toggle('compact', this.view.layout === 'compact');
     this.panel.layout();
     if (before !== this.view.layout) {
@@ -396,6 +442,7 @@ export class EditorScreen {
       p.update(now);
       if (this.follow) this.view.uHead = this._uOfMs(p.songMs);
       more = true;
+      this._previewUntil = now + 600;
       if (p.state === PLAYER_STATE.STANDBY) {
         // 最後まで鳴って止まった
         this.app.releaseWakeLock();
@@ -407,10 +454,12 @@ export class EditorScreen {
     if (this._autoScroll) more = this._stepAutoScroll(now) || more;
     const st = this.view.state;
     for (const until of st.flash.values()) if (until > now) more = true;
+    if (this._previewSize && now < this._previewUntil) more = true;
     if (this._dirty || more) {
       this._dirty = false;
       this._fillState();
       this.view.draw(now);
+      this._drawPreview(now);
       this._updateRail();
       this._updateStatus();
       this.panel.refresh();
@@ -442,6 +491,48 @@ export class EditorScreen {
     const doc = this.model.doc;
     if (!this._suspectCache || this._suspectCache.doc !== doc) this._suspectCache = { doc, map: suspectsOf(this.model, this.sidecar) };
     return this._suspectCache.map;
+  }
+
+  /**
+   * 演奏画面のプレビューを描く。止まっているときは、編集画面の再生位置を判定ラインに合わせ、文書が変わっていれば譜面を
+   * 差し替える(再生中は差し替えない。編集画面の再生と同じ)。ハイスピードはトレーニングの設定のもの。
+   */
+  _drawPreview(now) {
+    const p = this.player;
+    const size = this._previewSize;
+    if (!p || !size) return;
+    if (!this.previewRenderer || this.previewRenderer.player !== p) {
+      this.previewRenderer = new PreviewRenderer($('edit-preview'), this.skin, p);
+      this._resizePreview();
+    }
+    if (p.state === PLAYER_STATE.STANDBY) {
+      const before = this._playerDoc;
+      this._preparePlayer();
+      this._applyPlayOptions();
+      p.applySettings();
+      p.scrollCurrentRatio = p.scrollRatioSetting; // 止まっているときは、ハイスピードを変えたらすぐその速さで
+      const ms = Math.max(0, posToMs(this.model.chart, this.model.geometry.posOfU(Math.max(-1, this.view.uHead))));
+      // 譜面を差し替えたら叩いた印を作り直す(同じ位置でも)
+      if (before !== this._playerDoc) p.enterStandby(false, ms);
+      else p.seekTo(ms);
+    }
+    this.previewRenderer.draw(now);
+  }
+
+  /** プレビューの大きさ(判定ラインは編集画面の再生位置の線にそろえる。どちらのキャンバスも場所の上端から)。 */
+  _resizePreview() {
+    const { w, h } = this._previewSize;
+    this.previewRenderer.resize(w, h, Math.min(2, window.devicePixelRatio || 1), this.view.headY * this.view.s);
+  }
+
+  /** 演奏画面のプレビューを出す / しまう(V。出すかは覚える)。 */
+  _togglePreview() {
+    const c = this.config;
+    c.editPreview = !c.editPreview;
+    this.app.saveConfig();
+    this.onResize();
+    if (c.editPreview && !this._previewSize) this._toast(t(this._previewBlock === 'panel' ? 'edit.previewPanel' : 'edit.previewNarrow'));
+    this._render();
   }
 
   _updateRail() {
@@ -1665,6 +1756,10 @@ export class EditorScreen {
         e.preventDefault();
         this.nextSuspect();
         return;
+      case 'v':
+        e.preventDefault();
+        this._togglePreview();
+        return;
       case 'p':
         e.preventDefault();
         if (e.shiftKey) this.playFromTop();
@@ -2276,6 +2371,8 @@ export class EditorScreen {
     const c = this.config;
     const s = p.settings;
     s.metronomeVolume = c.editMetronome ? 60 : 0;
+    // ハイスピードはトレーニングの設定のもの(プレビューを演奏画面と同じ速さで流す。読むだけで保存はしない)
+    if (this.app.training) s.scrollSpeedTenth = this.app.training.scrollSpeedTenth;
     s.autoPlay = c.editDrumSound !== false;
     s.playSpeed = SPEEDS.includes(c.editSpeed) ? c.editSpeed : 20;
     // 録音(叩いて入力)の時刻は演奏と同じく判定タイミング調整を足す(トレーニングの設定から読むだけ。保存はしない)
@@ -2823,6 +2920,7 @@ export class EditorScreen {
       ['R', t('edit.typeFlip')],
       ['N', t('edit.nextSuspect')],
       [t('edit.stepInput'), t('edit.helpStep')],
+      ['V', t('edit.preview')],
       ['Alt', t('edit.helpAltClick')],
       ['Shift', t('edit.helpShiftClick')],
       [t('edit.rightClick'), t('edit.helpRightClick')],

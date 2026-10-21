@@ -26,6 +26,8 @@ const TABS = [['chips', 'edit.tabChips'], ['measure', 'edit.tabMeasure'], ['info
 
 /** パネルを右に寄せる窓の幅(CSS px)。 */
 export const PANEL_DOCK_MIN = 1100;
+/** 寄せたパネルの幅(CSS px。css/app.css の #edit-side の width と、寄せたときの #edit-stage の right に揃える)。 */
+export const PANEL_DOCK_W = 320;
 
 function h(tag, props = {}, children = []) {
   const e = document.createElement(tag);
@@ -60,7 +62,9 @@ export class EditPanel {
     this.ed.config.editPanelOpen = open;
     this.ed.app.saveConfig();
     this._sig = '';
-    this.layout();
+    // 寄せ方と、演奏画面のプレビューの出し方(重ねたパネルの下に隠れるなら出さない)を決め直す。重ねるだけだと場所の
+    // 大きさは変わらず ResizeObserver が来ないので、ここで呼ぶ(onResize が layout() も呼ぶ)
+    this.ed.onResize();
     if (open) this.refresh(true);
     const b = $('edit-panel');
     if (b) b.classList.toggle('on', open);

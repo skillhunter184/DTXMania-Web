@@ -2,10 +2,12 @@
 // マウス・タッチ・キーの合成イベントで操作して、文書と曲パックへの重ね合わせ・下書きを見る。
 import { test, assert, assertEq, fetchBytes } from './runner.js';
 import { SongPackage } from '../js/core/song.js';
-import { Skin, columnCenterX } from '../js/ui/skin.js';
+import { Skin, columnCenterX, JUDGE_Y, CANVAS_H } from '../js/ui/skin.js';
 import { EditSession } from '../js/edit/session.js';
 import { EditorScreen } from '../js/edit/editor.js';
 import { loadDraft, deleteDraft } from '../js/edit/drafts.js';
+import { previewWidth } from '../js/edit/preview.js';
+import { COMPACT_BELOW } from '../js/edit/view.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -645,6 +647,268 @@ test('editor P3 review: importing sounds (pen ids avoided, same name renamed, sa
     ed.player = Object.getPrototypeOf(ed.player);
     ed.stepArmed = false;
   } finally {
+    await h.done();
+  }
+});
+
+test('editor preview: width from the height (4 割まで、狭ければ出さない、広い配置を狭い配置に落とさない)', () => {
+  assertEq(previewWidth(1000, 800), 400, '幅の 4 割で頭打ち');
+  assertEq(previewWidth(2000, 500), Math.floor(500 * (778 + 160) / 1080), '高さに合わせる(演奏画面の縦画面の切り出し)');
+  assertEq(previewWidth(300, 800), 0, '狭い');
+  assertEq(previewWidth(1000, 150), 160, '低くても最小の幅で出す(描くほうが縮める)');
+  assertEq(previewWidth(1024, 650, COMPACT_BELOW), 1024 - COMPACT_BELOW, '残りを広い配置の幅より狭くしない');
+  assertEq(previewWidth(800, 650, COMPACT_BELOW), 0, '残りが少なければ出さない');
+  assertEq(previewWidth(700, 650, COMPACT_BELOW), 280, 'もとから狭い配置なら 4 割まで');
+});
+
+test('editor preview: the button / V toggle it beside the rail (remembered), it follows the playhead, edits and hi-speed while stopped, the wheel over it scrolls, too narrow → toast', async () => {
+  const h = await openEditor(CHART);
+  const { ed, sec, key, click, at, app } = h;
+  try {
+    const pv = sec.querySelector('#edit-preview');
+    const cv = sec.querySelector('#edit-canvas');
+    const stage = sec.querySelector('#edit-stage');
+    const btnEl = sec.querySelector('#edit-preview-btn');
+    assert(pv.hidden && !ed._previewSize, '初めは出さない');
+    const w0 = parseFloat(cv.style.width);
+    btnEl.click();
+    await sleep(5);
+    assert(app.config.editPreview, '出したことを覚える');
+    const pw = previewWidth(stage.clientWidth - sec.querySelector('#edit-rail').offsetWidth, stage.clientHeight, COMPACT_BELOW);
+    assert(pw > 0, 'テストの画面にはプレビューの場所がある: ' + stage.clientWidth + 'x' + stage.clientHeight);
+    assert(!pv.hidden && btnEl.classList.contains('on'));
+    assertEq(btnEl.getAttribute('aria-pressed'), 'true');
+    assertEq(parseFloat(pv.style.width), pw);
+    assertEq(parseFloat(cv.style.width), w0 - pw, '編集画面がその分狭くなる');
+    assert(pv.getBoundingClientRect().left >= sec.querySelector('#edit-rail').getBoundingClientRect().right - 0.5, '右のバーの右');
+    // 止まっているときは再生位置(1.2 小節目 = リードイン 2000 ms + 2400 ms)を判定ラインに
+    ed._frame(performance.now());
+    const p = ed.player;
+    assert(ed.previewRenderer && ed.previewRenderer.canvas === pv);
+    assertEq(ed.previewRenderer.cssW, pw - 1, '区切り線を除いた幅で描く');
+    assert(ed.previewRenderer.skin.chipSprites !== ed.skin.chipSprites, 'チップの絵の作り置きは編集画面と別');
+    {
+      // 判定ラインは編集画面の再生位置の線にそろえる(ハイウェイが収まる範囲で。横長ではプレビューが高さいっぱいで動かせない)
+      const r = ed.previewRenderer;
+      const want = Math.max(0, Math.min(r.cssH - CANVAS_H * r.scale, ed.view.headY * ed.view.s - JUDGE_Y * r.scale));
+      assert(Math.abs(r.offsetY - want) < 1e-6, `offsetY ${r.offsetY} want ${want}`);
+    }
+    {
+      // 縦長の場所ではそろう
+      const main = sec.querySelector('#edit-main');
+      main.style.width = '900px';
+      ed.onResize();
+      ed._frame(performance.now());
+      const r = ed.previewRenderer;
+      const at = `judge=${r.offsetY + JUDGE_Y * r.scale} head=${ed.view.headY * ed.view.s} offsetY=${r.offsetY} ${r.cssW}x${r.cssH}`;
+      assert(r.offsetY > 0 && Math.abs(r.offsetY + JUDGE_Y * r.scale - ed.view.headY * ed.view.s) < 1, at);
+      main.style.width = '';
+      ed.onResize();
+      ed._frame(performance.now());
+    }
+    assertEq(Math.round(p.songMs), 4400);
+    assert(p.chart === ed.model.chart);
+    assert(p.notes.every((n, i) => p.judged[i] === n.timeMs < 4400), '過ぎたチップは消えている');
+    // 編集はすぐ映る(HT 1:192 = 5000 ms)
+    const n0 = p.notes.length;
+    await click(at(4, 1, 192));
+    ed._frame(performance.now());
+    assert(p.chart === ed.model.chart, '譜面を差し替える');
+    assertEq(p.notes.length, n0 + 1);
+    const ht = p.notes.findIndex((n) => Math.round(n.timeMs) === 5000 && n.channel === 0x14);
+    assert(ht >= 0 && !p.judged[ht], '置いたチップはこれから来る');
+    // 再生位置を動かすと付いてくる
+    ed.view.uHead = 0.5;
+    ed._render();
+    ed._frame(performance.now());
+    assertEq(Math.round(p.songMs), 3000);
+    // プレビューの上のホイールは譜面を送る(400 で 1 小節)
+    pv.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, clientX: 10, clientY: 10, bubbles: true, cancelable: true }));
+    ed._frame(performance.now());
+    assert(Math.abs(ed.view.uHead - 1.5) < 1e-9, String(ed.view.uHead));
+    assertEq(Math.round(p.songMs), 5000);
+    // ハイスピードはトレーニングの設定のもの(止まっていてもすぐ)
+    app.training = { scrollSpeedTenth: 20, judgeOffsetMs: 0 };
+    ed._render();
+    ed._frame(performance.now());
+    assert(Math.abs(p.scrollCurrentRatio - 2) < 1e-9, String(p.scrollCurrentRatio));
+    // V でしまう(編集画面は元の幅)
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    assert(pv.hidden && !app.config.editPreview && !btnEl.classList.contains('on'));
+    assertEq(btnEl.getAttribute('aria-pressed'), 'false');
+    assertEq(parseFloat(cv.style.width), w0);
+    // Ctrl+V は貼り付け(プレビューは変わらない)
+    key('KeyV', { key: 'v', ctrl: true });
+    assert(pv.hidden && !app.config.editPreview);
+    // 狭いときは出さずに知らせる(出すことは覚えておき、広げると出る)
+    const main = sec.querySelector('#edit-main');
+    main.style.width = '260px';
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    assert(app.config.editPreview && pv.hidden && !ed._previewSize);
+    assert(sec.querySelector('#edit-toast').textContent.includes('画面が狭い'), sec.querySelector('#edit-toast').textContent);
+    main.style.width = '';
+    ed.onResize();
+    assert(!pv.hidden && ed._previewSize);
+  } finally {
+    await h.done();
+  }
+});
+
+test('editor preview: with the side panel open the layout settles (the preview never drops the wide layout, which would undock the panel and resize the stage again)', async () => {
+  const h = await openEditor(CHART);
+  const { ed, sec } = h;
+  try {
+    const pv = sec.querySelector('#edit-preview');
+    const cv = sec.querySelector('#edit-canvas');
+    const stage = sec.querySelector('#edit-stage');
+    const rail = sec.querySelector('#edit-rail');
+    sec.querySelector('#edit-panel').click();
+    await sleep(5);
+    sec.querySelector('#edit-preview-btn').click();
+    await sleep(5);
+    const state = () => `${ed.view.layout} dock=${sec.classList.contains('panel-dock')} stage=${stage.clientWidth}x${stage.clientHeight} preview=${pv.hidden ? '-' : pv.style.width}`;
+    const seen = [];
+    for (let i = 0; i < 4; i++) {
+      ed.onResize();
+      seen.push(state());
+    }
+    assert(seen.every((s) => s === seen[0]), '毎回同じ配置: ' + seen.join(' / '));
+    if (stage.clientWidth - rail.offsetWidth >= COMPACT_BELOW) {
+      assertEq(ed.view.layout, 'wide', seen[0]);
+      assert(parseFloat(cv.style.width) >= COMPACT_BELOW, cv.style.width);
+    }
+    // 寄せたパネルで幅が足りない窓: 出さず、お知らせはパネルのこと(閉じれば出る)
+    const main = sec.querySelector('#edit-main');
+    main.style.width = '1180px';
+    ed.onResize();
+    ed.onResize();
+    assert(sec.classList.contains('panel-dock') && ed.view.layout === 'wide' && pv.hidden, state());
+    sec.querySelector('#edit-preview-btn').click();
+    sec.querySelector('#edit-preview-btn').click();
+    await sleep(5);
+    assert(sec.querySelector('#edit-toast').textContent.includes('横のパネルを閉じると'), sec.querySelector('#edit-toast').textContent);
+    // 寄せたパネルを閉じると、狭い配置を挟まずに広い配置のまま出る(拡大率も変わらない)
+    const layouts = [];
+    const zoom = ed.view.zoom;
+    const resize = ed.view.resize;
+    ed.view.resize = function (...a) {
+      resize.apply(this, a);
+      layouts.push(this.layout);
+    };
+    sec.querySelector('#edit-side .side-close').click();
+    await sleep(30);
+    delete ed.view.resize;
+    assert(layouts.length > 0 && layouts.every((l) => l === 'wide'), layouts.join());
+    assertEq(ed.view.zoom, zoom);
+    assert(!sec.classList.contains('panel-dock') && !pv.hidden, state());
+  } finally {
+    await h.done();
+  }
+});
+
+test('editor preview: a stage a little wider than the wide layout (no docked panel) goes compact so the preview fits, without flip-flopping; hiding and closing release its canvas', async () => {
+  const h = await openEditor(CHART);
+  const { ed, sec, key } = h;
+  try {
+    const pv = sec.querySelector('#edit-preview');
+    const stage = sec.querySelector('#edit-stage');
+    const rail = sec.querySelector('#edit-rail');
+    assert(!ed.panel.open, 'パネルは閉じている');
+    const main = sec.querySelector('#edit-main');
+    const narrowTo = (avail) => {
+      main.style.width = avail + rail.offsetWidth + 'px';
+      ed.onResize();
+    };
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    const state = () => `${ed.view.layout} stage=${stage.clientWidth}x${stage.clientHeight} preview=${pv.hidden ? '-' : pv.style.width}`;
+    for (const avail of [800, 760, 879]) {
+      narrowTo(avail);
+      const seen = [];
+      for (let i = 0; i < 3; i++) {
+        ed.onResize();
+        seen.push(state());
+      }
+      assert(seen.every((s) => s === seen[0]), avail + ': 毎回同じ配置: ' + seen.join(' / '));
+      assertEq(ed.view.layout, 'compact', avail + ' ' + seen[0]);
+      assert(!pv.hidden && parseFloat(pv.style.width) >= 160, avail + ' ' + seen[0]);
+    }
+    // 狭い配置にしたからには、低くても最小の幅で出す(広い配置を失ってプレビューも無い、にしない)
+    narrowTo(800);
+    stage.style.bottom = Math.max(0, stage.clientHeight - 120) + 'px';
+    ed.onResize();
+    const low = state();
+    ed.onResize();
+    assertEq(state(), low, '低くても行き来しない');
+    assertEq(ed.view.layout, 'compact', low);
+    assert(!pv.hidden && parseFloat(pv.style.width) === 160, low);
+    stage.style.bottom = '';
+    // 広い配置のまま並べられる幅なら広い配置
+    narrowTo(1000);
+    assertEq(ed.view.layout, 'wide', state());
+    assert(!pv.hidden, state());
+    // しまうと静止部分の作り置きを手放す
+    ed._frame(performance.now());
+    assert(ed.previewRenderer && ed.previewRenderer._base, '描いたので作り置きがある');
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    assert(pv.hidden && ed.previewRenderer._base === null);
+    assertEq(ed.view.layout, 'wide', 'しまえば幅で決まる配置');
+    // 閉じると手放す
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    ed._frame(performance.now());
+    const r = ed.previewRenderer;
+    assert(r && r._base);
+    await ed.close();
+    assert(ed.previewRenderer === null && r._base === null);
+  } finally {
+    await h.done();
+  }
+});
+
+test('editor preview: under a side panel laid over the right edge (window below the dock width) it is not shown and the toast says to close the panel; closing the panel brings it back', async () => {
+  const h = await openEditor(CHART);
+  const { ed, sec, key } = h;
+  const desc = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+  try {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, get: () => 1000 });
+    const pv = sec.querySelector('#edit-preview');
+    const cv = sec.querySelector('#edit-canvas');
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    assert(!pv.hidden, 'パネルを閉じていれば出す');
+    const w0 = parseFloat(cv.style.width) + parseFloat(pv.style.width);
+    sec.querySelector('#edit-panel').click();
+    await sleep(5);
+    assert(ed.panel.open && !sec.classList.contains('panel-dock'), '寄せずに重ねる');
+    assert(pv.hidden && !ed._previewSize, '重ねたパネルの下には出さない');
+    assertEq(parseFloat(cv.style.width), w0, '隠れるプレビューのために編集画面を狭めない');
+    key('KeyV', { key: 'v' });
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    assert(h.app.config.editPreview && pv.hidden);
+    assert(sec.querySelector('#edit-toast').textContent.includes('横のパネルを閉じると'), sec.querySelector('#edit-toast').textContent);
+    // 狭い画面(パネルは下から出す)で出せないのはパネルのせいではないので「狭い」
+    const main = sec.querySelector('#edit-main');
+    main.style.width = '390px';
+    ed.onResize();
+    key('KeyV', { key: 'v' });
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    assert(ed.view.layout === 'compact' && pv.hidden);
+    assert(sec.querySelector('#edit-toast').textContent.includes('画面が狭い'), sec.querySelector('#edit-toast').textContent);
+    main.style.width = '';
+    ed.onResize();
+    // パネルを閉じる(×)と出る
+    sec.querySelector('#edit-side .side-close').click();
+    await sleep(5);
+    assert(!ed.panel.open && !pv.hidden && ed._previewSize);
+  } finally {
+    if (desc) Object.defineProperty(window, 'innerWidth', desc);
+    else delete window.innerWidth;
     await h.done();
   }
 });
