@@ -11,6 +11,7 @@ import {
 } from '../js/edit/videosync.js';
 import { onsetEnvelope, fft, crossCorrelate, peakOf, findOffset, refineLag, ALIGN } from '../js/edit/videoalign.js';
 import { previewWidth, PREVIEW_MIN_W } from '../js/edit/preview.js';
+import { judgeStepPx, hiSpeedStep, formatJudge, judgeFracMin, PreviewBar } from '../js/edit/previewbar.js';
 import { COMPACT_BELOW } from '../js/edit/view.js';
 import { parseDTX } from '../js/core/dtx.js';
 
@@ -625,5 +626,62 @@ test('editvideo sync: the frame rate is only learned from frames the video (not 
     if (Number.isNaN(want)) assert(Number.isNaN(s.fpsSeen), `${hz} Hz の画面の 60 fps は測らない: ${s.fpsSeen}`);
     else assertEq(s.fpsSeen, want, `${hz} Hz`);
     s.dispose();
+  }
+});
+
+test('previewbar: judge line steps (2 px, Shift 20 px, Alt 0.5 px), hi-speed steps (0.05, Shift 0.5, Alt 0.01, kept in range), text', () => {
+  assertEq(judgeStepPx({}), 2);
+  assertEq(judgeStepPx({ shiftKey: true }), 20);
+  assertEq(judgeStepPx({ altKey: true }), 0.5);
+  assertEq(hiSpeedStep(2, 1, {}), 2.05);
+  assertEq(hiSpeedStep(2, -1, { shiftKey: true }), 1.5);
+  assertEq(hiSpeedStep(2.05, -1, { altKey: true }), 2.04);
+  assertEq(hiSpeedStep(0.12, -1, {}), 0.1, '下限');
+  assertEq(hiSpeedStep(199.9, 1, { shiftKey: true }), 200, '上限');
+  assertEq(hiSpeedStep(1.1, 1, {}), 1.15, '0.01 に丸める(1.1 + 0.05 の誤差を残さない)');
+  assertEq(formatJudge(0.75), '75.0 %');
+  assertEq(formatJudge(0.72745), '72.7 %');
+});
+
+test('previewbar: the judge line stays below the column header band (lower bound by height)', () => {
+  assertNear(judgeFracMin(1000), 0.05, 1e-12);
+  assertNear(judgeFracMin(500), 36 / 500, 1e-12);
+  assertEq(judgeFracMin(0), 0.05);
+});
+
+test('previewbar: the bar fits at every preview width (narrows, then hides the step buttons, keeps ⋯)', async () => {
+  const html = await (await fetch('../index.html')).text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const css = document.createElement('link');
+  css.rel = 'stylesheet';
+  css.href = '../css/app.css';
+  await new Promise((resolve) => { css.onload = css.onerror = resolve; document.head.appendChild(css); });
+  const host = document.createElement('div');
+  host.style.cssText = 'position: fixed; left: 0; top: 0; width: 1200px; height: 600px;';
+  const stage = document.createElement('div');
+  stage.id = 'edit-stage';
+  stage.style.cssText = 'position: absolute; inset: 0;';
+  const bar = document.importNode(doc.getElementById('edit-preview-bar'), true);
+  stage.appendChild(bar);
+  host.appendChild(stage);
+  document.body.appendChild(host);
+  try {
+    const pb = Object.create(PreviewBar.prototype);
+    pb.root = bar;
+    pb.refresh = () => {};
+    for (const w of [160, 180, 205, 230, 260, 290, 320, 420]) {
+      pb.place(10, w);
+      assert(bar.scrollWidth <= bar.clientWidth, `${w}px: ${bar.scrollWidth} > ${bar.clientWidth}`);
+      const more = bar.querySelector('#edit-pbar-more').getBoundingClientRect();
+      const br = bar.getBoundingClientRect();
+      assert(more.right <= br.right + 0.5 && more.width > 0, `${w}px: ⋯ が見える`);
+    }
+    pb.place(10, 420);
+    assert(!bar.classList.contains('narrow') && !bar.classList.contains('tiny'), '広ければ詰めない');
+    pb.place(10, 160);
+    assert(bar.classList.contains('narrow'), '狭ければ詰める');
+  } finally {
+    host.remove();
+    css.remove();
   }
 });

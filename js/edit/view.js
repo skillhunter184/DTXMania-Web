@@ -1,8 +1,8 @@
 // 譜面の編集画面の描画と当たり判定。
 //
 // x は演奏画面と同じ論理座標(1920 幅。LANE_X0 = 539、COLUMN_SLOT の列)で、列の絵(スキンのチップ・レーン帯・色)も
-// 演奏画面と同じ。縦は u(js/edit/geometry.js)で、未来が上。再生位置の線(playhead)は画面の高さの 75 % に固定し、
-// 譜面の方を動かす。DTXCreator の譜面(小節番号・ガイド線・拍線・小節線・BPM レーン。docs/spec/dtxcreator-ui.md §1.6)を
+// 演奏画面と同じ。縦は u(js/edit/geometry.js)で、未来が上。再生位置の線(playhead)は画面の高さの 75 %(既定。
+// js/edit/previewbar.js で変えられる)に置き、譜面の方を動かす。DTXCreator の譜面(小節番号・ガイド線・拍線・小節線・BPM レーン。docs/spec/dtxcreator-ui.md §1.6)を
 // 演奏画面の見た目で描いたもの。文字の大きさ・線の太さ・当たりの幅は CSS px で決めて倍率で割る(小さい画面でも読める)。
 
 import { LANE_X0, LANE_W, LANE_RGB, columnRange, columnAtX } from '../ui/skin.js';
@@ -90,8 +90,9 @@ export class EditView {
    * @param {number} cssH
    * @param {number} dpr
    * @param {'wide'|'compact'|null} [layout] 配置(省けば幅で決める。演奏画面のプレビューを並べるときに狭い配置にする)
+   * @param {number} [headFrac] 再生位置の線(判定ライン)の高さ(上からの割合。js/edit/previewbar.js で変えられる)
    */
-  resize(cssW, cssH, dpr = 1, layout = null) {
+  resize(cssW, cssH, dpr = 1, layout = null, headFrac = 0.75) {
     this.cssW = Math.max(1, cssW);
     this.cssH = Math.max(1, cssH);
     this.dpr = Math.min(2, dpr || 1);
@@ -100,7 +101,9 @@ export class EditView {
     this.s = Math.min(this.cssW / this.view.w, 1);
     this.offX = (this.cssW - this.view.w * this.s) / 2;
     this.H = this.cssH / this.s;
-    this.headY = Math.round(0.75 * this.H);
+    // 画面の画素に合わせて丸める(論理 px で丸めると、判定ラインを 0.5 px ずつ動かしても 1 回おきにしか動かない)
+    const k = this.s * this.dpr;
+    this.headY = Math.round((headFrac > 0 && headFrac < 1 ? headFrac : 0.75) * this.H * k) / k;
     const bw = Math.round(this.cssW * this.dpr);
     const bh = Math.round(this.cssH * this.dpr);
     if (this.canvas.width !== bw) this.canvas.width = bw;

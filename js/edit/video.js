@@ -8,7 +8,9 @@
 // - 初めて使う動画は、動画の音と譜面の BGM の重なりでずれを合わせる(♪ でいつでも)。◀ ▶ で 1 コマ(Shift で 10 コマ、Alt で 1 ms)
 // - 横長の動画は ✂ でレーンの範囲を切り出せる(動画ごとに覚える)
 // - 音は出さない(muted。鳴るのは編集画面の曲だけ)。上でのホイールは譜面を送る。判定・叩いて入力には何も流さない
-// 譜面ごとの好み(localStorage の dojo.editVideo): charts[譜面] = {shown, cur(使っている動画), files[名前|大きさ] = {syncMs, crop, fps, vw, vh}}
+// - 動画の判定ラインに印を付けられる(動画ごと。動画の高さに対する割合 judgeV)。付けると、編集画面の判定ライン(再生位置の線と
+//   プレビューの判定ライン)がその高さに付いていく(js/edit/previewbar.js)
+// 譜面ごとの好み(localStorage の dojo.editVideo): charts[譜面] = {shown, cur(使っている動画), files[名前|大きさ] = {syncMs, crop, fps, vw, vh, judgeV}}
 
 import { t } from '../i18n.js';
 import { loadJSON, saveJSON, idbGet, idbSet, idbDelete } from '../core/storage.js';
@@ -224,6 +226,8 @@ export class EditVideo {
     this.v = $('edit-video-el');
     this.msgEl = $('edit-video-msg');
     this.cropper = $('edit-video-cropper');
+    this.picker = $('edit-video-picker');
+    this.judgeMark = $('edit-video-judge');
     this.fileInput = $('edit-video-file');
     this.sync = null;
     this.key = '';
@@ -241,6 +245,7 @@ export class EditVideo {
     this._alignFile = null; // 音で合わせている動画(File。別の動画に替えたら、その動画は別に合わせる)
     this._autoAlign = false;
     this._crop = null; // 切り出しの最中 {draft, drag}
+    this._picking = false; // 動画の判定ラインを押してもらっている
     this._box = null; // 動画の要素の箱(fitCrop)
     this._headSig = '';
     this._tipUntil = 0;
@@ -303,6 +308,12 @@ export class EditVideo {
     ed._on(this.cropper, 'pointermove', (e) => this._cropMove(e));
     ed._on(this.cropper, 'pointerup', (e) => this._cropUp(e));
     ed._on(this.cropper, 'pointercancel', (e) => this._cropUp(e));
+    // 動画の判定ラインを押してもらう
+    ed._on(this.picker, 'pointerdown', (e) => this._pickDown(e));
+    ed._on(this.picker.querySelector('button'), 'click', (e) => {
+      e.stopPropagation();
+      this._endPick();
+    });
     for (const b of this.cropper.querySelectorAll('button[data-act]')) {
       ed._on(b, 'click', (e) => {
         e.stopPropagation();
@@ -326,6 +337,8 @@ export class EditVideo {
   close() {
     if (this._closed) return;
     if (this._crop) this._endCrop(false);
+    if (this._picking) this._endPick(false);
+    this.judgeMark.hidden = true;
     this._closed = true;
     if (this.sync) this.sync.dispose();
     this.sync = null;
@@ -413,6 +426,7 @@ export class EditVideo {
 
   _use(file, handle, o = {}) {
     if (this._crop) this._endCrop(false);
+    if (this._picking) this._endPick(false);
     this.sync.reset();
     clearTimeout(this._tipTimer);
     this._tipTimer = 0;
@@ -523,6 +537,7 @@ export class EditVideo {
     pc.cur = null;
     this._save();
     if (this._crop) this._endCrop(false);
+    if (this._picking) this._endPick(false);
     this.sync.reset();
     const v = this.v;
     if (v.hasAttribute('src')) {
@@ -658,6 +673,7 @@ export class EditVideo {
       this._fit();
     } else {
       if (this._crop) this._endCrop(false, false); // 隠れた枠の切り出しは続けない(Enter・Esc を取り続けないように)
+      if (this._picking) this._endPick(false);
       if (was && this.sync) this.sync.pause();
     }
     const b = $('edit-video-btn');
@@ -676,6 +692,7 @@ export class EditVideo {
     if (!m || !(m.vw > 0 && m.vh > 0) || !(bw > 0 && bh > 0)) {
       v.style.width = v.style.height = '0px';
       this._box = null;
+      this._drawJudge();
       return;
     }
     const fp = this._filePrefs(false) || {};
@@ -686,6 +703,84 @@ export class EditVideo {
     v.style.height = box.height + 'px';
     this._box = box;
     if (this._crop) this._drawCrop();
+    this._drawJudge();
+  }
+
+  // ---- 動画の判定ライン ----
+
+  /** この動画に判定ラインの印があるか。 */
+  hasJudge() {
+    const fp = this._filePrefs(false);
+    return !!(this.file && fp && Number.isFinite(fp.judgeV));
+  }
+
+  /** 動画の判定ラインの高さ(編集画面の場所の上端からの CSS px)。印が無い・出していない・大きさが分からなければ NaN。 */
+  judgeStageY() {
+    if (!this.w || !this._box || !this.hasJudge()) return NaN;
+    return this.body.offsetTop + this._box.top + this._filePrefs(false).judgeV * this._box.height;
+  }
+
+  /** 動画の判定ラインの印を、場所の上端から y(CSS px)の高さに置く(枠は置き直さない。呼ぶ側が onResize)。 */
+  setJudgeStageY(y) {
+    const box = this._box;
+    if (!this.file || !box || !(box.height > 0) || !Number.isFinite(y)) return;
+    const fp = this._filePrefs(true);
+    fp.judgeV = Math.round(clamp((y - this.body.offsetTop - box.top) / box.height, 0, 1) * 1e6) / 1e6; // ▲ ▼ を重ねても丸めの誤差がたまらない細かさ
+    this._save();
+    this._drawJudge();
+  }
+
+  /** 印を px だけ動かす(正 = 下へ)。 */
+  nudgeJudge(px) {
+    const y = this.judgeStageY();
+    if (!Number.isFinite(y)) return;
+    this.setJudgeStageY(y + px);
+    this.ed.onResize();
+  }
+
+  /** 印を外す(判定ラインは設定の位置に戻る)。 */
+  clearJudge() {
+    const fp = this._filePrefs(false);
+    if (fp && 'judgeV' in fp) {
+      delete fp.judgeV;
+      this._save();
+    }
+    this._drawJudge();
+  }
+
+  /** 印の線を動画の上に描く。 */
+  _drawJudge() {
+    const el = this.judgeMark;
+    const box = this._box;
+    const show = !!box && this.hasJudge() && !this._closed;
+    el.hidden = !show;
+    if (show) el.style.top = box.top + this._filePrefs(false).judgeV * box.height + 'px';
+  }
+
+  /** 動画の判定ラインを押してもらう(押した高さが判定ラインになり、編集画面の判定ラインが付いていく。Esc でやめる)。 */
+  startJudgePick() {
+    if (!this.file || !this.w || !this._box || this._picking) return;
+    if (this._crop) this._endCrop(false);
+    this._picking = true;
+    this.picker.hidden = false;
+  }
+
+  _endPick(refocus = true) {
+    if (!this._picking) return;
+    this._picking = false;
+    this.picker.hidden = true;
+    if (refocus && !this._closed) this.ed.canvas.focus({ preventScroll: true });
+  }
+
+  _pickDown(e) {
+    if (!this._picking || !this._box || e.target.closest('button') || e.button !== 0) return;
+    e.preventDefault();
+    const r = this.body.getBoundingClientRect();
+    this._endPick();
+    this.setJudgeStageY(this.body.offsetTop + (e.clientY - r.top));
+    this.ed.onResize();
+    // ▲ ▼ はプレビューの上の帯にある
+    this.ed._toast(t(this.ed._previewSize ? 'edit.judgeFromVideo' : 'edit.judgeFromVideoNoBar'));
   }
 
   /** 出す / しまう(B・ツールバーの「動画」・見出しの ×。譜面ごとに覚える)。 */
@@ -938,6 +1033,8 @@ export class EditVideo {
     items.push({ label: t('edit.videoOffsetItem'), disabled: !has, run: () => this.askOffset() });
     items.push({ label: t('edit.videoCrop'), disabled: !has || !(this.sync && this.sync.meta), run: () => this.startCrop() });
     if (fp && normCrop(fp.crop)) items.push({ label: t('edit.videoCropOff'), run: () => this._setCrop(null) });
+    items.push({ label: t('edit.judgeToVideo'), disabled: !has || !this._box, run: () => this.startJudgePick() });
+    if (this.hasJudge()) items.push({ label: t('edit.judgeVideoOff'), run: () => { this.clearJudge(); this.ed.onResize(); } });
     items.push({ sep: true });
     items.push({ label: t('edit.videoDetach'), danger: true, disabled: !has, run: () => this.detach() });
     const r = $('edit-video-src').getBoundingClientRect();
@@ -949,6 +1046,7 @@ export class EditVideo {
   /** 切り出しを始める(動画の全体を見せ、ドラッグで囲む。Enter で決める・Esc でやめる)。 */
   startCrop() {
     if (!this.file || !(this.sync && this.sync.meta) || this._crop || !this.w) return;
+    if (this._picking) this._endPick(false); // 判定ラインを押してもらうのはやめる(覆いが重ならないように)
     const fp = this._filePrefs(true);
     this._crop = { draft: normCrop(fp.crop), drag: null };
     this.sync.pause(); // 切り出しの間は合わせない(再生していても止めておく)
@@ -1038,8 +1136,13 @@ export class EditVideo {
     this._drawCrop();
   }
 
-  /** 切り出しの最中のキー(Enter で決める・Esc でやめる)。使ったら true。 */
+  /** 切り出しの最中のキー(Enter で決める・Esc でやめる)と、判定ラインを押してもらう間のキー(Esc でやめる。Enter は取るだけ)。使ったら true。 */
   onKey(e) {
+    if (this._picking && (e.code === 'Escape' || e.code === 'Enter' || e.code === 'NumpadEnter')) {
+      e.preventDefault();
+      if (e.code === 'Escape') this._endPick();
+      return true;
+    }
     if (!this._crop || !this.w) return false;
     if (e.code === 'Enter' || e.code === 'NumpadEnter') {
       e.preventDefault();

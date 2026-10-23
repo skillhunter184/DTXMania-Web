@@ -26,6 +26,12 @@ export class EditorPlayer extends Player {
     super({ audio, settings: s, config });
     this.startMaxMs = 0;
     this.stopAtMs = 0;
+    /** 編集画面だけのハイスピード(倍率。数でなければ設定の scrollSpeedTenth。js/edit/previewbar.js。0.1 刻みより細かくできる)。 */
+    this.hiSpeedOverride = NaN;
+  }
+
+  get hiSpeedSetting() {
+    return this.hiSpeedOverride > 0 ? this.hiSpeedOverride : super.hiSpeedSetting;
   }
 
   /** 編集画面の範囲(ms)。startMaxMs = 始められる上限、stopAtMs = これを過ぎて少ししたら止まる。 */

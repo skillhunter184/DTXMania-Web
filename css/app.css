@@ -282,6 +282,19 @@ body.desktop #edit-types { display: none; }
 #edit-bar #edit-preview-btn.on { background: #2b3550; color: var(--accent2); }
 /* プレー動画(js/edit/video.js)。見出しの高さは VIDEO_HEAD_H と揃える。動画の要素は切り出した範囲が枠いっぱいになるよう JS が置く */
 #edit-bar #edit-video-btn.on { background: #2b3550; color: var(--accent2); }
+/* 判定ラインの位置・プレビューのハイスピード(js/edit/previewbar.js)。プレビューの上端に重ねる。狭いプレビューでは字・ボタンを詰める */
+#edit-preview-bar { position: absolute; top: 0; z-index: 2; height: 28px; display: flex; align-items: center; gap: 3px; padding: 2px 4px; background: rgba(21, 26, 38, 0.85); border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 0.78em; user-select: none; -webkit-user-select: none; overflow: hidden; white-space: nowrap; }
+#edit-preview-bar button { flex: none; height: 22px; min-width: 22px; padding: 0 4px; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font-size: 1em; cursor: pointer; }
+#edit-preview-bar button:hover { background: #38466b; }
+#edit-preview-bar .pbar-val { min-width: 50px; font-variant-numeric: tabular-nums; }
+#edit-preview-bar .pbar-val.video, #edit-preview-bar .pbar-val.own { color: var(--accent2); }
+#edit-preview-bar .pbar-l { flex: none; margin-left: 3px; }
+#edit-preview-bar #edit-pbar-more { margin-left: auto; }
+#edit-preview-bar.narrow { gap: 1px; padding: 2px; }
+#edit-preview-bar.narrow .pbar-l { display: none; }
+#edit-preview-bar.narrow .pbar-val { min-width: 36px; padding: 0 2px; }
+#edit-preview-bar.narrow .pbar-step { min-width: 16px; padding: 0 1px; }
+#edit-preview-bar.tiny .pbar-step { display: none; }
 #edit-video { position: relative; flex: none; display: flex; flex-direction: column; background: #000; border-left: 1px solid var(--line); overflow: hidden; }
 #edit-video .vd-head { flex: none; height: 34px; display: flex; align-items: center; gap: 4px; padding: 3px 4px; background: var(--panel); border-bottom: 1px solid var(--line); user-select: none; -webkit-user-select: none; }
 #edit-video .vd-head button { flex: none; height: 27px; min-width: 27px; padding: 0 6px; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font-size: 0.85em; cursor: pointer; white-space: nowrap; }
@@ -302,6 +315,9 @@ body.desktop #edit-types { display: none; }
 #edit-video .vd-msg p { margin: 0; max-width: 28em; }
 #edit-video .vd-crop { position: absolute; inset: 0; cursor: crosshair; touch-action: none; }
 #edit-video .vd-body.cropping .vd-info { display: none; }
+/* 動画の判定ラインの印(js/edit/video.js judgeV)と、その高さを押してもらう間の覆い */
+#edit-video .vd-judge { position: absolute; left: 0; right: 0; height: 0; border-top: 2px dashed rgba(255, 214, 64, 0.85); pointer-events: none; }
+#edit-video .vd-pick { position: absolute; inset: 0; cursor: crosshair; touch-action: none; background: rgba(0, 0, 0, 0.12); }
 #edit-video .vd-crop-rect { position: absolute; border: 2px dashed var(--accent2); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55); pointer-events: none; }
 #edit-video .vd-crop-hint { position: absolute; left: 6px; right: 6px; top: 6px; text-align: center; color: var(--text); font-size: 0.8em; text-shadow: 0 0 3px #000; pointer-events: none; }
 #edit-video .vd-crop-bar { position: absolute; left: 0; right: 0; bottom: 8px; display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; }

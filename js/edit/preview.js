@@ -51,12 +51,14 @@ export class PreviewRenderer extends Renderer {
 
   /**
    * 演奏画面の縦画面と同じ範囲を切り出す(mode は portrait 固定)。縦の位置は、演奏画面は上に寄せる(下をメニューに使う)が、
-   * ここでは判定ラインを judgeY(CSS px。編集画面の再生位置の線)にそろえる(ハイウェイが収まる範囲で)。
+   * ここでは判定ラインを judgeY(CSS px。編集画面の再生位置の線)にそろえる(ハイウェイが収まる範囲で)。exact なら必ずそろえる
+   * (判定ラインの位置を変えたとき。ハイウェイの上やパッドが切れてもよい。js/edit/previewbar.js)。
    */
-  resize(cssW, cssH, dpr = 1, judgeY = null) {
+  resize(cssW, cssH, dpr = 1, judgeY = null, exact = false) {
     super.resize(cssW, cssH, dpr, 'portrait', 0);
     const room = cssH - CANVAS_H * this.scale;
-    if (Number.isFinite(judgeY) && room > 0) this.offsetY = Math.max(0, Math.min(room, judgeY - JUDGE_Y * this.scale));
+    if (Number.isFinite(judgeY) && exact) this.offsetY = judgeY - JUDGE_Y * this.scale;
+    else if (Number.isFinite(judgeY) && room > 0) this.offsetY = Math.max(0, Math.min(room, judgeY - JUDGE_Y * this.scale));
   }
 
   /** 静止部分はレーン帯・判定ライン・パッドだけ(成績・曲のパネルは描かない)。 */

@@ -1310,3 +1310,155 @@ test('editor video: the player clock for the video holds the start position unti
   p.state = PLAYER_STATE.STANDBY;
   assert(Number.isNaN(p.videoClock().holdMs), '止まっていれば残りは分からない');
 });
+
+test('editor preview bar: ▲ ▼ move the playhead line and the preview judge line together (remembered); a typed % and reset; HS − ＋ (Shift / Alt) change only the editor preview speed, reset follows the training setting', async () => {
+  const h = await openEditor(CHART);
+  const { ed, sec, key, app } = h;
+  try {
+    app.training = { scrollSpeedTenth: 20, judgeOffsetMs: 0 };
+    const bar = sec.querySelector('#edit-preview-bar');
+    assert(bar.hidden, 'プレビューを出していなければ出さない');
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    ed._frame(performance.now());
+    ed.onResize(); // 最初のフレームで状態の行が埋まり、場所の高さが変わる(ResizeObserver を待たない)
+    ed._frame(performance.now());
+    const pv = sec.querySelector('#edit-preview');
+    assert(!bar.hidden, 'プレビューの上に出す');
+    assert(bar.scrollWidth <= bar.clientWidth, '帯に入りきる');
+    const br = bar.getBoundingClientRect();
+    const pr = pv.getBoundingClientRect();
+    assert(Math.abs(br.left - pr.left) < 1 && Math.abs(br.width - pr.width) < 1 && Math.abs(br.top - pr.top) < 1, `${br.left},${br.width} vs ${pr.left},${pr.width}`);
+    const stageH = sec.querySelector('#edit-stage').clientHeight;
+    const head = () => ed.view.headY * ed.view.s;
+    const judge = () => { const r = ed.previewRenderer; return r.offsetY + JUDGE_Y * r.scale; };
+    assert(Math.abs(head() - 0.75 * stageH) < 1, '既定は 75 %');
+    assertEq(sec.querySelector('#edit-judge-val').textContent, '75.0 %');
+    const h0 = head();
+    sec.querySelector('#edit-judge-up').click();
+    sec.querySelector('#edit-judge-up').click();
+    ed._frame(performance.now());
+    assert(Math.abs(head() - (h0 - 4)) < 1, `▲ 2 回で 4 px 上へ ${h0} → ${head()}`);
+    assert(Math.abs(judge() - head()) < 0.5, `プレビューの判定ラインも ${judge()} vs ${head()}`);
+    assert(Number.isFinite(app.config.editJudgeY), '覚える');
+    sec.querySelector('#edit-judge-down').dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true }));
+    ed._frame(performance.now());
+    assert(Math.abs(head() - (h0 + 16)) < 1, 'Shift で 20 px 下へ: ' + head());
+    // 値を押すと数で入れる(上からの %)。ハイウェイが切れても判定ラインはそろえる
+    sec.querySelector('#edit-judge-val').click();
+    await sleep(5);
+    h.dialog().querySelector('input').value = '40';
+    await h.dialogButton('ok');
+    ed._frame(performance.now());
+    assert(Math.abs(head() - 0.4 * stageH) < 1, '40 %: ' + head());
+    assert(Math.abs(judge() - head()) < 0.5, 'ハイウェイの上を切ってでもそろえる');
+    assertEq(sec.querySelector('#edit-judge-val').textContent, '40.0 %');
+    // 標準に戻す
+    ed.previewBar.resetJudge();
+    ed._frame(performance.now());
+    assert(Math.abs(head() - 0.75 * stageH) < 1 && !('editJudgeY' in app.config), '標準');
+    // ハイスピード: トレーニングの x2.0 から、編集画面だけ細かく
+    const p = ed.player;
+    assertEq(sec.querySelector('#edit-hs-val').textContent, '2.00');
+    sec.querySelector('#edit-hs-up').click();
+    ed._frame(performance.now());
+    assert(Math.abs(p.scrollRatioSetting - 2.05) < 1e-9 && Math.abs(p.scrollCurrentRatio - 2.05) < 1e-9, String(p.scrollRatioSetting));
+    sec.querySelector('#edit-hs-up').dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true }));
+    sec.querySelector('#edit-hs-down').dispatchEvent(new MouseEvent('click', { altKey: true, bubbles: true }));
+    ed._frame(performance.now());
+    assertEq(app.config.editHiSpeed, 2.54);
+    assertEq(sec.querySelector('#edit-hs-val').textContent, '2.54');
+    assertEq(app.training.scrollSpeedTenth, 20, 'トレーニングの設定は変えない');
+    sec.querySelector('#edit-hs-val').click();
+    await sleep(5);
+    h.dialog().querySelector('input').value = '3.333';
+    await h.dialogButton('ok');
+    ed._frame(performance.now());
+    assertEq(app.config.editHiSpeed, 3.33);
+    assert(Math.abs(p.scrollRatioSetting - 3.33) < 1e-9);
+    ed.previewBar.resetHiSpeed();
+    ed._frame(performance.now());
+    assert(!('editHiSpeed' in app.config) && Math.abs(p.scrollRatioSetting - 2) < 1e-9, 'トレーニングの設定に戻す');
+    // しまうと帯もしまう
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    assert(bar.hidden);
+  } finally {
+    await h.done();
+  }
+});
+
+test('editor video: marking the video judge line makes the playhead line and the preview judge line follow it (also after a resize); ▲ ▼ fine-tune the mark; Esc cancels marking; removing the mark returns to the setting', async () => {
+  const restore = keepVideoPrefs();
+  const h = await openEditor(CHART);
+  const { ed, sec, key, app } = h;
+  try {
+    key('KeyV', { key: 'v' });
+    key('KeyB', { key: 'b' });
+    await sleep(5);
+    ed.video.useFile(new File([new Uint8Array(64)], 'judge.mp4', { type: 'video/mp4' }));
+    for (let i = 0; i < 40 && !ed.video.err; i++) await sleep(25);
+    // 大きさだけ分かった動画にする(読めない中身なので、合わせ方は止まったまま)
+    ed.video.err = null;
+    ed.video.sync.meta = { dur: 60, vw: 1280, vh: 720 };
+    ed.onResize();
+    ed._frame(performance.now());
+    const body = sec.querySelector('#edit-video-body');
+    const stage = sec.querySelector('#edit-stage');
+    const head = () => ed.view.headY * ed.view.s;
+    const markY = (jv) => body.offsetTop + ed.video._box.top + jv * ed.video._box.height;
+    // Enter は取るだけ(押す所を決めるのは押したとき)、Esc でやめる
+    ed.video.startJudgePick();
+    assert(!sec.querySelector('#edit-video-picker').hidden);
+    key('Enter');
+    assert(!sec.querySelector('#edit-video-picker').hidden && !ed.video.hasJudge(), 'Enter では決めない');
+    key('Escape');
+    assert(sec.querySelector('#edit-video-picker').hidden && !ed.video.hasJudge(), 'やめた');
+    // 切り出しを始めると押すのはやめる(覆いを重ねない)
+    ed.video.startJudgePick();
+    ed.video.startCrop();
+    assert(sec.querySelector('#edit-video-picker').hidden && ed.video._crop, '切り出しへ');
+    key('Escape');
+    assert(!ed.video._crop, '切り出しもやめた');
+    // 右ボタンでは印を付けない
+    ed.video.startJudgePick();
+    {
+      const r0 = body.getBoundingClientRect();
+      sec.querySelector('#edit-video-picker').dispatchEvent(new PointerEvent('pointerdown', { pointerId: 3, button: 2, clientX: r0.left + 20, clientY: r0.top + 40, bubbles: true }));
+      assert(!ed.video.hasJudge() && !sec.querySelector('#edit-video-picker').hidden, '右ボタン');
+    }
+    // 動画の判定ラインを押す(動画の高さの 70 % の所)
+    ed.video.startJudgePick();
+    const r = body.getBoundingClientRect();
+    const y = r.top + ed.video._box.top + 0.7 * ed.video._box.height;
+    sec.querySelector('#edit-video-picker').dispatchEvent(new PointerEvent('pointerdown', { pointerId: 4, clientX: r.left + 20, clientY: y, bubbles: true }));
+    await sleep(5);
+    ed._frame(performance.now());
+    assert(ed.video.hasJudge() && Math.abs(ed.video._filePrefs(false).judgeV - 0.7) < 0.002, String(ed.video._filePrefs(false).judgeV));
+    assert(Math.abs(head() - markY(0.7)) < 1, `判定ラインが動画の印に ${head()} vs ${markY(0.7)}`);
+    assert(!sec.querySelector('#edit-video-judge').hidden, '動画に印の線');
+    assert(sec.querySelector('#edit-judge-val').classList.contains('video'), '動画に合わせている印');
+    const r2 = ed.previewRenderer;
+    assert(Math.abs(r2.offsetY + JUDGE_Y * r2.scale - head()) < 0.5, 'プレビューも');
+    // 場所の大きさを変えても付いていく(高さを変える。幅を変えると窓によっては動画を出せなくなる)
+    stage.style.bottom = Math.round(stage.clientHeight * 0.2) + 'px';
+    ed.onResize();
+    assert(ed.video.w > 0, '動画は出したまま');
+    assert(Math.abs(head() - markY(ed.video._filePrefs(false).judgeV)) < 1, '大きさを変えても');
+    // ▲ は動画の印を直す
+    const jv0 = ed.video._filePrefs(false).judgeV;
+    sec.querySelector('#edit-judge-up').dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true }));
+    const jv1 = ed.video._filePrefs(false).judgeV;
+    assert(jv1 < jv0 && Math.abs((jv0 - jv1) * ed.video._box.height - 20) < 0.5, `${jv0} → ${jv1}`);
+    assert(!('editJudgeY' in app.config), '設定の位置は変えない');
+    // 外すと設定の位置(既定)に戻る
+    ed.video.clearJudge();
+    ed.onResize();
+    assert(Math.abs(head() - 0.75 * stage.clientHeight) < 1 && sec.querySelector('#edit-video-judge').hidden, '既定へ');
+  } finally {
+    sec.querySelector('#edit-stage').style.bottom = '';
+    if (ed.video.file) ed.video.detach();
+    await h.done();
+    restore();
+  }
+});

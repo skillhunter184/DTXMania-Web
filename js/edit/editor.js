@@ -28,6 +28,7 @@ import {
 import { EditPanel, PANEL_DOCK_MIN, PANEL_DOCK_W } from './panel.js';
 import { PreviewRenderer } from './preview.js';
 import { EditVideo, stageLayout } from './video.js';
+import { PreviewBar } from './previewbar.js';
 import { EditView, HEADER_CSS, COMPACT_BELOW } from './view.js';
 import { TouchGestures, G } from './gestures.js';
 import { EditorPlayer } from './editplayer.js';
@@ -144,6 +145,8 @@ export class EditorScreen {
     this._previewUntil = 0; // 止めたあと、プレビューの演出(ファイア・判定の文字)が消えるまで描く
     this._previewBlock = null; // 出すはずのプレビューを出せないわけ('panel' / 'size')。お知らせの文言
     this.video = new EditVideo(this); // プレー動画(js/edit/video.js)
+    this.previewBar = new PreviewBar(this); // 判定ラインの位置・プレビューのハイスピード(js/edit/previewbar.js)
+    this._judge = { frac: 0.75, custom: false, video: false }; // 今の判定ラインの位置(PreviewBar.judgeFrac)
     this._videoBlock = null; // 出すはずの動画を出せないわけ('panel' / 'preview' / 'size')
     this.stepArmed = false; // 叩いて入力
     this._chord = null; // 叩いて入力の和音 {cell, cells, timer}
@@ -174,6 +177,7 @@ export class EditorScreen {
     this._buildGuideSelect();
     this._bindDom();
     this.video.open(); // 出すか(譜面ごとに覚える)は配置の前に読む
+    this.previewBar.open();
     $('edit-side').hidden = !c.editPanelOpen;
     $('edit-panel').classList.toggle('on', !!c.editPanelOpen);
     this.panel.layout();
@@ -227,6 +231,7 @@ export class EditorScreen {
     this._saveView();
     this._unbindDom();
     this.video.close();
+    this.previewBar.close();
     cancelAnimationFrame(this._raf);
     clearTimeout(this._toastTimer);
     clearTimeout(this._soundTimer);
@@ -414,7 +419,10 @@ export class EditorScreen {
     this.canvas.style.width = w + 'px';
     this.canvas.style.height = h + 'px';
     const before = this.view.layout;
-    this.view.resize(w, h, window.devicePixelRatio || 1, forceCompact ? 'compact' : null);
+    // 判定ライン(再生位置の線)の高さ: 動画の判定ラインの印・設定の位置・既定(js/edit/previewbar.js)。動画を置いた後に決める
+    this._judge = this.previewBar.judgeFrac(h);
+    this.view.resize(w, h, window.devicePixelRatio || 1, forceCompact ? 'compact' : null, this._judge.frac);
+    this.previewBar.place(w + railW, pw);
     if (pw && this.previewRenderer) this._resizePreview();
     this.root.classList.toggle('compact', this.view.layout === 'compact');
     this.panel.layout();
@@ -475,6 +483,7 @@ export class EditorScreen {
       this._updateRail();
       this._updateStatus();
       this.panel.refresh();
+      this.previewBar.refresh();
     }
     // プレー動画は描き直さないフレームでも合わせる(seeked の後などに _wake で来る)
     this.video.frame(now);
@@ -556,7 +565,7 @@ export class EditorScreen {
   /** プレビューの大きさ(判定ラインは編集画面の再生位置の線にそろえる。どちらのキャンバスも場所の上端から)。 */
   _resizePreview() {
     const { w, h } = this._previewSize;
-    this.previewRenderer.resize(w, h, Math.min(2, window.devicePixelRatio || 1), this.view.headY * this.view.s);
+    this.previewRenderer.resize(w, h, Math.min(2, window.devicePixelRatio || 1), this.view.headY * this.view.s, this._judge.custom);
   }
 
   /** 演奏画面のプレビューを出す / しまう(V。出すかは覚える)。 */
@@ -2416,8 +2425,10 @@ export class EditorScreen {
     const c = this.config;
     const s = p.settings;
     s.metronomeVolume = c.editMetronome ? 60 : 0;
-    // ハイスピードはトレーニングの設定のもの(プレビューを演奏画面と同じ速さで流す。読むだけで保存はしない)
+    // ハイスピードはトレーニングの設定のもの(プレビューを演奏画面と同じ速さで流す。読むだけで保存はしない)。
+    // 編集画面で細かく決めていればその値(js/edit/previewbar.js。動画と見比べるため)
     if (this.app.training) s.scrollSpeedTenth = this.app.training.scrollSpeedTenth;
+    p.hiSpeedOverride = c.editHiSpeed > 0 ? c.editHiSpeed : NaN;
     s.autoPlay = c.editDrumSound !== false;
     s.playSpeed = SPEEDS.includes(c.editSpeed) ? c.editSpeed : 20;
     // 録音(叩いて入力)の時刻は演奏と同じく判定タイミング調整を足す(トレーニングの設定から読むだけ。保存はしない)
@@ -2793,6 +2804,10 @@ export class EditorScreen {
     items.push({ sep: true });
     items.push({ label: t('edit.showIds'), checked: !!c.editShowIds, run: () => this._toggleOption('editShowIds') });
     items.push({ label: t('edit.previewSound'), checked: c.editPreviewSound !== false, run: () => this._toggleOption('editPreviewSound') });
+    items.push({ label: t('edit.judgeEnter'), run: () => this.previewBar.askJudge() });
+    items.push({ label: t('edit.judgeReset'), disabled: !Number.isFinite(c.editJudgeY) && !this.video.hasJudge(), run: () => this.previewBar.resetJudge() });
+    items.push({ label: t('edit.hsEnter'), run: () => this.previewBar.askHiSpeed() });
+    items.push({ label: t('edit.hsReset'), disabled: !(c.editHiSpeed > 0), run: () => this.previewBar.resetHiSpeed() });
     if (this.sidecar) items.push({ label: t('edit.confidence'), checked: c.editConfidence !== false, run: () => this._toggleOption('editConfidence') });
     if (this.model.doc.index.lockedObjects) items.push({ label: t('edit.otherBranches'), checked: !!c.editOtherBranches, run: () => this._toggleOption('editOtherBranches') });
     items.push({ label: t('edit.stepAdvance'), checked: c.editStepAdvance !== false, run: () => this._toggleOption('editStepAdvance') });

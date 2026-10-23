@@ -45,6 +45,7 @@
 | `js/edit/editplayer.js` | DTXC の「再生」(DTXViewer を起動) | (変更) 演奏の `Player` を継承して全部 AUTO で鳴らす。トレーニングの設定に触れない。(追加) プレー動画の時計 `videoClock`(再生の頭の出力の遅れの間は開始位置で止め、その残りも返す) |
 | `js/edit/preview.js` | (なし。DTXC は DTXViewer で見る) | (追加) 演奏画面の `Renderer` を継承し、縦画面と同じ範囲(レーン帯と小節番号)を切り出して `EditorPlayer` を描く。止まっているときは編集画面の再生位置へ `seekTo` |
 | `js/edit/video.js` / `videosync.js` / `videoalign.js` | SoundVoltexAnalyze の譜面の編集の「動画」(`tool/sim/js/voxeditvideo.js`。同 `docs/譜面シミュレータ.md` §17.7.2) | (追加) プレー動画を並べる。合わせ方(止まっているときは的に一番近いコマ、再生中は速さで寄せ・見えるコマで測り・遠ければ止めて seek して待つ)は移植(`videosync.js`)。ずれは BGM の頭を基準に動画ごとに覚える。vidchart の表で写す動画・サーバ・小節の手の写しは移していない。音で合わせる(相互相関。`videoalign.js`)・切り出し・30 ms を越えたら比例して寄せる・見えたコマの間でコマの速さを測る・動画の頭より前から流すときに頭の手前で流し始める・待っている間に的が飛んだら seek し直すのは本アプリの追加 |
+| `js/edit/previewbar.js` | (なし) | (追加) 判定ラインの位置(再生位置の線とプレビューの判定ラインを一緒に。動画の判定ラインの印に付いていける)とプレビューだけのハイスピード(`EditorPlayer.hiSpeedOverride`)。プレビューの上端の帯 |
 | `js/edit/sidecar.js` | vid2dtx の確信度のファイル(`<譜面>.dtx.conf.json`) | 読むだけ |
 | `js/edit/panel.js` | DTXC の右側のタブ(WAV の一覧・譜面情報)、`CSoundPropertiesDialog` | (変更) 横のパネルにまとめた(チップ / 小節 / 譜面情報 / 音源)。WAV の一覧は使っている番号だけ(DTXC は 1295 行)。何度も定義した番号は変えない |
 | `HandleArchive`(js/core/zip.js) | vid2dtx の上書き保存(`.bak` を残す) | (追加) File System Access のフォルダのハンドルから読み、書き戻せる。初めて上書きする前に `.bak`(既にあれば触らない) |

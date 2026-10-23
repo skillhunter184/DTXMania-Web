@@ -276,6 +276,17 @@
         <canvas id="edit-canvas" tabindex="0" role="application" aria-label="譜面" data-i18n-aria-label="edit.canvas"></canvas>
         <div id="edit-rail" aria-label="譜面の位置" data-i18n-aria-label="edit.rail"><div id="edit-rail-thumb"></div></div>
         <canvas id="edit-preview" aria-label="演奏画面のプレビュー" data-i18n-aria-label="edit.previewLabel" hidden></canvas>
+        <div id="edit-preview-bar" role="group" aria-label="判定ラインとハイスピード" data-i18n-aria-label="edit.pbarMore" hidden>
+          <span class="pbar-l" data-i18n="edit.judgeShort">判定</span>
+          <button type="button" id="edit-judge-up" class="pbar-step" title="判定ラインを上へ(Shift で 10 倍、Alt で細かく)" aria-label="判定ラインを上へ(Shift で 10 倍、Alt で細かく)" data-i18n-title="edit.judgeUp" data-i18n-aria-label="edit.judgeUp">▲</button>
+          <button type="button" id="edit-judge-val" class="pbar-val" title="判定ラインの位置(場所の高さに対する割合)。押すと数で入れる" data-i18n-title="edit.judgeValTitle">75.0 %</button>
+          <button type="button" id="edit-judge-down" class="pbar-step" title="判定ラインを下へ(Shift で 10 倍、Alt で細かく)" aria-label="判定ラインを下へ(Shift で 10 倍、Alt で細かく)" data-i18n-title="edit.judgeDown" data-i18n-aria-label="edit.judgeDown">▼</button>
+          <span class="pbar-l" data-i18n="edit.hsShort">HS</span>
+          <button type="button" id="edit-hs-down" class="pbar-step" title="プレビューのハイスピードを下げる(0.05。Shift で 0.5、Alt で 0.01)" aria-label="プレビューのハイスピードを下げる(0.05。Shift で 0.5、Alt で 0.01)" data-i18n-title="edit.hsDown" data-i18n-aria-label="edit.hsDown">−</button>
+          <button type="button" id="edit-hs-val" class="pbar-val" title="プレビューのハイスピード。押すと数で入れる" data-i18n-title="edit.hsValTitle">1.00</button>
+          <button type="button" id="edit-hs-up" class="pbar-step" title="プレビューのハイスピードを上げる(0.05。Shift で 0.5、Alt で 0.01)" aria-label="プレビューのハイスピードを上げる(0.05。Shift で 0.5、Alt で 0.01)" data-i18n-title="edit.hsUp" data-i18n-aria-label="edit.hsUp">＋</button>
+          <button type="button" id="edit-pbar-more" title="判定ラインとハイスピード" aria-label="判定ラインとハイスピード" data-i18n-title="edit.pbarMore" data-i18n-aria-label="edit.pbarMore">⋯</button>
+        </div>
         <div id="edit-video" role="group" aria-label="プレー動画" data-i18n-aria-label="edit.videoLabel" hidden>
           <div class="vd-head">
             <button type="button" id="edit-video-src" class="vd-src" title="動画を選ぶ・合わせ方" data-i18n-title="edit.videoMenu">動画を選ぶ</button>
@@ -290,7 +301,12 @@
             <video id="edit-video-el" muted playsinline preload="auto" disablepictureinpicture tabindex="-1" aria-hidden="true"></video>
             <div class="vd-info" aria-hidden="true"><span id="edit-video-time"></span><span id="edit-video-warn"></span></div>
             <div class="vd-out" data-i18n="edit.videoOut">動画の外</div>
+            <div id="edit-video-judge" class="vd-judge" hidden></div>
             <div id="edit-video-msg" class="vd-msg" hidden></div>
+            <div id="edit-video-picker" class="vd-pick" hidden>
+              <div class="vd-crop-hint" data-i18n="edit.judgePickHint">動画の判定ラインを押す(Esc でやめる)</div>
+              <div class="vd-crop-bar"><button type="button" class="btn small secondary" data-i18n="edit.cancel">キャンセル</button></div>
+            </div>
             <div id="edit-video-cropper" class="vd-crop" hidden>
               <div class="vd-crop-rect"></div>
               <div class="vd-crop-hint" data-i18n="edit.videoCropHint">ドラッグで残す範囲(レーン)を囲む。Enter で決める・Esc でやめる</div>
