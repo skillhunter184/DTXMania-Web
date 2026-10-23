@@ -280,6 +280,36 @@ body.desktop #edit-types { display: none; }
 #edit-rail { position: relative; flex: none; width: 22px; background: #10141f; border-left: 1px solid var(--line); touch-action: none; cursor: pointer; }
 #edit-preview { display: block; flex: none; background: #000; border-left: 1px solid var(--line); touch-action: none; }
 #edit-bar #edit-preview-btn.on { background: #2b3550; color: var(--accent2); }
+/* プレー動画(js/edit/video.js)。見出しの高さは VIDEO_HEAD_H と揃える。動画の要素は切り出した範囲が枠いっぱいになるよう JS が置く */
+#edit-bar #edit-video-btn.on { background: #2b3550; color: var(--accent2); }
+#edit-video { position: relative; flex: none; display: flex; flex-direction: column; background: #000; border-left: 1px solid var(--line); overflow: hidden; }
+#edit-video .vd-head { flex: none; height: 34px; display: flex; align-items: center; gap: 4px; padding: 3px 4px; background: var(--panel); border-bottom: 1px solid var(--line); user-select: none; -webkit-user-select: none; }
+#edit-video .vd-head button { flex: none; height: 27px; min-width: 27px; padding: 0 6px; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font-size: 0.85em; cursor: pointer; white-space: nowrap; }
+#edit-video .vd-head button:hover:not(:disabled) { background: #38466b; }
+#edit-video .vd-head button:disabled { opacity: 0.45; cursor: default; }
+#edit-video .vd-head button.on { background: #2b3550; color: var(--accent2); }
+#edit-video .vd-head .vd-src { flex: 1 1 auto; min-width: 40px; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+#edit-video .vd-head .vd-off { min-width: 82px; font-variant-numeric: tabular-nums; }
+#edit-video.narrow .vd-wide { display: none; }
+#edit-video .vd-body { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; }
+#edit-video video { position: absolute; left: 0; top: 0; width: 0; height: 0; display: block; object-fit: fill; pointer-events: none; }
+#edit-video .vd-body.out video { opacity: 0.35; }
+#edit-video .vd-info { position: absolute; left: 6px; top: 4px; right: 6px; display: flex; gap: 10px; color: rgba(235, 235, 235, 0.85); font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; text-shadow: 0 0 3px #000, 0 0 2px #000; pointer-events: none; white-space: nowrap; overflow: hidden; }
+#edit-video #edit-video-warn { color: #ffd38a; overflow: hidden; text-overflow: ellipsis; }
+#edit-video .vd-out { position: absolute; right: 6px; bottom: 6px; display: none; padding: 1px 8px; border-radius: 9px; background: rgba(255, 170, 60, 0.85); color: #1a1405; font-size: 0.8em; pointer-events: none; }
+#edit-video .vd-body.out .vd-out { display: block; }
+#edit-video .vd-msg { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 16px; text-align: center; color: var(--muted); font-size: 0.9em; }
+#edit-video .vd-msg p { margin: 0; max-width: 28em; }
+#edit-video .vd-crop { position: absolute; inset: 0; cursor: crosshair; touch-action: none; }
+#edit-video .vd-body.cropping .vd-info { display: none; }
+#edit-video .vd-crop-rect { position: absolute; border: 2px dashed var(--accent2); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55); pointer-events: none; }
+#edit-video .vd-crop-hint { position: absolute; left: 6px; right: 6px; top: 6px; text-align: center; color: var(--text); font-size: 0.8em; text-shadow: 0 0 3px #000; pointer-events: none; }
+#edit-video .vd-crop-bar { position: absolute; left: 0; right: 0; bottom: 8px; display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; }
+#edit-video.drag .vd-body { outline: 2px dashed var(--accent2); outline-offset: -4px; }
+/* 狭い配置で横のパネルを下から出しているときは、パネルに隠れないよう選ぶボタンと切り出しのボタンを上に寄せる */
+#screen-edit.compact.panel-open #edit-video .vd-msg { justify-content: flex-start; padding-top: 28px; }
+#screen-edit.compact.panel-open #edit-video .vd-crop-bar { top: 8px; bottom: auto; }
+#screen-edit.compact.panel-open #edit-video .vd-crop-hint { display: none; }
 #edit-rail-map { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 #edit-rail-thumb { position: absolute; left: 3px; right: 3px; height: 28px; margin-top: -14px; background: rgba(255, 214, 64, 0.8); border-radius: 4px; pointer-events: none; }
 #edit-status { display: flex; align-items: center; gap: 16px; padding: 4px 10px; padding-bottom: max(4px, env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85em; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; }

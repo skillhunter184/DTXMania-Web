@@ -6,7 +6,7 @@
 //   (チップの無い・BGM だけの譜面でも止まる。演奏の曲末の判定はチップがあるときだけ)
 // - リプレイは記録しない
 
-import { Player } from '../game/player.js';
+import { Player, PLAYER_STATE } from '../game/player.js';
 import { TrainingSettings } from '../game/training.js';
 
 const TAIL_MS = 2000;
@@ -48,5 +48,16 @@ export class EditorPlayer extends Player {
 
   _beginTake() {
     this._take = null;
+  }
+
+  /**
+   * 動画(js/edit/video.js)の時計。再生の頭は、開始位置の音が聞こえ始めるまで(出力の遅れの間)譜面時刻が開始位置より手前にあるので、
+   * そこは開始位置で止めた値(ms)にし、その残りの実時間(holdMs)も返す(動画はその残りが自分の動き出しの遅れになったら流す)。
+   * 折り返し・速さの変更は今の実時間でつなぎ直すので残りは 0。演奏中でなければ holdMs は NaN。
+   */
+  videoClock() {
+    if (this.state !== PLAYER_STATE.PLAYING) return { ms: this.songMs, holdMs: NaN };
+    const real = this.nowReal();
+    return { ms: this.songAt(Math.max(real, this._anchorReal)), holdMs: Math.max(0, this._anchorReal - real) };
   }
 }

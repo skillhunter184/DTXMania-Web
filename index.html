@@ -261,6 +261,7 @@
         <button id="edit-suspect" class="pb text" data-i18n="edit.nextSuspect" hidden>次の要確認</button>
         <button id="edit-step" class="pb text" aria-pressed="false" title="叩いた列を再生位置に置く(再生中は録音)" data-i18n="edit.stepInput" data-i18n-title="edit.stepTitle">叩いて入力</button>
         <button id="edit-preview-btn" class="pb text" aria-pressed="false" title="演奏画面と同じレーンのプレビューを右に並べる (V)" data-i18n="edit.preview" data-i18n-title="edit.previewTitle">プレビュー</button>
+        <button id="edit-video-btn" class="pb text" aria-pressed="false" title="プレー動画を右に並べ、再生位置に合わせて流す (B)" data-i18n="edit.video" data-i18n-title="edit.videoTitle">動画</button>
         <button id="edit-panel" class="pb" title="パネル" aria-label="パネル" data-i18n-title="edit.panel" data-i18n-aria-label="edit.panel">☰</button>
       </div>
       <div class="grp types" id="edit-types" role="group" aria-label="チップの種類" data-i18n-aria-label="edit.types">
@@ -275,6 +276,29 @@
         <canvas id="edit-canvas" tabindex="0" role="application" aria-label="譜面" data-i18n-aria-label="edit.canvas"></canvas>
         <div id="edit-rail" aria-label="譜面の位置" data-i18n-aria-label="edit.rail"><div id="edit-rail-thumb"></div></div>
         <canvas id="edit-preview" aria-label="演奏画面のプレビュー" data-i18n-aria-label="edit.previewLabel" hidden></canvas>
+        <div id="edit-video" role="group" aria-label="プレー動画" data-i18n-aria-label="edit.videoLabel" hidden>
+          <div class="vd-head">
+            <button type="button" id="edit-video-src" class="vd-src" title="動画を選ぶ・合わせ方" data-i18n-title="edit.videoMenu">動画を選ぶ</button>
+            <button type="button" id="edit-video-back" title="ずれを 1 コマ減らす(Shift で 10 コマ、Alt で 1 ms)" aria-label="ずれを 1 コマ減らす(Shift で 10 コマ、Alt で 1 ms)" data-i18n-title="edit.videoBack" data-i18n-aria-label="edit.videoBack">◀</button>
+            <button type="button" id="edit-video-off" class="vd-off" title="ずれ(動画の時刻 − 譜面の時刻)。押すと数で入れる" data-i18n-title="edit.videoOffTitle">—</button>
+            <button type="button" id="edit-video-fwd" title="ずれを 1 コマ増やす(Shift で 10 コマ、Alt で 1 ms)" aria-label="ずれを 1 コマ増やす(Shift で 10 コマ、Alt で 1 ms)" data-i18n-title="edit.videoFwd" data-i18n-aria-label="edit.videoFwd">▶</button>
+            <button type="button" id="edit-video-align" class="vd-wide" title="動画の音で合わせる" aria-label="動画の音で合わせる" data-i18n-title="edit.videoAlign" data-i18n-aria-label="edit.videoAlign">♪</button>
+            <button type="button" id="edit-video-crop" class="vd-wide" title="レーンだけを切り出す" aria-label="レーンだけを切り出す" data-i18n-title="edit.videoCrop" data-i18n-aria-label="edit.videoCrop">✂</button>
+            <button type="button" id="edit-video-close" title="動画をしまう (B)" aria-label="動画をしまう (B)" data-i18n-title="edit.videoHide" data-i18n-aria-label="edit.videoHide">×</button>
+          </div>
+          <div id="edit-video-body" class="vd-body">
+            <video id="edit-video-el" muted playsinline preload="auto" disablepictureinpicture tabindex="-1" aria-hidden="true"></video>
+            <div class="vd-info" aria-hidden="true"><span id="edit-video-time"></span><span id="edit-video-warn"></span></div>
+            <div class="vd-out" data-i18n="edit.videoOut">動画の外</div>
+            <div id="edit-video-msg" class="vd-msg" hidden></div>
+            <div id="edit-video-cropper" class="vd-crop" hidden>
+              <div class="vd-crop-rect"></div>
+              <div class="vd-crop-hint" data-i18n="edit.videoCropHint">ドラッグで残す範囲(レーン)を囲む。Enter で決める・Esc でやめる</div>
+              <div class="vd-crop-bar"><button type="button" class="btn small" data-act="ok" data-i18n="edit.videoCropOk">決める</button><button type="button" class="btn small secondary" data-act="full" data-i18n="edit.videoCropFull">全体</button><button type="button" class="btn small secondary" data-act="cancel" data-i18n="edit.cancel">キャンセル</button></div>
+            </div>
+          </div>
+          <input type="file" id="edit-video-file" accept="video/*,.mp4,.m4v,.webm,.mov,.mkv" hidden>
+        </div>
       </div>
       <aside id="edit-side" aria-label="パネル" data-i18n-aria-label="edit.panel" hidden></aside>
     </div>

@@ -9,7 +9,7 @@
 //   (切り取り・コピー・貼り付け・削除・すべて選択・レーン / 小節の中を選択・小節長・小節の挿入 / 削除)
 // - BPM レーン(広い配置)を押すと BPM、小節番号の欄を右クリック / 長押しすると小節のメニュー
 // - キー: Ctrl+Z / Ctrl+Y・Ctrl+S・Ctrl+X / C / V / D / A・Delete・[ ]・- +・PageUp / PageDown・Home / End・↑↓←→・
-//   E / S・R・P・T・M・N・?・Esc(画面からは出ない)
+//   E / S・R・P・T・M・N・V・B・?・Esc(画面からは出ない)
 // Space は BD の既定のキーなので何もしない(CLAUDE.md)。
 
 import { posToMs, msToPos, requiredWavIds, TICKS_PER_MEASURE } from '../core/dtx.js';
@@ -26,7 +26,8 @@ import {
   measureDeleteSummary, formatBpm, opSetWav, freeWavNumber,
 } from './ops.js';
 import { EditPanel, PANEL_DOCK_MIN, PANEL_DOCK_W } from './panel.js';
-import { PreviewRenderer, previewWidth, PREVIEW_MIN_W } from './preview.js';
+import { PreviewRenderer } from './preview.js';
+import { EditVideo, stageLayout } from './video.js';
 import { EditView, HEADER_CSS, COMPACT_BELOW } from './view.js';
 import { TouchGestures, G } from './gestures.js';
 import { EditorPlayer } from './editplayer.js';
@@ -78,7 +79,7 @@ const DRAFT_DEBOUNCE_MS = 1500;
 const SPEEDS = [10, 15, 20, 25, 30]; // 再生速度(playSpeed。20 = x1.0。DTXCreator の x0.5〜x1.5)
 
 /** 文字のショートカット(e.code で見る。キーボードの配列・IME に左右されない)。 */
-const LETTER_OF_CODE = { KeyE: 'e', KeyS: 's', KeyP: 'p', KeyT: 't', KeyM: 'm', KeyR: 'r', KeyN: 'n', KeyV: 'v' };
+const LETTER_OF_CODE = { KeyE: 'e', KeyS: 's', KeyP: 'p', KeyT: 't', KeyM: 'm', KeyR: 'r', KeyN: 'n', KeyV: 'v', KeyB: 'b' };
 /** 記号のショートカットの e.code(IME が入力中で e.key が 'Process' のときだけ使う。JIS 配列では [ ] の位置が違うので、ふだんは e.key)。 */
 const SYMBOL_OF_CODE = { BracketLeft: '[', BracketRight: ']', Minus: '-', Equal: '+', NumpadSubtract: '-', NumpadAdd: '+' };
 
@@ -142,6 +143,8 @@ export class EditorScreen {
     this._previewSize = null; // {w, h}(CSS px)。出していなければ null
     this._previewUntil = 0; // 止めたあと、プレビューの演出(ファイア・判定の文字)が消えるまで描く
     this._previewBlock = null; // 出すはずのプレビューを出せないわけ('panel' / 'size')。お知らせの文言
+    this.video = new EditVideo(this); // プレー動画(js/edit/video.js)
+    this._videoBlock = null; // 出すはずの動画を出せないわけ('panel' / 'preview' / 'size')
     this.stepArmed = false; // 叩いて入力
     this._chord = null; // 叩いて入力の和音 {cell, cells, timer}
     this._recorded = []; // 再生中に録音したチップ(止めたときに 1 手)
@@ -170,6 +173,7 @@ export class EditorScreen {
     this.root.hidden = false;
     this._buildGuideSelect();
     this._bindDom();
+    this.video.open(); // 出すか(譜面ごとに覚える)は配置の前に読む
     $('edit-side').hidden = !c.editPanelOpen;
     $('edit-panel').classList.toggle('on', !!c.editPanelOpen);
     this.panel.layout();
@@ -222,6 +226,7 @@ export class EditorScreen {
     this.touch.reset();
     this._saveView();
     this._unbindDom();
+    this.video.close();
     cancelAnimationFrame(this._raf);
     clearTimeout(this._toastTimer);
     clearTimeout(this._soundTimer);
@@ -313,6 +318,7 @@ export class EditorScreen {
     btn('edit-suspect', () => this.nextSuspect());
     btn('edit-panel', () => this.panel.toggle());
     btn('edit-preview-btn', () => this._togglePreview());
+    btn('edit-video-btn', () => this.video.toggle());
     // プレビューの上でのホイールは譜面を送る(プレビューは押しても何もしない)
     const pv = $('edit-preview');
     this._on(pv, 'wheel', (e) => this._wheel(e), { passive: false });
@@ -369,9 +375,10 @@ export class EditorScreen {
     // 演奏画面のプレビュー(出すなら右に。狭すぎれば出さない)。配置は場所の幅と横のパネルだけで決め、高さやプレビューの幅には
     // よらせない(よらせると、狭い配置のツールバーの段・横のパネルの寄せ方で場所の大きさが変わり、配置が毎フレーム入れ替わる)。
     // 広い配置ならそれを狭い配置に落とすほどは取らない。ただし、横のパネルを寄せない窓で広い配置のままでは並べられない幅
-    // (COMPACT_BELOW + PREVIEW_MIN_W 未満)なら、狭い配置にして並べる(それより狭い窓では出るのに、広げると消えないように。
+    // (COMPACT_BELOW + 並べる物の最小の幅 未満)なら、狭い配置にして並べる(それより狭い窓では出るのに、広げると消えないように。
     // 狭い配置にしたからには、低い窓でも出す)。
-    // 広い配置で横のパネルを右から重ねているときは、プレビューがその下に隠れるので出さない(パネルを閉じると出る)
+    // 広い配置で横のパネルを右から重ねているときは、プレビューがその下に隠れるので出さない(パネルを閉じると出る)。
+    // プレー動画(js/edit/video.js)も出すならプレビューの右に並べる(割り振りは stageLayout。プレビューと両方は入らなければ動画を出さない)
     const pv = $('edit-preview');
     const on = !!this.config.editPreview;
     const canDock = this.panel.open && window.innerWidth >= PANEL_DOCK_MIN;
@@ -379,13 +386,17 @@ export class EditorScreen {
     // 寄せたパネルを閉じた直後などに一度だけ別の配置になり、拡大率も入れ替わる)
     const stageW = $('edit-main').clientWidth - (canDock ? PANEL_DOCK_W : 0);
     const avail = stageW - railW;
-    const forceCompact = on && !canDock && avail >= COMPACT_BELOW && avail < COMPACT_BELOW + PREVIEW_MIN_W;
-    const covered = this.panel.open && !canDock && !forceCompact && avail >= COMPACT_BELOW;
-    let pw = 0;
-    if (forceCompact) pw = previewWidth(avail, h);
-    else if (on && !covered) pw = previewWidth(avail, h, COMPACT_BELOW);
+    const von = this.video.want;
+    const lay = stageLayout({
+      avail, h, canDock, panelOpen: this.panel.open, dockW: PANEL_DOCK_W, preview: on, video: von,
+      videoNatural: von ? this.video.naturalWidth(avail, h) : 0,
+    });
+    const forceCompact = lay.compact;
+    const pw = lay.pw;
     // 出せないわけ(お知らせ用)。パネルが隠しているか、パネルを閉じれば出る幅になるなら 'panel'、ほかは 'size'
-    this._previewBlock = !on || pw ? null : covered || (canDock && previewWidth(avail + PANEL_DOCK_W, h, COMPACT_BELOW)) ? 'panel' : 'size';
+    // (動画はプレビューをしまえば出る幅なら 'preview')
+    this._previewBlock = lay.previewBlock;
+    this._videoBlock = lay.videoBlock;
     pv.hidden = !pw;
     // 描く大きさは左の区切り線(1px。box-sizing: border-box で幅に含まれる)を除いたもの
     this._previewSize = pw ? { w: pw - 1, h } : null;
@@ -398,7 +409,8 @@ export class EditorScreen {
     const pvBtn = $('edit-preview-btn');
     pvBtn.classList.toggle('on', !!this.config.editPreview);
     pvBtn.setAttribute('aria-pressed', String(!!this.config.editPreview));
-    const w = Math.max(1, avail - pw);
+    this.video.place(lay.vw, h);
+    const w = Math.max(1, avail - pw - lay.vw);
     this.canvas.style.width = w + 'px';
     this.canvas.style.height = h + 'px';
     const before = this.view.layout;
@@ -464,7 +476,29 @@ export class EditorScreen {
       this._updateStatus();
       this.panel.refresh();
     }
+    // プレー動画は描き直さないフレームでも合わせる(seeked の後などに _wake で来る)
+    this.video.frame(now);
     if (more) this._raf = requestAnimationFrame((n) => this._frame(n));
+  }
+
+  /** 描き直さずに次のフレームを回す(プレー動画が seeked の後などに次の的を見る)。 */
+  _wake() {
+    if (!this._raf && !this._closed) this._raf = requestAnimationFrame((now) => this._frame(now));
+  }
+
+  /**
+   * プレー動画(js/edit/video.js)が合わせる譜面の時刻 ms と時計。再生中は鳴っている所(再生の頭は音が聞こえ始めるまで開始位置。
+   * EditorPlayer.videoClock)、止まっていれば再生位置(演奏画面のプレビューと同じ)。chart は ms の譜面(再生中は鳴らしている譜面)。
+   */
+  _videoClock() {
+    const p = this.player;
+    if (p && p.chart && p.state !== PLAYER_STATE.STANDBY) {
+      const c = p.videoClock();
+      return { playing: true, ms: c.ms, hold: c.holdMs, rate: p.ratio, chart: p.chart };
+    }
+    const chart = this.model.chart;
+    const ms = Math.max(0, posToMs(chart, this.model.geometry.posOfU(Math.max(-1, this.view.uHead))));
+    return { playing: false, ms, hold: NaN, rate: 1, chart };
   }
 
   _fillState() {
@@ -1645,6 +1679,8 @@ export class EditorScreen {
       else if (e.code === 'Space') e.preventDefault();
       return;
     }
+    // プレー動画を切り出している間の Enter(決める)・Esc(やめる)
+    if (this.video.onKey(e)) return;
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && !e.altKey) {
       switch (e.code) {
@@ -1759,6 +1795,10 @@ export class EditorScreen {
       case 'v':
         e.preventDefault();
         this._togglePreview();
+        return;
+      case 'b':
+        e.preventDefault();
+        this.video.toggle();
         return;
       case 'p':
         e.preventDefault();
@@ -2347,6 +2387,11 @@ export class EditorScreen {
     }
   }
 
+  /** 音源を読み終えるのを待つ(プレー動画を音で合わせるとき)。 */
+  async _soundsReady() {
+    while (this._soundLoading && !this._closed) await new Promise((r) => setTimeout(r, 100));
+  }
+
   /** 鳴らすときの譜面と範囲(文書が変わっていれば差し替える。演奏中には差し替えない)。 */
   _preparePlayer() {
     const p = this.player;
@@ -2405,6 +2450,7 @@ export class EditorScreen {
     if (!(endMs > beginMs)) return;
     this._loopRange = { m0, m1, beginMs, endMs };
     this._applyPlayOptions();
+    p.applySettings(); // 速さは止まっているうちに(play() と同じ)
     this.follow = true;
     p.startTrainingAt(beginMs);
     this.app.requestWakeLock();
@@ -2420,6 +2466,9 @@ export class EditorScreen {
     this._loopRange = null;
     this._preparePlayer();
     this._applyPlayOptions();
+    // 速さは止まっているうちに変える(鳴らし始めてから変えると今の実時間でつなぎ直し、再生の頭の出力の遅れの間の待ちが消えて
+    // 時計が戻る。プレー動画はその待ちで流し始めを決める)
+    p.applySettings();
     const geo = this.model.geometry;
     const ms = Math.max(0, posToMs(this.model.chart, geo.posOfU(Math.max(-1, this.view.uHead))));
     this.follow = true;
@@ -2921,6 +2970,7 @@ export class EditorScreen {
       ['N', t('edit.nextSuspect')],
       [t('edit.stepInput'), t('edit.helpStep')],
       ['V', t('edit.preview')],
+      ['B', t('edit.video')],
       ['Alt', t('edit.helpAltClick')],
       ['Shift', t('edit.helpShiftClick')],
       [t('edit.rightClick'), t('edit.helpRightClick')],

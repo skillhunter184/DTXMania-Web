@@ -11,6 +11,7 @@ const SOURCES = [
   '../index.html', '../js/main.js', '../js/ui/menu.js', '../js/ui/midipanel.js', '../js/ui/keybind.js', '../js/ui/keypanel.js',
   '../js/ui/midibind.js', '../js/ui/gamepad.js', '../js/ui/renderer.js', '../js/game/player.js', '../js/game/training.js',
   '../js/core/zip.js', '../js/core/song.js', '../js/edit/editor.js', '../js/edit/view.js', '../js/edit/dialogs.js', '../js/edit/panel.js',
+  '../js/edit/video.js',
 ];
 
 /** 英語に切り替えて fn を走らせ、必ず元の言語に戻す(ほかのテストは日本語の文言を見ている)。 */

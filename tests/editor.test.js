@@ -8,6 +8,10 @@ import { EditorScreen } from '../js/edit/editor.js';
 import { loadDraft, deleteDraft } from '../js/edit/drafts.js';
 import { previewWidth } from '../js/edit/preview.js';
 import { COMPACT_BELOW } from '../js/edit/view.js';
+import { bgmAnchorMs, VIDEO_MIN_W, VIDEO_HEAD_H } from '../js/edit/video.js';
+import { opShiftBgm } from '../js/edit/ops.js';
+import { EditorPlayer } from '../js/edit/editplayer.js';
+import { PLAYER_STATE } from '../js/game/player.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -911,4 +915,398 @@ test('editor preview: under a side panel laid over the right edge (window below 
     else delete window.innerWidth;
     await h.done();
   }
+});
+
+// ---- プレー動画(js/edit/video.js) ----
+
+/** 動画の好み(localStorage の dojo.editVideo)をテストの間だけ退避する(開発中のアプリと同じ origin なので)。 */
+function keepVideoPrefs() {
+  const k = 'dojo.editVideo';
+  const before = localStorage.getItem(k);
+  localStorage.removeItem(k);
+  return () => {
+    if (before === null) localStorage.removeItem(k);
+    else localStorage.setItem(k, before);
+  };
+}
+
+const BGM_CHART = '#TITLE: v\r\n#BPM: 120\r\n#WAV01: bd.wav\r\n#WAV09: bgm.wav\r\n#BGMWAV: 09\r\n#00101: 0009\r\n#00113: 01000100\r\n';
+
+test('editor video: the button / B show it beside the preview (remembered per chart), empty pane offers a file, the wheel over it scrolls, Ctrl+B does nothing, close hides it', async () => {
+  const restore = keepVideoPrefs();
+  const h = await openEditor(CHART);
+  const { ed, sec, key } = h;
+  try {
+    const pane = sec.querySelector('#edit-video');
+    const btnEl = sec.querySelector('#edit-video-btn');
+    const cv = sec.querySelector('#edit-canvas');
+    assert(pane.hidden && !ed.video.want, '初めは出さない');
+    const w0 = parseFloat(cv.style.width);
+    btnEl.click();
+    await sleep(5);
+    assert(ed.video.want && !pane.hidden && btnEl.classList.contains('on'), '出す');
+    assertEq(btnEl.getAttribute('aria-pressed'), 'true');
+    const pw = parseFloat(pane.style.width);
+    assert(pw >= VIDEO_MIN_W, 'pane ' + pw);
+    assertEq(parseFloat(cv.style.width), w0 - pw, '編集画面がその分狭くなる');
+    assert(sec.querySelector('#edit-video-msg').textContent.includes('プレー動画を選ぶ'), '選ぶ案内');
+    assert([...sec.querySelectorAll('#edit-video-msg button')].some((b) => b.textContent.includes('ファイルを選ぶ')), '選ぶボタン');
+    assert(sec.querySelector('#edit-video-back').disabled && sec.querySelector('#edit-video-align').disabled, '動画が無ければずれは触れない');
+    const prefs = JSON.parse(localStorage.getItem('dojo.editVideo'));
+    assert(prefs.charts[ed.video.key].shown === true, '譜面ごとに覚える');
+    // プレビューも出すと、右のバー・プレビュー・動画の順に並び、編集画面は広い配置のまま
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    const pv = sec.querySelector('#edit-preview');
+    const rail = sec.querySelector('#edit-rail');
+    if (!pv.hidden) {
+      assert(pv.getBoundingClientRect().right <= pane.getBoundingClientRect().left + 0.5, 'プレビューの右に動画');
+      assert(rail.getBoundingClientRect().right <= pv.getBoundingClientRect().left + 0.5);
+      const avail = sec.querySelector('#edit-stage').clientWidth - rail.offsetWidth;
+      if (avail >= COMPACT_BELOW + 160 + VIDEO_MIN_W) assert(ed.view.layout === 'wide' && parseFloat(cv.style.width) >= COMPACT_BELOW, ed.view.layout + ' ' + cv.style.width);
+    }
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    // 上でのホイールは譜面を送る
+    const u0 = ed.view.uHead;
+    pane.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, clientX: 10, clientY: 10, bubbles: true, cancelable: true }));
+    ed._frame(performance.now());
+    assert(Math.abs(ed.view.uHead - (u0 + 1)) < 1e-9, String(ed.view.uHead));
+    // Ctrl+B は何もしない、B でしまう(覚える)
+    key('KeyB', { key: 'b', ctrl: true });
+    assert(ed.video.want);
+    key('KeyB', { key: 'b' });
+    await sleep(5);
+    assert(!ed.video.want && pane.hidden && !btnEl.classList.contains('on'));
+    assertEq(parseFloat(cv.style.width), w0);
+    assertEq(JSON.parse(localStorage.getItem('dojo.editVideo')).charts[ed.video.key].shown, false);
+    // 見出しの × でもしまう
+    key('KeyB', { key: 'b' });
+    await sleep(5);
+    sec.querySelector('#edit-video-close').click();
+    await sleep(5);
+    assert(!ed.video.want && pane.hidden);
+    // 狭い画面では出さずに知らせる(出すことは覚えておき、広げると出る)
+    const main = sec.querySelector('#edit-main');
+    main.style.width = '500px';
+    key('KeyB', { key: 'b' });
+    await sleep(5);
+    assert(ed.video.want && pane.hidden);
+    assert(sec.querySelector('#edit-toast').textContent.includes('画面が狭い'), sec.querySelector('#edit-toast').textContent);
+    main.style.width = '';
+    ed.onResize();
+    assert(!pane.hidden, '広げると出る');
+    await ed.close();
+    assert(pane.hidden, '閉じるとしまう');
+  } finally {
+    await h.done();
+    restore();
+  }
+});
+
+test('editor video: a file — frame / Shift / Alt offset steps and a typed offset, kept per file from the BGM start (moving the BGM moves the video), align without sounds says so, closing revokes the URL and reopening keeps the file, detach hides', async () => {
+  const restore = keepVideoPrefs();
+  const h = await openEditor(BGM_CHART);
+  const { ed, sec, key } = h;
+  const revoked = [];
+  const revoke = URL.revokeObjectURL;
+  URL.revokeObjectURL = (u) => { revoked.push(u); revoke.call(URL, u); };
+  let ed2 = null;
+  try {
+    key('KeyB', { key: 'b' });
+    await sleep(5);
+    // 再生できない中身(形式のエラーになる)でも、ずれは触れる
+    const f = new File([new Uint8Array(64)], 'play.mp4', { type: 'video/mp4' });
+    ed.video.useFile(f);
+    await sleep(5);
+    const url = ed.video.url;
+    assert(url && url.startsWith('blob:'), 'object URL');
+    assertEq(sec.querySelector('#edit-video-src').textContent, 'play.mp4');
+    assertEq(sec.querySelector('#edit-video-off').textContent, '+0.0 ms');
+    for (let i = 0; i < 40 && !ed.video.err; i++) await sleep(25);
+    assert(ed.video.err, '読めない動画はエラー');
+    assert(sec.querySelector('#edit-video-msg').textContent.includes('動画を読めません'), sec.querySelector('#edit-video-msg').textContent);
+    const off = () => ed.video.offsetMs();
+    sec.querySelector('#edit-video-fwd').click();
+    assert(Math.abs(off() - 1000 / 60) < 1e-3, '1 コマ ' + off());
+    sec.querySelector('#edit-video-back').dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true }));
+    assert(Math.abs(off() - (1000 / 60 - 10000 / 60)) < 1e-3, '10 コマ ' + off());
+    sec.querySelector('#edit-video-fwd').dispatchEvent(new MouseEvent('click', { altKey: true, bubbles: true }));
+    assert(Math.abs(off() - (1000 / 60 - 10000 / 60 + 1)) < 1e-3, '1 ms ' + off());
+    // 値を押すと数で入れる
+    sec.querySelector('#edit-video-off').click();
+    await sleep(5);
+    const dlg = h.dialog();
+    assert(dlg.open, 'ダイアログ');
+    dlg.querySelector('input').value = '1563.5';
+    await h.dialogButton('ok');
+    await sleep(5);
+    assert(Math.abs(off() - 1563.5) < 1e-9, String(off()));
+    assertEq(sec.querySelector('#edit-video-off').textContent, '+1563.5 ms');
+    // 覚えているのは BGM の頭の動画の時刻(BGM を動かすと、ずれ(譜面の時刻との差)はその分だけ変わる)
+    const a0 = bgmAnchorMs(ed.model.chart);
+    assert(a0 > 0, 'BGM がある');
+    ed._commit(() => opShiftBgm(ed.model, 250), { label: 'edit.bgmShift', keepSel: true });
+    const a1 = bgmAnchorMs(ed.model.chart);
+    assert(a1 > a0 + 200, 'BGM が動いた ' + a0 + ' → ' + a1);
+    assert(Math.abs(off() - (1563.5 - (a1 - a0))) < 1e-6, 'BGM と一緒に動く ' + off());
+    const p = JSON.parse(localStorage.getItem('dojo.editVideo')).charts[ed.video.key];
+    assertEq(p.cur, 'play.mp4|64');
+    assert(Math.abs(p.files['play.mp4|64'].syncMs - (1563.5 + a0)) < 1e-6, '動画ごとに BGM の頭の時刻を覚える');
+    // 譜面の音が読めていなければ合わせられない
+    await ed.video.alignByAudio();
+    assert(sec.querySelector('#edit-toast').textContent.includes('譜面の音(BGM など)を読めていない'), sec.querySelector('#edit-toast').textContent);
+    // 閉じると URL を捨て、開き直すと同じファイル(このページだけ覚える)
+    await ed.close();
+    assert(revoked.includes(url), 'object URL を捨てる');
+    assert(!sec.querySelector('#edit-video-el').hasAttribute('src'), 'src を外す');
+    ed2 = new EditorScreen(h.app, h.session, ed.skin, {});
+    await ed2.open();
+    assert(ed2.video.file === f && ed2.video.want && !sec.querySelector('#edit-video').hidden, '同じファイルで開く');
+    assert(Math.abs(ed2.video.offsetMs() - (1563.5 - (a1 - a0))) < 1e-6);
+    // 外すとしまう(ずれは動画ごとに残す)
+    ed2.video.detach();
+    await sleep(5);
+    assert(!ed2.video.file && !ed2.video.want && sec.querySelector('#edit-video').hidden);
+    assert(sec.querySelector('#edit-toast').textContent.includes('外しました'));
+    const p2 = JSON.parse(localStorage.getItem('dojo.editVideo')).charts[ed2.video.key];
+    assertEq(p2.cur, null);
+    assert(p2.files['play.mp4|64'], 'ずれは残す');
+  } finally {
+    URL.revokeObjectURL = revoke;
+    if (ed2) await ed2.close();
+    else await ed.close();
+    await h.cleanup();
+    restore();
+  }
+});
+
+test('editor video: crop — drag a rectangle (Enter applies, Esc cancels, 全体 removes it), the pane width follows the cropped aspect', async () => {
+  const restore = keepVideoPrefs();
+  const h = await openEditor(CHART);
+  const { ed, sec, key } = h;
+  try {
+    key('KeyB', { key: 'b' });
+    await sleep(5);
+    ed.video.useFile(new File([new Uint8Array(64)], 'wide.mp4', { type: 'video/mp4' }));
+    for (let i = 0; i < 40 && !ed.video.err; i++) await sleep(25);
+    // 大きさだけ分かった動画にする(読めない中身なので、合わせ方は止まったまま)
+    ed.video.err = null;
+    ed.video.sync.meta = { dur: 60, vw: 1280, vh: 720 };
+    ed.onResize();
+    ed._frame(performance.now());
+    const pane = sec.querySelector('#edit-video');
+    const body = sec.querySelector('#edit-video-body');
+    const stage = sec.querySelector('#edit-stage');
+    const avail = stage.clientWidth - sec.querySelector('#edit-rail').offsetWidth;
+    const exp = (asp) => Math.max(VIDEO_MIN_W, Math.min(Math.round((stage.clientHeight - VIDEO_HEAD_H) * asp) + 1, Math.floor(avail * 0.45)));
+    const wFull = parseFloat(pane.style.width);
+    assertEq(wFull, exp(16 / 9), '横長はそのままの縦横比(場所の 45 % まで)');
+    sec.querySelector('#edit-video-crop').click();
+    await sleep(5);
+    const cropper = sec.querySelector('#edit-video-cropper');
+    assert(!cropper.hidden, '切り出しを始める');
+    const box = ed.video._box;
+    const r = body.getBoundingClientRect();
+    const pt = (fx, fy) => ({ clientX: r.left + box.left + fx * box.width, clientY: r.top + box.top + fy * box.height });
+    const ptr = (type, p) => cropper.dispatchEvent(new PointerEvent(type, { pointerId: 3, bubbles: true, ...p }));
+    ptr('pointerdown', pt(0.25, 0));
+    ptr('pointermove', pt(0.5, 0.5));
+    ptr('pointermove', pt(0.7, 1));
+    ptr('pointerup', pt(0.7, 1));
+    // Esc でやめる
+    key('Escape');
+    await sleep(5);
+    assert(cropper.hidden && !ed.video._filePrefs(false).crop, 'やめれば変えない');
+    sec.querySelector('#edit-video-crop').click();
+    await sleep(5);
+    ptr('pointerdown', pt(0.25, 0));
+    ptr('pointermove', pt(0.7, 1));
+    ptr('pointerup', pt(0.7, 1));
+    key('Enter');
+    await sleep(5);
+    const c = ed.video._filePrefs(false).crop;
+    assert(c && Math.abs(c.x - 0.25) < 0.01 && Math.abs(c.w - 0.45) < 0.01 && c.y < 0.01 && c.h > 0.99, JSON.stringify(c));
+    assert(cropper.hidden);
+    assertEq(parseFloat(pane.style.width), exp((1280 * c.w) / (720 * c.h)), '切り出した縦横比で枠の幅');
+    // 切り出した範囲が枠いっぱい(横か縦のどちらかが枠の大きさ)
+    const v = sec.querySelector('#edit-video-el');
+    const vw = parseFloat(v.style.width);
+    const vh = parseFloat(v.style.height);
+    assert(Math.abs(vw * c.w - body.clientWidth) < 1 || Math.abs(vh * c.h - body.clientHeight) < 1, `${vw}x${vh} in ${body.clientWidth}x${body.clientHeight}`);
+    // 押しただけ(小さすぎる)では前の囲みのまま、「全体」で外す
+    sec.querySelector('#edit-video-crop').click();
+    await sleep(5);
+    ptr('pointerdown', pt(0.5, 0.5));
+    ptr('pointerup', pt(0.5, 0.5));
+    assert(ed.video._crop.draft && Math.abs(ed.video._crop.draft.x - c.x) < 1e-9, '前の囲み');
+    cropper.querySelector('button[data-act="full"]').click();
+    await sleep(5);
+    assert(!ed.video._filePrefs(false).crop && cropper.hidden, '全体');
+    assertEq(parseFloat(pane.style.width), wFull);
+    // 切り出しの間に枠が隠れたら切り出しをやめ、Enter・Esc は取らない
+    sec.querySelector('#edit-video-crop').click();
+    await sleep(5);
+    assert(ed.video._crop);
+    sec.querySelector('#edit-main').style.width = '500px';
+    ed.onResize();
+    assert(sec.querySelector('#edit-video').hidden && !ed.video._crop, '隠れたらやめる');
+    const e = key('Enter');
+    assert(!e.defaultPrevented, 'Enter は取らない');
+    sec.querySelector('#edit-main').style.width = '';
+    ed.onResize();
+  } finally {
+    if (ed.video.file) ed.video.detach();
+    await h.done();
+    restore();
+  }
+});
+
+test('editor video: under a side panel laid over the right edge it is not shown (toast says to close the panel); with the preview and too little room it says to hide the preview', async () => {
+  const restore = keepVideoPrefs();
+  const h = await openEditor(CHART);
+  const { ed, sec, key } = h;
+  const desc = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+  try {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, get: () => 1000 });
+    const pane = sec.querySelector('#edit-video');
+    const main = sec.querySelector('#edit-main');
+    main.style.width = '1000px';
+    ed.onResize();
+    key('KeyB', { key: 'b' });
+    await sleep(5);
+    assert(!pane.hidden, 'パネルを閉じていれば出す');
+    sec.querySelector('#edit-panel').click();
+    await sleep(5);
+    assert(ed.panel.open && !sec.classList.contains('panel-dock') && pane.hidden, '重ねたパネルの下には出さない');
+    key('KeyB', { key: 'b' });
+    key('KeyB', { key: 'b' });
+    await sleep(5);
+    assert(sec.querySelector('#edit-toast').textContent.includes('横のパネルを閉じると、動画'), sec.querySelector('#edit-toast').textContent);
+    sec.querySelector('#edit-side .side-close').click();
+    await sleep(5);
+    assert(!pane.hidden, 'パネルを閉じると出る');
+    // プレビューと両方は入らない幅: プレビューが先で、動画はプレビューをしまえば出る
+    main.style.width = '720px';
+    ed.onResize();
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    key('KeyB', { key: 'b' });
+    key('KeyB', { key: 'b' });
+    await sleep(5);
+    assert(!sec.querySelector('#edit-preview').hidden && pane.hidden, 'プレビューが先');
+    assert(sec.querySelector('#edit-toast').textContent.includes('プレビュー(V)をしまうと'), sec.querySelector('#edit-toast').textContent);
+    key('KeyV', { key: 'v' });
+    await sleep(5);
+    assert(!pane.hidden, 'プレビューをしまうと出る');
+  } finally {
+    if (desc) Object.defineProperty(window, 'innerWidth', desc);
+    else delete window.innerWidth;
+    await h.done();
+    restore();
+  }
+});
+
+/** 16 bit・1 本の WAV(音だけの「動画」。<video> も decodeAudioData も読める)。 */
+function wavBytes(pcm, sr) {
+  const n = pcm.length;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const dv = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, sr, true);
+  dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); str(36, 'data'); dv.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 32767, true);
+  return new Uint8Array(buf);
+}
+
+/** 減衰する短い音をばらばらの間隔で並べた音(決まった乱数)。 */
+function clickTrack(secs, sr, seed = 3) {
+  let x = seed;
+  const rnd = () => ((x = (Math.imul(x, 1664525) + 1013904223) >>> 0) / 4294967296);
+  const out = new Float32Array(Math.round(secs * sr));
+  for (let t = 0.1; t < secs - 0.2; t += 0.12 + rnd() * 0.35) {
+    const at = Math.round(t * sr);
+    const f = 300 + rnd() * 1200;
+    const amp = 0.3 + 0.6 * rnd();
+    for (let i = 0; i < sr * 0.08 && at + i < out.length; i++) out[at + i] += amp * Math.exp(-i / (sr * 0.015)) * Math.sin((2 * Math.PI * f * i) / sr);
+  }
+  return out;
+}
+
+test('editor video: aligning by sound stores the video time of the BGM start (undo forgets it); the target is (chart ms + offset) / 1000 from the playhead when stopped and from the player clock when playing', async () => {
+  const restore = keepVideoPrefs();
+  const h = await openEditor(BGM_CHART);
+  const { ed, sec, key, app } = h;
+  try {
+    const sr = 8000;
+    const bgm = clickTrack(8, sr);
+    const ab = new OfflineAudioContext(1, 1, sr).createBuffer(1, bgm.length, sr);
+    ab.copyToChannel(bgm, 0);
+    app.audio.buffers.set('09', ab);
+    // 「動画」: 1.7 秒の前置き(別の音)の後に BGM が始まる
+    const lagMs = 1700;
+    const rec = new Float32Array(Math.round(11 * sr));
+    rec.set(clickTrack(1.5, sr, 99));
+    rec.set(bgm.subarray(0, rec.length - Math.round((lagMs / 1000) * sr)), Math.round((lagMs / 1000) * sr));
+    key('KeyB', { key: 'b' });
+    await sleep(5);
+    ed.video.useFile(new File([wavBytes(rec, sr)], 'rec.wav', { type: 'audio/wav' }));
+    for (let i = 0; i < 200 && !ed.video.lastAlign; i++) await sleep(50);
+    const la = ed.video.lastAlign;
+    assert(la && la.ok, '初めての動画はひとりでに音で合わせる: ' + JSON.stringify(la));
+    const fp = () => JSON.parse(localStorage.getItem('dojo.editVideo')).charts[ed.video.key].files['rec.wav|' + (44 + rec.length * 2)];
+    assert(Math.abs(fp().syncMs - lagMs) < 2, '覚えるのは BGM の頭の動画の時刻: ' + fp().syncMs);
+    const anchor = bgmAnchorMs(ed.model.chart);
+    assertEq(anchor, 5000, 'リードイン 2000 + 小節 001 の半ば');
+    assert(Math.abs(ed.video.offsetMs() - (lagMs - anchor)) < 2, String(ed.video.offsetMs()));
+    const toast = sec.querySelector('#edit-toast');
+    assert(toast.textContent.includes('音で合わせました'), toast.textContent);
+    // 止まっているとき: 再生位置の譜面の時刻 + ずれ(u = 1.5 は BGM の頭なので的は BGM の頭の動画の時刻)
+    let got = null;
+    ed.video.sync.sync = (now, c) => { got = c; };
+    ed.view.uHead = 1.5;
+    ed._frame(performance.now());
+    assert(got && !got.playing && Math.abs(got.tg * 1000 - fp().syncMs) < 1e-6, JSON.stringify(got));
+    // 再生中: 編集の再生の時計(EditorPlayer.videoClock)と鳴らしている譜面
+    const p = ed.player;
+    ed._preparePlayer();
+    p.videoClock = () => ({ ms: 7000, holdMs: 12 });
+    const st = p.state;
+    p.state = PLAYER_STATE.PLAYING;
+    try {
+      ed.video.frame(performance.now());
+    } finally {
+      p.state = st;
+      delete p.videoClock;
+    }
+    assert(got.playing && got.hold === 12 && Math.abs(got.tg * 1000 - (7000 + fp().syncMs - anchor)) < 1e-6, JSON.stringify(got));
+    // 合わせたのを元に戻すと、ずれを覚えていない形に戻る
+    const undo = toast.querySelector('button');
+    assert(undo, '元に戻すボタン');
+    undo.click();
+    assert(!Number.isFinite(fp().syncMs) && ed.video.offsetMs() === 0, JSON.stringify(fp()));
+  } finally {
+    if (ed.video.file) ed.video.detach();
+    await h.done();
+    restore();
+  }
+});
+
+test('editor video: the player clock for the video holds the start position until the first sound is heard and gives the time left', () => {
+  const p = new EditorPlayer({ audio: fakeAudio() });
+  const now = performance.now();
+  p.state = PLAYER_STATE.PLAYING;
+  p.ratio = 1;
+  p._anchorSong = 3000;
+  p._anchorReal = now + 40;
+  let c = p.videoClock();
+  assertEq(c.ms, 3000, '音が聞こえ始めるまでは開始位置');
+  assert(c.holdMs > 30 && c.holdMs <= 40, String(c.holdMs));
+  p._anchorReal = now - 100;
+  c = p.videoClock();
+  assertEq(c.holdMs, 0);
+  assert(Math.abs(c.ms - p.songMs) < 2 && c.ms >= 3100 - 1, String(c.ms));
+  p.state = PLAYER_STATE.STANDBY;
+  assert(Number.isNaN(p.videoClock().holdMs), '止まっていれば残りは分からない');
 });
