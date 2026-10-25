@@ -1099,9 +1099,11 @@ test('editor video: crop — drag a rectangle (Enter applies, Esc cancels, 全�
     const body = sec.querySelector('#edit-video-body');
     const stage = sec.querySelector('#edit-stage');
     const avail = stage.clientWidth - sec.querySelector('#edit-rail').offsetWidth;
-    const exp = (asp) => Math.max(VIDEO_MIN_W, Math.min(Math.round((stage.clientHeight - VIDEO_HEAD_H) * asp) + 1, Math.floor(avail * 0.45)));
+    // 枠の元の幅(高さいっぱいの幅を場所の 45 % まで)を、広い配置で譜面に COMPACT_BELOW を残した残りまでに詰める(stageLayout)。
+    // 1280 px 幅の窓では 45 % より残りのほうが狭い
+    const exp = (asp) => Math.min(Math.max(VIDEO_MIN_W, Math.min(Math.round((stage.clientHeight - VIDEO_HEAD_H) * asp) + 1, Math.floor(avail * 0.45))), avail - COMPACT_BELOW);
     const wFull = parseFloat(pane.style.width);
-    assertEq(wFull, exp(16 / 9), '横長はそのままの縦横比(場所の 45 % まで)');
+    assertEq(wFull, exp(16 / 9), '横長はそのままの縦横比(場所の 45 % と、譜面に残す幅の残りまで)');
     sec.querySelector('#edit-video-crop').click();
     await sleep(5);
     const cropper = sec.querySelector('#edit-video-cropper');
