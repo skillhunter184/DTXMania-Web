@@ -45,9 +45,11 @@ const QUIET_PERF = -1e9;
 export class Player {
   /**
    * @param {{audio: AudioEngine, settings: import('./training.js').TrainingSettings, config: object}} deps
-   *   config: { hhGroup, ftGroup, cyGroup, bdGroup, hitRanges, pedalHitRanges, chipVolume, autoChipVolume, damageLevel, autoAddGage }
+   *   config: { hhGroup, ftGroup, cyGroup, bdGroup, hitRanges, pedalHitRanges, chipVolume, autoChipVolume, damageLevel, autoAddGage,
+   *     cutSameLane }
    * chipVolume / autoChipVolume は元実装どおりの相対音量(手動・全体 AUTO は前者、レーン別 AUTO は後者。
    * docs/spec/dtx-audio.md:458)。ユーザーが動かす「ドラム音量」「BGM 音量」は AudioEngine のバス側。
+   * cutSameLane: 同じレーンの音を重ねない(後の音が前の音を止める。本アプリの追加で、元実装は重ねて鳴らす。_chokeGroup)。
    */
   constructor({ audio, settings, config = {} }) {
     this.audio = audio;
@@ -56,6 +58,7 @@ export class Player {
       hhGroup: 0, ftGroup: 0, cyGroup: 0, bdGroup: 0,
       hitRanges: HitRanges.default, pedalHitRanges: HitRanges.default,
       chipVolume: 1.0, autoChipVolume: 0.8, damageLevel: 1, autoAddGage: false,
+      cutSameLane: true,
     }, config);
     this.chart = null;
     this.pkg = null;
@@ -884,17 +887,27 @@ export class Player {
   playChipSound(note, vol, when) {
     this._recordSound({ note, vol }, when);
     const id = note.wavId;
+    const choke = this._chokeGroup(note.lane);
     const { volume, pan } = AudioEngine.gainPan(this.chart, id);
     if (this.audio.hasBuffer(id)) {
-      return this.audio.play(id, { when, volume: volume * vol, pan, rate: this.ratio, bus: 'chip' });
+      return this.audio.play(id, { when, volume: volume * vol, pan, rate: this.ratio, bus: 'chip', choke });
     }
-    return this.audio.playBuffer(this.audio.synthBuffer(note.lane), { when, volume: vol, rate: this.ratio, key: 'synth' + note.lane, bus: 'chip' });
+    return this.audio.playBuffer(this.audio.synthBuffer(note.lane), { when, volume: vol, rate: this.ratio, key: 'synth' + note.lane, bus: 'chip', choke });
   }
 
   /** パッドの合成音(チップの無いレーンの空打ち)。 */
   _playSynth(lane, vol, when) {
     this._recordSound({ synth: lane, vol }, when);
-    return this.audio.playBuffer(this.audio.synthBuffer(lane), { when, volume: vol, rate: this.ratio, key: 'synth' + lane, bus: 'chip' });
+    return this.audio.playBuffer(this.audio.synthBuffer(lane), { when, volume: vol, rate: this.ratio, key: 'synth' + lane, bus: 'chip', choke: this._chokeGroup(lane) });
+  }
+
+  /**
+   * 打音を重ねない組(本アプリの追加。設定の cutSameLane)。同じレーンの音は後から鳴り始めた音が前の音を止める
+   * (手で叩いた音・AUTO・不可視チップ・空打ちの借りた音・合成音の区別なく、鳴らすチップのレーンで分ける。js/core/audio.js _choke)。
+   * 元実装は重ねて鳴らす(docs/spec/dtx-audio.md §11.3)。
+   */
+  _chokeGroup(lane) {
+    return this.config.cutSameLane ? 'lane' + lane : null;
   }
 
   /** 空打ちの音: いちばん近いチップの音(borrow)、無ければパッドの合成音。 */

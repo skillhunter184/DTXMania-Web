@@ -55,6 +55,8 @@ const DEFAULT_CONFIG = {
   masterVolume: 80,
   chipVolume: 100,
   bgmVolume: 100,
+  // (追加) 同じレーンの音を重ねない(叩き直すと前の音を止める)。元実装は重ねて鳴らす(docs/spec/dtx-audio.md §11.3)
+  cutSameLane: true,
   latencyMs: 0,
   showLag: true,
   layout: 'auto',
@@ -735,6 +737,9 @@ class App {
     const bad = $('cfg-gb-bad');
     bad.checked = !c.gbLight;
     bad.onchange = () => this.setGbLight(!bad.checked);
+    const cut = $('cfg-cut-lane');
+    cut.checked = c.cutSameLane !== false;
+    cut.onchange = () => { c.cutSameLane = cut.checked; this.saveConfig(); };
     const lat = $('cfg-latency');
     lat.value = c.latencyMs;
     lat.onchange = () => { c.latencyMs = Number(lat.value) || 0; this.audio.userLatencyMs = c.latencyMs; this.saveConfig(); };
@@ -948,6 +953,7 @@ class App {
             ...base,
             hhGroup: c.hhGroup, ftGroup: c.ftGroup, cyGroup: c.cyGroup, bdGroup: c.bdGroup,
             hitRanges: HitRanges.default, pedalHitRanges: HitRanges.default,
+            cutSameLane: c.cutSameLane !== false,
           },
         });
       } else {

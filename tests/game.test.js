@@ -888,6 +888,71 @@ test('player: at a measure loop wrap the metronome keeps the loop-end click and 
   }
 });
 
+// ---- 同じレーンの音を重ねない(AudioEngine の choke。本アプリの追加) ----
+function chokeEngine(seconds = 1) {
+  const eng = new AudioEngine();
+  eng.ctx = new OfflineAudioContext(1, Math.round(44100 * seconds), 44100);
+  eng.master = eng.ctx.destination;
+  return eng;
+}
+
+test('audio: a choke group stops the previous voice where the next one starts (in start-time order; same-time voices stay layered)', () => {
+  const eng = chokeEngine();
+  const buf = eng.ctx.createBuffer(1, 44100, 44100);
+  const a = eng.playBuffer(buf, { when: 0.1, choke: 'lane3' });
+  const b = eng.playBuffer(buf, { when: 0.3, choke: 'lane3' });
+  assertEq(a.cutAt, 0.3, 'the earlier voice stops where the next one starts');
+  assertEq(b.cutAt, undefined);
+  // 先読みで予約した音(b)より前に鳴らした音(手で叩いた音 c)は b の時刻で止まり、a はもっと早く c の時刻で止まる
+  const c = eng.playBuffer(buf, { when: 0.2, choke: 'lane3' });
+  assertEq(c.cutAt, 0.3, 'a voice played before a scheduled one stops where that one starts');
+  assertEq(a.cutAt, 0.2, 'the cut moves earlier');
+  // 同じ時刻に鳴り始める音は重ねたまま
+  const d = eng.playBuffer(buf, { when: 0.3, choke: 'lane3' });
+  assertEq(b.cutAt, undefined, 'same start time: layered');
+  assertEq(d.cutAt, undefined);
+  // 別の組・組の無い音は止めない
+  eng.playBuffer(buf, { when: 0.4, choke: 'lane5' });
+  eng.playBuffer(buf, { when: 0.5 });
+  assertEq(b.cutAt, undefined, 'other lanes and ungrouped sounds do not cut');
+  // 止めた音は組から外れ、stopAll で組は空になる
+  eng.stopVoice(d);
+  assertEq(eng.chokes.get('lane3').has(d), false);
+  eng.stopAll();
+  assertEq(eng.chokes.size, 0);
+});
+
+test('audio: the cut voice is faded out quickly at the next voice of its group; other groups keep sounding (rendered)', async () => {
+  const sr = 44100;
+  const eng = chokeEngine(0.5);
+  const buf = eng.ctx.createBuffer(1, sr, sr);
+  buf.getChannelData(0).fill(0.5);
+  eng.playBuffer(buf, { when: 0, choke: 'x' });
+  eng.playBuffer(buf, { when: 0.2, volume: 0, choke: 'x' }); // 無音の次の音で、前の音が止まるのを聞く
+  eng.playBuffer(buf, { when: 0, volume: 0.25, choke: 'y' });
+  const out = (await eng.ctx.startRendering()).getChannelData(0);
+  assertNear(out[Math.round(0.1 * sr)], 0.625, 1e-3, 'both groups sound before the cut');
+  assertNear(out[Math.round(0.25 * sr)], 0.125, 1e-3, 'group x is silent after the cut, group y keeps sounding');
+  const fading = out[Math.round(0.201 * sr)] - 0.125;
+  assert(fading > 0.25 && fading < 0.5, 'faded, not cut hard (no click): ' + fading);
+});
+
+test('player: drum sounds get one choke group per lane (hits, borrowed and synth sounds); none with cutSameLane off', async () => {
+  const { audio, player, chart } = makePlayer('#BPM: 120\n#WAV01: sd.wav\n#00012: 01\n#00016: 02\n');
+  audio.buffers.set('01', { duration: 1 });
+  await player.load({ resolve() { return null; }, readBytes() {} }, chart);
+  player.hit(3, 0); // 待機中の打鍵: SD のチップの音
+  player.hit(8, 0); // CY: #WAV02 が無いのでレーンの合成音
+  player.hit(4, 0); // HT: チップの無いレーンはパッドの合成音
+  assertDeepEq(audio.played.map((p) => p.choke), ['lane3', 'lane8', 'lane4']);
+  const off = makePlayer('#BPM: 120\n#WAV01: sd.wav\n#00012: 01\n', { cutSameLane: false });
+  off.audio.buffers.set('01', { duration: 1 });
+  await off.player.load({ resolve() { return null; }, readBytes() {} }, off.chart);
+  off.player.hit(3, 0);
+  off.player.hit(4, 0);
+  assertDeepEq(off.audio.played.map((p) => p.choke), [null, null]);
+});
+
 test('metronome: the click sounds are synthesized once (the bar click is higher, both start silent and decay)', () => {
   const a = buildClick(true);
   const b = buildClick(false);

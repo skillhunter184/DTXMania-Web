@@ -2416,21 +2416,26 @@ export class EditorScreen {
     return {
       chipVolume: 1.0, autoChipVolume: 0.8, hhGroup: c.hhGroup, ftGroup: c.ftGroup, cyGroup: c.cyGroup, bdGroup: c.bdGroup,
       hitRanges: HitRanges.default, pedalHitRanges: HitRanges.default,
+      cutSameLane: c.cutSameLane !== false,
     };
   }
 
-  /** 置いたチップの音(DTXCreator の PlaySoundOnWAVChipAllocated。既定 ON)。 */
+  /**
+   * 置いたチップの音(DTXCreator の PlaySoundOnWAVChipAllocated。既定 ON)。ドラムのレーンは設定の cutSameLane に従い、
+   * 同じレーンの前の音(再生中のチップの音も)を止める(演奏と同じ組。js/game/player.js _chokeGroup)。
+   */
   _previewSound(channel, value) {
     if (this.config.editPreviewSound === false) return;
     const audio = this.app.audio;
     if (!audio.ctx) return;
     const chart = this.model.chart;
+    const lane = laneOfChannel(channel);
+    const choke = lane >= 0 && this.config.cutSameLane !== false ? 'lane' + lane : null;
     const { volume, pan } = AudioEngine.gainPan(chart, value);
-    if (audio.hasBuffer(value)) audio.play(value, { volume: volume * PREVIEW_VOLUME, pan, bus: 'chip' });
+    if (audio.hasBuffer(value)) audio.play(value, { volume: volume * PREVIEW_VOLUME, pan, bus: 'chip', choke });
     else {
-      const lane = laneOfChannel(channel);
       const buf = lane >= 0 ? audio.synthBuffer(lane) : null;
-      if (buf) audio.playBuffer(buf, { volume: PREVIEW_VOLUME, key: 'synth' + lane, bus: 'chip' });
+      if (buf) audio.playBuffer(buf, { volume: PREVIEW_VOLUME, key: 'synth' + lane, bus: 'chip', choke });
     }
   }
 

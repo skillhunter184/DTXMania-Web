@@ -124,6 +124,7 @@ export const STRINGS = {
     '楽器の音量と BGM 音量は演奏中でもトレーニングメニューから変えられます。BGM 音量は弾いていない楽器(伴奏)の音にも効きます。',
     'Instrument and BGM volume can also be changed from the training menu while playing. BGM volume also applies to the instruments you are not playing (accompaniment).',
   ],
+  'settings.cutSameLane': ['同じレーンの音を重ねない(叩き直すと前の音を止める)', "Don't layer sounds on the same lane (a new hit stops the previous one)"],
   'settings.latency': ['遅延補正(ms)', 'Latency Offset (ms)'],
   'settings.latencyNote': ['音が遅れて聞こえるなら + 方向', 'Use + if the sound seems late'],
   'settings.display': ['表示', 'Display'],

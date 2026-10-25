@@ -243,6 +243,28 @@ test('editor: close commits the overlay and writes a draft; MIDI pads audition a
   }
 });
 
+test('editor: auditioned drum sounds use the lane choke group like the player (none with cutSameLane off)', async () => {
+  const h = await openEditor(CHART);
+  const { ed, app } = h;
+  const audio = app.audio;
+  try {
+    const groups = [];
+    audio.ctx = {};
+    audio.hasBuffer = (id) => id === '02';
+    audio.play = (id, opts) => { groups.push(opts.choke); return null; };
+    audio.playBuffer = (buf, opts) => { groups.push(opts.choke); return null; };
+    audio.synthBuffer = (lane) => ({ lane });
+    ed._previewSound(0x12, '02'); // SD(音あり)
+    ed._previewSound(0x18, '09'); // HHO(音なし → HH の合成音)
+    app.config.cutSameLane = false;
+    ed._previewSound(0x12, '02');
+    assertEq(JSON.stringify(groups), '["lane3","lane1",null]');
+  } finally {
+    audio.ctx = null;
+    await h.done();
+  }
+});
+
 test('editor: select mode — click / Shift / band select, drag moves the selection, ↑↓ nudge (coalesced), ←→ change column, Delete, Esc', async () => {
   const h = await openEditor(CHART);
   const { ed, at, click, ptr, key, chips, session } = h;

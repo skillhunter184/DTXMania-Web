@@ -2,7 +2,8 @@
 // - 音源の復号: XA(自前) / WAV・OGG・MP3(decodeAudioData) / WAV フォールバック(自前) /
 //   Ogg Vorbis フォールバック(iOS Safari 向け。CDN の wasm デコーダを必要時に読み込む)
 // - 発音: #VOLUME / #PAN を反映、同一 WAV の同時発音数を制限(NX の多重発音数に相当)、
-//   演奏速度は playbackRate で追従(DTXManiaAI の AudioSource.pitch と同じ考え方)
+//   演奏速度は playbackRate で追従(DTXManiaAI の AudioSource.pitch と同じ考え方)、
+//   (追加) 同じ組(ドラムはレーン)の音を重ねない: 後から鳴り始めた音が前の音を止める(opts.choke)
 // - 時計: AudioContext の時刻を演奏の基準時計にする(player 側で songMs へ変換)。「今聞こえている ctx 時刻」を
 //   getOutputTimestamp() の組から作り(audibleCtxAt)、使えないときは currentTime − 出力遅延の推定に戻る。
 //   docs/architecture.md「時計モデル」
@@ -45,6 +46,9 @@ function isOgg(bytes) {
 /** getOutputTimestamp の組の古さの上限(ms)。ふだんは 5〜10 ms。超えたら音の装置が止まっているとみる。 */
 const STAMP_MAX_AGE_MS = 100;
 
+/** 組(opts.choke)の前の音を止めるときに絞る時定数(秒)。ぶつ切りにするとプツッと鳴るので、ごく短く絞ってから止める。 */
+const CHOKE_FADE_SEC = 0.005;
+
 export class AudioEngine {
   constructor() {
     /** @type {AudioContext|null} */
@@ -65,6 +69,8 @@ export class AudioEngine {
     /** @type {Map<string, Set<any>>} wavId → 発音中の voice */
     this.voices = new Map();
     this.allVoices = new Set();
+    /** @type {Map<string, Set<any>>} 組(opts.choke)→ 鳴っている・予約した voice(止めると決めた音も鳴り終わるまで残す) */
+    this.chokes = new Map();
     this.synthBuffers = null;
     /** 復号できなかった wavId の一覧(表示用)。 */
     this.failed = [];
@@ -314,9 +320,10 @@ export class AudioEngine {
   /**
    * バッファを鳴らす。
    * @param {AudioBuffer} buffer
-   * @param {{when?:number, offset?:number, volume?:number, pan?:number, rate?:number, key?:string}} opts
+   * @param {{when?:number, offset?:number, volume?:number, pan?:number, rate?:number, key?:string, choke?:string}} opts
    *   when: AudioContext 時刻(省略で即時) / offset: バッファ内の開始位置(秒) /
-   *   volume: 0..1 / pan: -1..1 / rate: 再生速度 / key: 同時発音制限のグループ(通常は wavId)
+   *   volume: 0..1 / pan: -1..1 / rate: 再生速度 / key: 同時発音制限のグループ(通常は wavId) /
+   *   choke: 重ねない組(同じ組の前の音を、この音が鳴り始める時刻で止める。_choke)
    */
   playBuffer(buffer, opts = {}) {
     if (!buffer || !this.ctx) return null;
@@ -368,7 +375,45 @@ export class AudioEngine {
       this._release(voice);
       return null;
     }
+    if (opts.choke) this._choke(voice, opts.choke);
     return voice;
+  }
+
+  /**
+   * (追加) 同じ組の音を重ねない。鳴り始める時刻の順に並べ、次の音が鳴り始めたら前の音を止める。先読みで予約した音
+   * (AUTO のチップ)より前に鳴らした音(手で叩いた音)は、その予約の時刻で止まる。同じ時刻に鳴り始める音は重ねたまま
+   * (1 打で鳴る重ねの音を消さない)。元実装は重ねて鳴らす(DTXManiaAI は打音を数の制限なく、NX は同じ WAV を 4 つまで。
+   * docs/spec/dtx-audio.md §11.3)。
+   */
+  _choke(voice, group) {
+    let set = this.chokes.get(group);
+    if (!set) {
+      set = new Set();
+      this.chokes.set(group, set);
+    }
+    const t = voice.startedAt;
+    for (const v of set) {
+      if (v.startedAt < t) this._cut(v, t);
+      else if (v.startedAt > t) this._cut(voice, v.startedAt);
+    }
+    voice.choke = group;
+    set.add(voice);
+  }
+
+  /**
+   * voice を at(AudioContext 時刻)で短く絞って止める。それより早く止める予定があれば何もしない。止める予定の音も
+   * 鳴り終わるまで組と同時発音数の管理に残す(後から割り込んだ音が、もっと早く止められるように)。
+   */
+  _cut(voice, at) {
+    if (voice.cutAt !== undefined && voice.cutAt <= at) return;
+    voice.cutAt = at;
+    const t0 = Math.max(at, this.ctx.currentTime);
+    try {
+      voice.gain.gain.setTargetAtTime(0, t0, CHOKE_FADE_SEC);
+      voice.src.stop(t0 + CHOKE_FADE_SEC * 6);
+    } catch (e) {
+      /* already stopped */
+    }
   }
 
   /**
@@ -386,6 +431,10 @@ export class AudioEngine {
     this.allVoices.delete(voice);
     if (voice.key) {
       const set = this.voices.get(voice.key);
+      if (set) set.delete(voice);
+    }
+    if (voice.choke) {
+      const set = this.chokes.get(voice.choke);
       if (set) set.delete(voice);
     }
   }
@@ -425,6 +474,7 @@ export class AudioEngine {
     for (const v of [...this.allVoices]) this.stopVoice(v);
     this.voices.clear();
     this.allVoices.clear();
+    this.chokes.clear();
   }
 
   /** DTX の #VOLUME(0..100)/#PAN(-100..100)を再生パラメータに変換する。 */
