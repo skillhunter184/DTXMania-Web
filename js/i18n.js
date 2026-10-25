@@ -649,6 +649,7 @@ export const STRINGS = {
   'edit.more': ['その他', 'More'],
   'edit.snap': ['ガイド間隔', 'Grid'],
   'edit.snapFree': ['フリー', 'Free'],
+  'edit.wheelStep': ['ホイール 1 段で送る幅', 'Wheel step (per notch)'],
   'edit.zoomIn': ['拡大', 'Zoom in'],
   'edit.zoomOut': ['縮小', 'Zoom out'],
   'edit.playStop': ['再生 / 停止', 'Play / Stop'],

@@ -356,8 +356,8 @@ body.touch .edit-pop button { padding: 12px 12px; }
 #edit-loading .box { background: var(--panel); border-radius: 12px; padding: 20px 26px; min-width: 240px; text-align: center; }
 /* 狭い画面: 道具を下にまとめる */
 #screen-edit.compact #edit-bar .grp.tools { order: 3; flex: 1 1 100%; justify-content: space-between; flex-wrap: wrap; row-gap: 6px; }
-/* 狭い画面のタッチは 2 本指で拡大できるので −/＋ を出さない(ペン / 選択の切り替えが押し出されないように) */
-body.touch #screen-edit.compact #edit-zoom-out, body.touch #screen-edit.compact #edit-zoom-in { display: none; }
+/* 狭い画面のタッチは 2 本指で拡大できるので −/＋ を、ホイールも無いのでホイールの幅を出さない(ペン / 選択の切り替えが押し出されないように) */
+body.touch #screen-edit.compact #edit-zoom-out, body.touch #screen-edit.compact #edit-zoom-in, body.touch #screen-edit.compact #edit-wheel { display: none; }
 #edit-mode { flex: none; }
 @media (max-width: 420px) {
   #edit-bar { gap: 4px 6px; padding-left: 4px; padding-right: 4px; }

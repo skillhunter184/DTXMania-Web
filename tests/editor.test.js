@@ -1,10 +1,10 @@
 // 譜面の編集画面(js/edit/editor.js)の結合テスト。index.html の #screen-edit をこのページに差し込み、
 // マウス・タッチ・キーの合成イベントで操作して、文書と曲パックへの重ね合わせ・下書きを見る。
-import { test, assert, assertEq, fetchBytes } from './runner.js';
+import { test, assert, assertEq, assertNear, fetchBytes } from './runner.js';
 import { SongPackage } from '../js/core/song.js';
 import { Skin, columnCenterX, JUDGE_Y, CANVAS_H } from '../js/ui/skin.js';
 import { EditSession } from '../js/edit/session.js';
-import { EditorScreen } from '../js/edit/editor.js';
+import { EditorScreen, wheelNotches } from '../js/edit/editor.js';
 import { loadDraft, deleteDraft } from '../js/edit/drafts.js';
 import { previewWidth } from '../js/edit/preview.js';
 import { COMPACT_BELOW } from '../js/edit/view.js';
@@ -1460,5 +1460,104 @@ test('editor video: marking the video judge line makes the playhead line and the
     if (ed.video.file) ed.video.detach();
     await h.done();
     restore();
+  }
+});
+
+test('editor: wheelNotches — notches by wheelDeltaY, macOS trackpad signature, page zoom-out recount, Firefox lines per platform', () => {
+  const px = (o) => ({ deltaMode: 0, wheelDeltaY: 0, ...o });
+  assertEq(wheelNotches(px({ deltaY: -100, wheelDeltaY: 120 }), { zoom: 1 }), 1);
+  assertEq(wheelNotches(px({ deltaY: 100, wheelDeltaY: -120 }), { zoom: 1 }), -1);
+  assertEq(wheelNotches(px({ deltaY: -200, wheelDeltaY: 240 }), { zoom: 1 }), 2, '2 段まとめて');
+  assertEq(wheelNotches(px({ deltaY: -10 }), { zoom: 1 }), null, 'タッチパッド');
+  assertEq(wheelNotches(px({ deltaY: -40, wheelDeltaY: 120 }), { zoom: 1 }), null, 'macOS のタッチパッド(−3·deltaY)');
+  // Chrome / Edge はページの拡大率で wheelDeltaY も割る
+  assertEq(wheelNotches(px({ deltaY: -200, wheelDeltaY: 240 }), { zoom: 0.5 }), 1, '50 % に縮小した 1 段');
+  assertEq(wheelNotches(px({ deltaY: -400, wheelDeltaY: 480 }), { zoom: 0.5 }), 2, '50 % で 2 段');
+  assertEq(wheelNotches(px({ deltaY: 400, wheelDeltaY: -480 }), { zoom: 0.25 }), -1, '25 %');
+  assertEq(wheelNotches(px({ deltaY: -90.909, wheelDeltaY: 109 }), { zoom: 1.1 }), null, '拡大していると段と分からない(量で送る)');
+  assertEq(wheelNotches(px({ deltaY: -200, wheelDeltaY: 240 }), { zoom: 1.3 }), 2, '横の欄で拡大率が大きめに出ても数え直さない');
+  // Firefox(行単位)
+  assertEq(wheelNotches({ deltaMode: 1, deltaY: -6, wheelDeltaY: 120 }, { mac: false }), 1);
+  assertEq(wheelNotches({ deltaMode: 1, deltaY: -1.5, wheelDeltaY: 60 }, { mac: false }), null, 'Windows の段の途中');
+  assertEq(wheelNotches({ deltaMode: 1, deltaY: -1, wheelDeltaY: 57 }, { mac: true }), 1, 'macOS のマウス');
+  assertEq(wheelNotches({ deltaMode: 1, deltaY: -0.5, wheelDeltaY: 0 }, { mac: true }), null, '1 行未満');
+  assertEq(wheelNotches({ deltaMode: 2, deltaY: 1, wheelDeltaY: 0 }), -1, 'ページ単位');
+  assertEq(wheelNotches(px({ deltaY: 0 })), null);
+});
+
+test('editor: wheel step (⇕ next to the grid select, remembered) — a notch goes to the next 1/n line (snaps from between lines), smooth scrolling is proportional', async () => {
+  const h = await openEditor(CHART);
+  const { ed, sec } = h;
+  try {
+    const cv = sec.querySelector('#edit-canvas');
+    const sel = sec.querySelector('#edit-wheel');
+    assertEq(sel.value, '4', '既定は 1/4(DTXCreator の 1 段 1 拍と同じ)');
+    assertEq([...sel.options].map((o) => o.value).join(), '4,8,12,16,24,32,48,64');
+    assertEq(sel.options[sel.options.length - 1].textContent, '⇕ 1/64');
+    assert(sel.previousElementSibling === sec.querySelector('#edit-guide'), '分割数の隣');
+    const wheel = (o) => cv.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: 10, clientY: 10, ...o }));
+    ed.wheelEnv = { mac: false, zoom: 1 }; // ページの拡大率と OS はテストの窓によらない
+    ed.view.uHead = 1.2;
+    // 段で回るホイール(wheelDeltaY 120): 線の間からは、その向きでいちばん近い線へ
+    wheel({ deltaY: -100, wheelDeltaY: 120 });
+    assertNear(ed.view.uHead, 1.25, 1e-9);
+    wheel({ deltaY: -100, wheelDeltaY: 120 });
+    assertNear(ed.view.uHead, 1.5, 1e-9);
+    wheel({ deltaY: 100, wheelDeltaY: -120 });
+    assertNear(ed.view.uHead, 1.25, 1e-9);
+    // 1/64 を選ぶ(覚える)
+    sel.value = '64';
+    sel.dispatchEvent(new Event('change'));
+    assertEq(h.app.config.editWheel, 64);
+    assertEq(ed.wheelStep, 64);
+    wheel({ deltaY: -100, wheelDeltaY: 120 });
+    assertNear(ed.view.uHead, 1.25 + 1 / 64, 1e-9);
+    // 2 段まとめて届いたら 2 段
+    wheel({ deltaY: 200, wheelDeltaY: -240 });
+    assertNear(ed.view.uHead, 1.25 - 1 / 64, 1e-9);
+    // Windows の「1 回に 1 行」(deltaY 33.3)・macOS の Chrome のマウス(加速した deltaY 4.0002)も 1 段は 1 段
+    wheel({ deltaY: -100 / 3, wheelDeltaY: 120 });
+    assertNear(ed.view.uHead, 1.25, 1e-9);
+    wheel({ deltaY: -4.000244140625, wheelDeltaY: 120 });
+    assertNear(ed.view.uHead, 1.25 + 1 / 64, 1e-9);
+    // Firefox(行単位): macOS のマウスは段を出さず 1 段 1 行ほど、Windows は wheelDeltaY が 1 段 120(行数は 6 行にもなる)
+    ed.wheelEnv = { mac: true, zoom: 1 };
+    wheel({ deltaY: -1, deltaMode: 1 });
+    assertNear(ed.view.uHead, 1.25 + 2 / 64, 1e-9);
+    ed.wheelEnv = { mac: false, zoom: 1 };
+    wheel({ deltaY: 6, deltaMode: 1, wheelDeltaY: -120 });
+    assertNear(ed.view.uHead, 1.25 + 1 / 64, 1e-9);
+    // なめらかなスクロールは設定によらず今までどおり(400 px で 1 小節)、線には寄せない
+    let u = 1.25 + 1 / 64;
+    wheel({ deltaY: -0.3, deltaMode: 1 }); // 1 行未満(Linux のなめらかなスクロール)は 1 行 100/3 px
+    assertNear(ed.view.uHead, (u += 10 / 400), 1e-9);
+    wheel({ deltaY: -1.5, deltaMode: 1, wheelDeltaY: 60 }); // Windows の Firefox の段の途中(なめらかなホイール)
+    assertNear(ed.view.uHead, (u += 50 / 400), 1e-9);
+    wheel({ deltaY: -10 });
+    assertNear(ed.view.uHead, (u += 10 / 400), 1e-9);
+    // macOS のタッチパッド(wheelDeltaY がちょうど −3·deltaY)は、120 の倍数でも段にしない
+    wheel({ deltaY: -40, wheelDeltaY: 120 });
+    assertNear(ed.view.uHead, (u += 40 / 400), 1e-9);
+    wheel({ deltaY: -80, wheelDeltaY: 240 });
+    assertNear(ed.view.uHead, (u += 80 / 400), 1e-9);
+    // 線の間からの 1 段は、その向きでいちばん近い 1/64 の線
+    wheel({ deltaY: -100, wheelDeltaY: 120 });
+    assertNear(ed.view.uHead, (Math.floor(u * 64 + 1e-9) + 1) / 64, 1e-9);
+    // Ctrl+ホイールは今までどおり拡大
+    const z = ed.view.zoom;
+    wheel({ deltaY: -100, wheelDeltaY: 120, ctrlKey: true });
+    assert(ed.view.zoom > z, '拡大');
+    // 次に開いたときも 1/64
+    await ed.close();
+    const ed2 = new EditorScreen(h.app, h.session, ed.skin, {});
+    await ed2.open();
+    try {
+      assertEq(sec.querySelector('#edit-wheel').value, '64');
+      assertEq(ed2.wheelStep, 64);
+    } finally {
+      await ed2.close();
+    }
+  } finally {
+    await h.done();
   }
 });

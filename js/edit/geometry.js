@@ -147,6 +147,19 @@ export class MeasureGeometry {
     const last = Math.ceil(Lp * d - EPS) - 1;
     return { measure: pm, tick: guideTick(Math.max(0, last), d, Lp) };
   }
+
+  /**
+   * u から次(dir = 1)/ 前(dir = −1)のガイド線(d 等分。0 は不可)の u。線の上にいれば隣の線、線の間にいればその向きで
+   * いちばん近い線(ホイールの 1 段。本アプリの追加)。リードインの頭より前へは行かない。
+   */
+  stepU(u, d, dir) {
+    const m = this.measureAt(u);
+    const t = ((u - this.start(m)) / this.len(m)) * TICKS_PER_MEASURE;
+    // 線の tick は切り捨て(guideTick)なので、線の上の u から求めた t はその tick と同じ(誤差だけ見逃す)
+    const tick = dir > 0 ? Math.floor(t + 1e-6) : Math.min(TICKS_PER_MEASURE, Math.ceil(t - 1e-6));
+    const next = this.step(m, tick, d, dir);
+    return this.u(next.measure, next.tick);
+  }
 }
 
 /** 小節長 L の小節の k 本目のガイド線の tick(parseDTX の floor(384·i/N) と同じ切り捨て)。 */

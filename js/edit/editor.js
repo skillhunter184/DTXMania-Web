@@ -78,6 +78,48 @@ const PREVIEW_VOLUME = 0.9;
 const STEP_CHORD_MS = 60; // 叩いて入力: この間に叩いたものは同じセルに置く(和音)
 const DRAFT_DEBOUNCE_MS = 1500;
 const SPEEDS = [10, 15, 20, 25, 30]; // 再生速度(playSpeed。20 = x1.0。DTXCreator の x0.5〜x1.5)
+/** ホイール 1 段で送る幅(4/4 の小節の 1/n。ガイド間隔と同じ並び。4 = 1 拍 = DTXCreator の既定と同じ。本アプリの追加)。 */
+export const WHEEL_STEPS = [4, 8, 12, 16, 24, 32, 48, 64];
+/** なめらかなスクロール(タッチパッドなど)で 4/4 の 1 小節送る量(CSS px。今までどおり。ホイール 1 段の設定によらない)。 */
+const SMOOTH_PX_PER_MEASURE = 400;
+
+const IS_MAC = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform || '');
+
+/** ブラウザのページの拡大率のおおよそ(窓の枠・横の欄・開発ツールの分だけ大きめに出る)。 */
+function pageZoom() {
+  const z = window.outerWidth / window.innerWidth;
+  return Number.isFinite(z) && z > 0 ? z : 1;
+}
+
+/**
+ * ホイールの出来事が段で回るホイールのものなら、その段の数(+ = 先へ = ホイールを奥へ)。なめらかなスクロールは null
+ * (見分けられないものも null にして、今までどおり量で送る)。
+ * - Chrome / Edge: wheelDeltaY が 1 段 120(deltaY は Windows の「1 回に何行」・macOS の加速で 100 とは限らない)。
+ *   macOS のタッチパッドは段ではなく量から作るので wheelDeltaY がちょうど −3·deltaY になり、120 の倍数でも段ではない。
+ *   ページを拡大・縮小していると wheelDeltaY も拡大率で割る(110 % なら 109)。拡大しているときは段と分からないので量で送り、
+ *   縮小して 120 の倍数になったとき(50 % なら 240)だけ、拡大率で 1 段に数え直す(拡大率は大きめに出るので縮小のときだけ使う)
+ * - Firefox: 行単位。Windows / Linux は wheelDeltaY が 1 段 120(段の途中はなめらかなホイール・タッチパッド)、macOS の
+ *   マウスは段を出さず 1 段 1 行ほど(1 行未満はなめらか)
+ * - Safari: マウスも wheelDeltaY がタッチパッドと同じ作り(1 段 12 前後)で見分けられないので、量で送る
+ * @param {WheelEvent} e
+ * @param {{mac?: boolean, zoom?: number}} [env] テストで差し替える
+ */
+export function wheelNotches(e, { mac = IS_MAC, zoom } = {}) {
+  // deltaMode を先に読む(Firefox は deltaY を先に読むと行を px に直し、deltaMode も 0 になる)
+  const mode = e.deltaMode;
+  const dy = e.deltaY;
+  if (!dy) return null;
+  const w = e.wheelDeltaY;
+  const ticks = w && w % 120 === 0 ? w / 120 : 0;
+  if (mode === 2) return -Math.sign(dy) * Math.max(1, Math.round(Math.abs(dy)));
+  if (mode === 1) {
+    if (ticks) return ticks;
+    return mac && Math.abs(dy) >= 1 ? -Math.sign(dy) : null;
+  }
+  if (!ticks || w === -3 * dy) return null;
+  const z = zoom ?? pageZoom();
+  return z < 0.9 ? Math.sign(ticks) * Math.max(1, Math.round(Math.abs(ticks) * z)) : ticks;
+}
 
 /** 文字のショートカット(e.code で見る。キーボードの配列・IME に左右されない)。 */
 const LETTER_OF_CODE = { KeyE: 'e', KeyS: 's', KeyP: 'p', KeyT: 't', KeyM: 'm', KeyR: 'r', KeyN: 'n', KeyV: 'v', KeyB: 'b' };
@@ -144,6 +186,8 @@ export class EditorScreen {
     this._previewSize = null; // {w, h}(CSS px)。出していなければ null
     this._previewUntil = 0; // 止めたあと、プレビューの演出(ファイア・判定の文字)が消えるまで描く
     this._previewBlock = null; // 出すはずのプレビューを出せないわけ('panel' / 'size')。お知らせの文言
+    this.wheelStep = 4; // ホイール 1 段で送る幅(WHEEL_STEPS。config.editWheel)
+    this.wheelEnv = {}; // wheelNotches の環境(macOS か・ページの拡大率。テストで差し替える)
     this.video = new EditVideo(this); // プレー動画(js/edit/video.js)
     this.previewBar = new PreviewBar(this); // 判定ラインの位置・プレビューのハイスピード(js/edit/previewbar.js)
     this._judge = { frac: 0.75, custom: false, video: false }; // 今の判定ラインの位置(PreviewBar.judgeFrac)
@@ -186,6 +230,8 @@ export class EditorScreen {
     const g = GUIDES.includes(c.editGuide) ? c.editGuide : 16;
     this.view.guide = v && GUIDES.includes(v.guide) ? v.guide : g;
     $('edit-guide').value = String(this.view.guide);
+    this.wheelStep = WHEEL_STEPS.includes(c.editWheel) ? c.editWheel : 4;
+    $('edit-wheel').value = String(this.wheelStep);
     // 拡大率は配置(広い / 狭い)ごと。前に開いたときと配置が同じならそのときの拡大率、違えば配置ごとに覚えた値、
     // それも無ければタッチは 1/16 のセルが指で押せる大きさ(約 24 CSS px)
     const z = c.editZoom && c.editZoom[this.view.layout];
@@ -337,6 +383,10 @@ export class EditorScreen {
       // 選んだら譜面へ戻す(選択欄にフォーカスが残るとショートカットが効かない)
       this.canvas.focus({ preventScroll: true });
     });
+    this._on($('edit-wheel'), 'change', () => {
+      this._setWheelStep(Number($('edit-wheel').value));
+      this.canvas.focus({ preventScroll: true });
+    });
     for (const seg of document.querySelectorAll('#edit-types .seg')) {
       const col = Number(seg.dataset.col);
       seg.querySelectorAll('button').forEach((b, i) => {
@@ -442,6 +492,14 @@ export class EditorScreen {
       o.value = String(d);
       o.textContent = d ? `1/${d}` : t('edit.snapFree');
       sel.appendChild(o);
+    }
+    const wheel = $('edit-wheel');
+    wheel.innerHTML = '';
+    for (const n of WHEEL_STEPS) {
+      const o = document.createElement('option');
+      o.value = String(n);
+      o.textContent = `⇕ 1/${n}`;
+      wheel.appendChild(o);
     }
   }
 
@@ -1607,14 +1665,34 @@ export class EditorScreen {
       this._zoomAt(this.view.zoom * 1.0015 ** -e.deltaY, y * this.view.s + this.canvas.getBoundingClientRect().top, true);
       return;
     }
-    const k = e.deltaMode === 1 ? 100 / 3 : e.deltaMode === 2 ? this.view.H * this.view.s : 1;
     this.follow = false;
     this._stopFling();
-    this.view.uHead += (-e.deltaY * k) / 400;
+    // 段で回るホイールは 1 段で 4/4 の小節の 1/wheelStep のガイド線へ送る(本アプリの追加。DTXCreator は 1 段 1 拍。
+    // 線の間にいれば、その向きでいちばん近い線へ)。なめらかなスクロールは今までどおり量に比例して動かす(細かい設定に
+    // 合わせると、タッチパッドがほとんど進まなくなるので、設定によらない)
+    const n = wheelNotches(e, this.wheelEnv); // deltaMode を先に読むので、deltaY はここより後で読む
+    if (n !== null) {
+      const geo = this.model.geometry;
+      let u = this.view.uHead;
+      for (let i = 0; i < Math.abs(n); i++) u = geo.stepU(u, this.wheelStep, Math.sign(n));
+      this.view.uHead = u;
+    } else {
+      const px = e.deltaMode === 1 ? (e.deltaY * 100) / 3 : e.deltaY;
+      this.view.uHead += -px / SMOOTH_PX_PER_MEASURE;
+    }
     this._clampHead();
     this._syncButtons();
     this._render();
     this._hoverGhost();
+  }
+
+  /** ホイール 1 段で送る幅を変える(覚える)。 */
+  _setWheelStep(n) {
+    if (!WHEEL_STEPS.includes(n)) return;
+    this.wheelStep = n;
+    $('edit-wheel').value = String(n);
+    this.config.editWheel = n;
+    this.app.saveConfig();
   }
 
   /** 拡大率を変える(clientY の位置の u を動かさない)。 */

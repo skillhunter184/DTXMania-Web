@@ -94,6 +94,36 @@ test('editgeo: u <-> (measure, tick) with bar lengths, nearest snap, steps, lead
   assertEq(f3.ticks.join(), [1, 2, 3, 4, 5, 6, 7, 8].map((k) => Math.floor((384 * k) / 9)).join());
 });
 
+test('editgeo: stepU (one wheel notch) goes to the next / previous guide line, snaps from between lines, follows bar lengths, stops at the lead-in', () => {
+  const g = new MeasureGeometry(parseDTX('#BPM: 120\n#00202: 0.75\n#00511: 01\n').tempoMap);
+  assertNear(g.stepU(0, 64, 1), 1 / 64, 1e-12);
+  assertNear(g.stepU(1 / 64, 64, -1), 0, 1e-12);
+  // 線の間からは、その向きでいちばん近い線
+  assertNear(g.stepU(0.3, 4, 1), 0.5, 1e-12);
+  assertNear(g.stepU(0.3, 4, -1), 0.25, 1e-12);
+  // 3/4(小節 2 から 0.75): 1/4 は 3 本で次の小節の頭、戻りは前の小節の最後の線
+  const seq = [];
+  let u = 2;
+  for (let i = 0; i < 4; i++) seq.push((u = g.stepU(u, 4, 1)));
+  assertDeepEq(seq.map((v) => Math.round(v * 1e9) / 1e9), [2.25, 2.5, 2.75, 3]);
+  assertNear(g.stepU(2.75, 4, -1), 2.5, 1e-12);
+  // リードイン: 頭より前へは行かない
+  assertNear(g.stepU(-1, 4, -1), -1, 1e-12);
+  assertNear(g.stepU(-0.9, 4, -1), -1, 1e-12);
+  assertNear(g.stepU(-1, 4, 1), -0.75, 1e-12);
+  assertNear(g.stepU(-0.1, 4, 1), 0, 1e-12);
+  // 割り切れない小節(7/8 の 1/64 は 56 本。線の tick は切り捨て): 同じ線に留まらず、56 段で次の小節、56 段で戻る
+  const g2 = new MeasureGeometry(parseDTX('#00002: 0.875\n#00011: 01\n').tempoMap);
+  let v = 0;
+  const fwd = [];
+  for (let i = 0; i < 56; i++) fwd.push((v = g2.stepU(v, 64, 1)));
+  assert(fwd.every((x, i) => i === 0 || x > fwd[i - 1]), '増え続ける');
+  assertNear(v, 0.875, 1e-12);
+  assertNear(fwd[54], g2.u(0, Math.floor((384 * 55) / 56)), 1e-12);
+  for (let i = 0; i < 56; i++) v = g2.stepU(v, 64, -1);
+  assertNear(v, 0, 1e-12);
+});
+
 // ---- lanes ----
 test('editlanes: columns, types, conflicts, pen defaults, pad channels', () => {
   assertEq(COLUMN_TYPES.flat().length, 12);
