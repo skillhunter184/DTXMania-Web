@@ -30,6 +30,9 @@ const COL_BEAT = 'rgb(70,70,70)';
 const COL_MEASURE = 'rgb(200,200,200)';
 const COL_PLAYHEAD = 'rgb(255,214,64)';
 const COL_GHOST = { add: '#00ff88', delete: '#ff5050', replace: '#ffb000', locked: '#888888' };
+const COL_BAR_DRAG = 'rgb(102,217,255)';
+/** 小節線をつかめる上下の幅(CSS px。これに入力の種類ごとの遊びを足す)。 */
+const BAR_GRIP_CSS = 4;
 
 export class EditView {
   /**
@@ -69,6 +72,8 @@ export class EditView {
       suspects: null, // Map<key, conf>(vid2dtx の確信度)
       pending: null, // [{column, u, channel}](叩いて入力の和音・録音しかけ。赤い枠)
       otherBranches: false, // #IF の表示していない分岐のチップも薄く描く
+      barHover: null, // 指している小節線の u(つかめる印)
+      barDrag: null, // {u, lines: [{text, kind}]}(ドラッグしている小節線と札。_barDrag)
     };
   }
 
@@ -176,6 +181,11 @@ export class EditView {
   /** BPM の札の当たりの遊び(u。札の半分の高さ + 入力の種類ごとの遊び)。 */
   bpmTolU(pointerType) {
     return (this.css(9) + this.css(HIT_TOL_CSS[pointerType] || 5)) / this.ppu;
+  }
+
+  /** 小節線をつかめる遊び(u)。 */
+  barTolU(pointerType) {
+    return this.css(BAR_GRIP_CSS + (HIT_TOL_CSS[pointerType] || 5)) / this.ppu;
   }
 
   /**
@@ -434,6 +444,13 @@ export class EditView {
     }
     if (st.preview && st.preview.bpm) for (const b of st.preview.bpm) this._bpmMark(b.u, b.bpm, b.channel, false, true);
 
+    // つかめる小節線・ドラッグしている小節線と新しい長さの札(本アプリの追加)
+    if (st.barDrag) this._barDrag(st.barDrag, xL, xR);
+    else if (st.barHover !== null) {
+      g.fillStyle = COL_BAR_DRAG;
+      g.fillRect(xL, this.y(st.barHover) - this.css(1), xR - xL, this.css(2));
+    }
+
     // 再生位置
     g.fillStyle = COL_PLAYHEAD;
     g.fillRect(xL, this.headY - this.css(1.5), xR - xL, this.css(3));
@@ -494,6 +511,41 @@ export class EditView {
       g.textAlign = 'left';
       g.fillText('♩' + text, v.gutter[0] + this.css(2), yy + this.css(10));
     }
+  }
+
+  /**
+   * ドラッグしている小節線と札(レーンの左端、線の上。上に入らなければ下)。札の行は {text, kind}。kind は
+   * 'main'(新しい長さ)/ 'note'(範囲・伸縮)/ 'warn'(消えるチップ・できない理由)。
+   */
+  _barDrag(bd, xL, xR) {
+    const g = this.g;
+    const yy = this.y(bd.u);
+    g.fillStyle = COL_BAR_DRAG;
+    g.fillRect(xL, yy - this.css(1.5), xR - xL, this.css(3));
+    if (!bd.lines.length) return;
+    const font = (kind) => (kind === 'main' ? `bold ${this.css(13)}px ${FONT}` : `${this.css(11)}px ${FONT}`);
+    const pad = this.css(6);
+    const lh = this.css(17);
+    let w = 0;
+    for (const l of bd.lines) {
+      g.font = font(l.kind);
+      w = Math.max(w, g.measureText(l.text).width);
+    }
+    const bw = Math.min(LANE_W - this.css(8), w + pad * 2);
+    const bh = lh * bd.lines.length + this.css(4);
+    const x = LANE_X0 + this.css(4);
+    let ty = yy - this.css(5) - bh;
+    if (ty < this.headerH + this.css(2)) ty = yy + this.css(5);
+    g.fillStyle = 'rgba(0,0,0,0.8)';
+    roundRect(g, x, ty, bw, bh, this.css(4));
+    g.fill();
+    g.textAlign = 'left';
+    g.textBaseline = 'middle';
+    bd.lines.forEach((l, i) => {
+      g.font = font(l.kind);
+      g.fillStyle = l.kind === 'warn' ? 'rgb(255,170,90)' : l.kind === 'note' ? 'rgb(200,200,200)' : COL_BAR_DRAG;
+      g.fillText(l.text, x + pad, ty + this.css(2) + lh * (i + 0.5), bw - pad * 2);
+    });
   }
 
   /** チップの x 範囲(左右に分けたセルなら半分)。 */

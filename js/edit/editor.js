@@ -7,7 +7,8 @@
 // - タッチ: タップで置く / 消す、1 本指のドラッグはスクロール、長押しで持ち上げて動かす(動かさずに離すとメニュー)、2 本指で拡大縮小
 // - 選択モード(DTXCreator の選択モード §5): クリック / 範囲で選び、ドラッグで動かす。右クリック / 長押しでメニュー
 //   (切り取り・コピー・貼り付け・削除・すべて選択・レーン / 小節の中を選択・小節長・小節の挿入 / 削除)
-// - BPM レーン(広い配置)を押すと BPM、小節番号の欄を右クリック / 長押しすると小節のメニュー
+// - BPM レーン(広い配置)を押すと BPM、小節番号の欄を右クリック / 長押しすると小節のメニュー。小節番号の欄で小節線を
+//   ドラッグ(タッチは長押しで持ち上げて)すると、その線で終わる小節の長さ(本アプリの追加)
 // - キー: Ctrl+Z / Ctrl+Y・Ctrl+S・Ctrl+X / C / V / D / A・Delete・[ ]・- +・PageUp / PageDown・Home / End・↑↓←→・
 //   E / S・R・P・T・M・N・V・B・?・Esc(画面からは出ない)
 // Space は BD の既定のキーなので何もしない(CLAUDE.md)。
@@ -17,19 +18,19 @@ import { AudioEngine } from '../core/audio.js';
 import { HitRanges } from '../game/hitranges.js';
 import { PLAYER_STATE } from '../game/player.js';
 import { t } from '../i18n.js';
-import { MAX_MEASURE } from './dtxdoc.js';
+import { MAX_MEASURE, formatBarLength } from './dtxdoc.js';
 import { GUIDES, ZOOMS, nearestZoom, posOf } from './geometry.js';
 import { COLUMN_TYPES, TYPE_OF, channelsConflict, otherType, channelName, laneOfChannel, padChannel } from './lanes.js';
 import {
   EditError, opPlace, opPaint, opDelete, opErase, opMove, opSetType, opSetValue, opAddPartner, moveTargets, moveBpmTargets,
   clampMove, opNudge, copyClip, opPaste, opDuplicate, opSetBpm, opBarLength, barOverflow, opInsertMeasure, opDeleteMeasure,
-  measureDeleteSummary, formatBpm, opSetWav, freeWavNumber,
+  measureDeleteSummary, formatBpm, opSetWav, freeWavNumber, BAR_MIN, BAR_MAX,
 } from './ops.js';
 import { EditPanel, PANEL_DOCK_MIN, PANEL_DOCK_W } from './panel.js';
 import { PreviewRenderer } from './preview.js';
 import { EditVideo, stageLayout } from './video.js';
 import { PreviewBar } from './previewbar.js';
-import { EditView, HEADER_CSS, COMPACT_BELOW } from './view.js';
+import { EditView, HEADER_CSS, COMPACT_BELOW, barLengthLabel } from './view.js';
 import { TouchGestures, G } from './gestures.js';
 import { EditorPlayer } from './editplayer.js';
 import { saveDraft, deleteDraft } from './drafts.js';
@@ -338,7 +339,7 @@ export class EditorScreen {
     this._on(cv, 'pointerup', (e) => this._pointerUp(e, false));
     this._on(cv, 'pointercancel', (e) => this._pointerUp(e, true));
     this._on(cv, 'lostpointercapture', (e) => { if (this._drag && this._drag.pointerId === e.pointerId) this._pointerUp(e, true); });
-    this._on(cv, 'pointerleave', (e) => { if (e.pointerType !== 'touch' && !this._drag) { this._hover = null; this._setGhost(null); } });
+    this._on(cv, 'pointerleave', (e) => { if (e.pointerType !== 'touch' && !this._drag) { this._hover = null; this._setGhost(null); this._setBarHover(null); } });
     this._on(cv, 'contextmenu', (e) => e.preventDefault());
     this._on(cv, 'wheel', (e) => this._wheel(e), { passive: false });
     this._on(window, 'keydown', (e) => this._keyDown(e), true);
@@ -571,7 +572,10 @@ export class EditorScreen {
   _fillState() {
     const st = this.view.state;
     const s = this.session;
-    st.model = this.model;
+    // 小節線をドラッグしている間は、離したときの譜面(作ってみたもの)を描く
+    const d = this._drag;
+    const model = (d && d.barModel) || this.model;
+    st.model = model;
     st.activeTypes = s.activeTypes;
     st.pens = s.pens;
     // 選択はどちらのモードでも見せる(ペンのモードでも R・Delete が選択に効くので)。ペンで書くと選択は外れる
@@ -580,11 +584,11 @@ export class EditorScreen {
     st.otherBranches = !!this.config.editOtherBranches;
     st.suspects = this.sidecar && this.config.editConfidence !== false ? this._suspectMap() : null;
     const lp = s.loopPos;
-    const geo = this.model.geometry;
+    const geo = model.geometry;
     const lr = this._loopRange;
     if (lr) st.loop = { u0: geo.start(lr.m0), u1: geo.start(lr.m1 + 1) };
     else st.loop = lp ? { u0: geo.uOfPos(lp.beginPos), u1: lp.endAtEnd ? null : geo.uOfPos(lp.endPos) } : null;
-    if (st.loop && st.loop.u1 === null) st.loop.u1 = geo.uOfPos(msToPos(this.model.chart, this.model.chart.durationMs));
+    if (st.loop && st.loop.u1 === null) st.loop.u1 = geo.uOfPos(msToPos(model.chart, model.chart.durationMs));
   }
 
   /** 今の譜面の要確認のチップ(文書ごとに作り置く)。 */
@@ -1015,6 +1019,13 @@ export class EditorScreen {
       return;
     }
     if (hit.region === 'gutter') {
+      // 小節線の上なら、ドラッグでその前の小節の長さを変える(動かさずに離せば今までどおりその小節へ送る)
+      const line = this._barLineAt(hit.u, e.pointerType);
+      if (line > 0) {
+        try { this.canvas.setPointerCapture(e.pointerId); } catch (err) { /* 無くても動く */ }
+        this._drag = this._barDragStart(line, hit, e, mods);
+        return;
+      }
       this._gutterClick(hit);
       return;
     }
@@ -1099,8 +1110,7 @@ export class EditorScreen {
     this._hover = { clientX: e.clientX, clientY: e.clientY, pointerType: e.pointerType, mods: this._mods(e) };
     const d = this._drag;
     if (!d) {
-      const hit = this.view.hit(e.clientX, e.clientY);
-      this.canvas.style.cursor = hit.region === 'bpm' || hit.region === 'gutter' || hit.region === 'header' ? 'pointer' : '';
+      this._hoverCursor(e.clientX, e.clientY, e.pointerType);
       this._hoverGhost();
       return;
     }
@@ -1139,6 +1149,14 @@ export class EditorScreen {
       return;
     }
     if (d.type === 'bpmClick') return;
+    if (d.type === 'barPress') {
+      if (Math.hypot(clientX - d.x0, clientY - d.y0) <= slop) return;
+      d.type = 'bar';
+    }
+    if (d.type === 'bar') {
+      this._updateBarDrag(hit, mods);
+      return;
+    }
     if (d.type === 'move') {
       this._updateMovePreview(hit, mods);
       return;
@@ -1205,6 +1223,7 @@ export class EditorScreen {
     st.paint = null;
     st.preview = null;
     st.erase = null;
+    st.barDrag = null;
     try { this.canvas.releasePointerCapture(e.pointerId); } catch (err) { /* 解放済み */ }
     st.band = null;
     if (cancelled) {
@@ -1223,6 +1242,10 @@ export class EditorScreen {
       if (!d.moved) this.session.selection = d.keep; // 何もないところのクリック: 選択を外す(Shift / Ctrl なら残す)
     } else if (d.type === 'bpmClick') {
       this._bpmClick(d.u, d.pointerType, d.mods.free);
+    } else if (d.type === 'barPress') {
+      this._gutterClick(d.hit);
+    } else if (d.type === 'bar') {
+      this._finishBarDrag(d);
     } else if (d.type === 'move') {
       this._finishMove(d, e.altKey);
     } else if (d.type === 'paint') {
@@ -1234,8 +1257,17 @@ export class EditorScreen {
       if (d.keys.size) this._commit(() => opErase(this.model, [...d.keys]), { label: OP.delete });
     }
     this._hover = { clientX: e.clientX, clientY: e.clientY, pointerType: e.pointerType, mods: this._mods(e) };
+    this._hoverCursor(e.clientX, e.clientY, e.pointerType);
     this._hoverGhost();
     this._render();
+  }
+
+  /** 指しているところのカーソルと、つかめる小節線の印(マウス / ペン)。 */
+  _hoverCursor(clientX, clientY, pointerType) {
+    const hit = this.view.hit(clientX, clientY);
+    const line = hit.region === 'gutter' ? this._barLineAt(hit.u, pointerType) : 0;
+    this.canvas.style.cursor = line > 0 ? 'ns-resize' : hit.region === 'bpm' || hit.region === 'gutter' || hit.region === 'header' ? 'pointer' : '';
+    this._setBarHover(line > 0 ? this.model.geometry.start(line) : null);
   }
 
   /** 選択のモードで動かさずに離した。 */
@@ -1288,6 +1320,7 @@ export class EditorScreen {
     st.erase = null;
     st.ghost = null;
     st.band = null;
+    st.barDrag = null;
     this._render();
   }
 
@@ -1394,6 +1427,108 @@ export class EditorScreen {
     this._render();
   }
 
+  // ---- 小節線のドラッグ(小節長。本アプリの追加。docs/spec/chart-editor.md §7.1) ----
+
+  /**
+   * u の近くの小節線(小節 k の頭 = 小節 k − 1 の終わり。k は 1〜1000)。無ければ 0。小節 000 の頭はリードインの終わりで、
+   * リードインの長さは変えないのでつかめない。
+   */
+  _barLineAt(u, pointerType) {
+    const geo = this.model.geometry;
+    const tol = this.view.barTolU(pointerType);
+    const m = geo.measureAt(u);
+    let best = 0;
+    for (const k of [m, m + 1]) {
+      if (k < 1 || k > MAX_MEASURE + 1) continue;
+      const dist = Math.abs(geo.start(k) - u);
+      if (dist <= tol && (!best || dist < Math.abs(geo.start(best) - u))) best = k;
+    }
+    return best;
+  }
+
+  /**
+   * 小節線 line のドラッグを始める。マウス / ペンは動かすまで「押した」だけ(離せば今までどおりその小節へ送る)、タッチは
+   * 長押しで持ち上げたところ。grab は押したところと線の差(つかんだ所へ線が飛ばないように)。
+   * @param {{pointerId:number, pointerType:string, clientX:number, clientY:number}} p
+   */
+  _barDragStart(line, hit, p, mods) {
+    return {
+      type: p.pointerType === 'touch' ? 'bar' : 'barPress', pointerId: p.pointerId, pointerType: p.pointerType,
+      x0: p.clientX, y0: p.clientY, mods, hit, line, grab: hit.u - this.model.geometry.start(line),
+      base: this.model, cache: new Map(), key: null, params: null, result: null, barModel: null,
+    };
+  }
+
+  /**
+   * 小節線を動かした: 線の前の小節の新しい長さを決め、離したときの譜面を作って描く(長さ・範囲ごとに作り置く)。
+   * 長さはガイドに合わせて 4/4 の 1/d の倍数(1/16 なら 3/4・7/8・15/16 …)、フリー(Ctrl)は 0.001 刻み(DTXCreator の
+   * ダイアログの小数 3 桁)。Shift でここから(次の指定まで)、Alt で小節に合わせて伸縮(ダイアログの選択肢と同じ)。
+   */
+  _updateBarDrag(hit, mods) {
+    const d = this._drag;
+    const m = d.line - 1;
+    const geo = d.base.geometry;
+    const raw = hit.u - d.grab - geo.start(m);
+    const g = this._snapGuide(mods.free);
+    let len = g ? Math.round(raw * g) / g : Math.round(raw * 1000) / 1000;
+    len = Math.min(BAR_MAX, Math.max(g ? 1 / g : BAR_MIN, len));
+    const scope = mods.shift ? 'from' : 'one';
+    const keepBeats = !mods.alt;
+    const key = `${formatBarLength(len)} ${scope} ${keepBeats}`;
+    if (key === d.key) return;
+    d.key = key;
+    d.params = { measure: m, value: len, scope, keepBeats };
+    let c = d.cache.get(key);
+    if (!c) {
+      c = { result: null, error: null };
+      if (formatBarLength(len) !== formatBarLength(geo.len(m))) {
+        try {
+          c.result = opBarLength(d.base, d.params);
+        } catch (e) {
+          if (!(e instanceof EditError)) throw e;
+          c.error = e;
+        }
+      }
+      d.cache.set(key, c);
+    }
+    d.result = c.result;
+    d.barModel = c.result ? this.session.modelOf(c.result.doc) : null;
+    if (c.error && !d.toasted) {
+      d.toasted = true;
+      this._toast(t(ERR[c.error.code] || 'edit.errBarLocked'));
+    }
+    // 札: 小節番号と長さ(元 → 新)、範囲・伸縮、消えるチップの数か、変えられないこと
+    const label = (L) => {
+      const s = barLengthLabel(L);
+      return s.startsWith('×') ? s : `${s} (×${formatBarLength(L)})`;
+    };
+    const lines = [{ text: `${String(m).padStart(3, '0')}: ${barLengthLabel(geo.len(m))} → ${label(len)}`, kind: 'main' }];
+    const notes = [];
+    if (scope === 'from') notes.push(t('edit.barScopeFrom'));
+    if (!keepBeats) notes.push(t('edit.barStretch'));
+    if (notes.length) lines.push({ text: notes.join(' · '), kind: 'note' });
+    if (c.error) lines.push({ text: t('edit.barDragLocked'), kind: 'warn' });
+    else if (c.result && c.result.removed) lines.push({ text: t('edit.barOverflow', { n: c.result.removed }), kind: 'warn' });
+    this.view.state.barDrag = { u: geo.start(m) + len, lines };
+    this._render();
+  }
+
+  /** 小節線を離した: 作っておいた譜面を 1 手にする(ドラッグの間に譜面が変わっていたら作り直す)。 */
+  _finishBarDrag(d) {
+    if (!d.params || !d.result) return; // 元と同じ長さ・変えられない
+    const r = this._commit(() => (this.model === d.base ? d.result : opBarLength(this.model, d.params)),
+      { label: OP.bar, focusU: this.model.geometry.start(d.params.measure) });
+    if (r && r.removed) this._toast(t('edit.barRemoved', { n: r.removed }));
+  }
+
+  /** つかめる小節線の印(u。null で消す)。 */
+  _setBarHover(u) {
+    const st = this.view.state;
+    if (st.barHover === u) return;
+    st.barHover = u;
+    this._render();
+  }
+
   _setActiveType(col, i) {
     if (COLUMN_TYPES[col].length < 2) return;
     this.session.activeTypes[col] = i;
@@ -1487,13 +1622,14 @@ export class EditorScreen {
       },
       liftMove: (p) => {
         const d = this._drag;
-        if (!d || (d.type !== 'move' && d.type !== 'band')) return;
+        if (!d || (d.type !== 'move' && d.type !== 'band' && d.type !== 'bar')) return;
         d.lastX = p.clientX;
         d.lastY = p.clientY;
         if (d.type === 'band') {
           d.moved = true;
           this._updateBand(p.clientX, p.clientY);
-        } else this._updateMovePreview(this.view.hit(p.clientX, p.clientY), {});
+        } else if (d.type === 'bar') this._updateBarDrag(this.view.hit(p.clientX, p.clientY), {});
+        else this._updateMovePreview(this.view.hit(p.clientX, p.clientY), {});
         this._checkAutoScroll(p.clientY);
       },
       liftEnd: (p, moved) => {
@@ -1502,9 +1638,18 @@ export class EditorScreen {
         this._autoScroll = null;
         this.view.state.preview = null;
         this.view.state.band = null;
+        this.view.state.barDrag = null;
+        this._setBarHover(null);
         this._setGhost(null);
         if (!d) return;
         if (d.type === 'menu') return;
+        if (d.type === 'bar') {
+          // 持ち上げた小節線: 動かしたら長さを変える、動かさずに離したら小節のメニュー
+          if (moved) this._finishBarDrag(d);
+          else this._measureMenu(d.hit, d.x0, d.y0);
+          this._render();
+          return;
+        }
         const hit = this.view.hit(p.clientX, p.clientY);
         if (d.type === 'band') {
           if (!moved) this._contextMenu(p.clientX, p.clientY, hit);
@@ -1539,6 +1684,8 @@ export class EditorScreen {
         this._autoScroll = null;
         this.view.state.preview = null;
         this.view.state.band = null;
+        this.view.state.barDrag = null;
+        this._setBarHover(null);
         this._setGhost(null);
         this._render();
       },
@@ -1613,8 +1760,15 @@ export class EditorScreen {
       return;
     }
     if (hit.region === 'gutter') {
-      this._drag = { type: 'menu', pointerId: p.pointerId, pointerType: 'touch' };
       vibrate();
+      const line = this._barLineAt(hit.u, 'touch');
+      if (line > 0) {
+        // 小節線を持ち上げる(動かせばその前の小節の長さを変える、動かさずに離せばメニュー)
+        this._drag = this._barDragStart(line, hit, p, {});
+        this._setBarHover(this.model.geometry.start(line));
+        return;
+      }
+      this._drag = { type: 'menu', pointerId: p.pointerId, pointerType: 'touch' };
       this._measureMenu(hit, p.clientX, p.clientY);
       return;
     }
@@ -3074,6 +3228,7 @@ export class EditorScreen {
       [t('edit.rightClick'), t('edit.helpRightClick')],
       ['Ctrl', t('edit.helpCtrlDrag')],
       [t('edit.modeSelect'), t('edit.helpBand')],
+      [t('edit.barLine'), t('edit.helpBarDrag')],
       ['Esc', t('edit.helpEsc')],
     ];
     el.innerHTML = '';

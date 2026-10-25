@@ -641,6 +641,10 @@ export function gcBpmKeys(doc, originalDoc) {
 
 // ---- 小節長 ----
 
+/** 小節長の範囲(ダイアログ・小節線のドラッグも同じ)。 */
+export const BAR_MIN = 0.01;
+export const BAR_MAX = 16;
+
 /** ch 02 の値の読み方(parseDTX と同じ。読めない・0 以下は 1)。 */
 function barValue(s) {
   let v = Number(s);
@@ -694,7 +698,7 @@ function barEnd(doc, m, scope) {
  * @returns {{doc, removed:number, select:[]}}
  */
 export function opBarLength(model, { measure, value, scope = 'one', keepBeats = true }) {
-  if (!(value >= 0.01 && value <= 16)) throw new EditError('barRange');
+  if (!(value >= BAR_MIN && value <= BAR_MAX)) throw new EditError('barRange');
   if (measure < 0 || measure > MAX_MEASURE) throw new EditError('measureLimit');
   const doc = model.doc;
   const geo = model.geometry;

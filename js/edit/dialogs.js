@@ -1,6 +1,7 @@
 // 譜面の編集画面のダイアログ(<dialog>。Enter = 決定、Esc = 取り消し。Space は BD なので決定に使わない)。
 
 import { t } from '../i18n.js';
+import { BAR_MIN, BAR_MAX } from './ops.js';
 
 /**
  * ダイアログを開き、閉じ方(ボタン・Enter・Esc・外を押す)ごとの value で終わる。
@@ -217,7 +218,7 @@ export async function barDialog(dlg, o) {
     scope: form.querySelector('input[name=scope]:checked').value,
     keepBeats: form.querySelector('input[name=beats]:checked').value === 'keep',
   });
-  const valid = (r) => r.value >= 0.01 && r.value <= 16;
+  const valid = (r) => r.value >= BAR_MIN && r.value <= BAR_MAX;
   function update() {
     const r = read();
     if (!valid(r)) {

@@ -425,6 +425,148 @@ test('editor: BPM here (dialog, ch 08 + #BPMzz) and bar length (dialog, this bar
   }
 });
 
+test('editor: dragging a bar line in the bar-number column changes the bar below it (grid, Shift = from here, Alt = scale, Ctrl = 0.001), a press alone still jumps', async () => {
+  const h = await openEditor(CHART);
+  const { ed, ptr, key, chips, session, geo } = h;
+  try {
+    const gx = (ed.view.view.gutter[0] + ed.view.view.gutter[1]) / 2;
+    // 位置は毎回測り直す(元に戻すなどでツールバーの高さが変わると、キャンバスの高さと再生位置の線が動く)
+    const atU = (u) => ed.view.toClient(gx, ed.view.y(u));
+    const drag = async (fromU, toU, o = {}) => {
+      await sleep(30);
+      ptr('pointermove', atU(fromU), o);
+      ptr('pointerdown', atU(fromU), o);
+      for (let i = 1; i <= 6; i++) { ptr('pointermove', atU(fromU + ((toU - fromU) * i) / 6), o); await sleep(2); }
+      ptr('pointerup', atU(toU), o);
+      await sleep(5);
+    };
+    // 指すと線が光ってカーソルが変わる(小節 000 の頭 = リードインの終わりはつかめない)
+    ptr('pointermove', atU(2));
+    assertEq(ed.view.state.barHover, 2);
+    assertEq(ed.canvas.style.cursor, 'ns-resize');
+    ptr('pointermove', atU(0));
+    assertEq(ed.view.state.barHover, null, 'リードインの終わり');
+    // 小節 002 の頭(小節 001 の終わり)を 1/4 下げる → 小節 001 が 3/4。離すまでは文書を変えずに描くだけ
+    ptr('pointermove', atU(2));
+    ptr('pointerdown', atU(2));
+    for (let i = 1; i <= 6; i++) { ptr('pointermove', atU(2 - (0.25 * i) / 6)); await sleep(2); }
+    assertEq(ed.model.geometry.len(1), 1, '離すまでは変えない');
+    assertEq(ed._drag.barModel.geometry.len(1), 0.75, '離したときの譜面を描く');
+    const tag = ed.view.state.barDrag;
+    assertNear(tag.u, 1.75, 1e-9);
+    assertEq(tag.lines[0].text, '001: 4/4 → 3/4 (×0.75)');
+    assertEq(tag.lines[1].text, 'はみ出す 2 個のチップは消えます', 'SD・HH の 4 拍目');
+    ptr('pointerup', atU(1.75));
+    await sleep(5);
+    assertEq(geo().len(1), 0.75);
+    assertEq(geo().len(2), 1, 'この小節だけ');
+    assertEq(session.history.index, 1, '1 手');
+    assertEq(chips(0x13).join(), '1:0,1:256', '拍の位置を保つ');
+    assertEq(chips(0x12).join(), '1:128');
+    assert(h.sec.querySelector('#edit-toast').textContent.includes('はみ出した 2 個のチップを消しました'), h.sec.querySelector('#edit-toast').textContent);
+    const out = new TextDecoder().decode(session.outputBytes().bytes);
+    assert(out.includes('#00102: 0.75\r\n') && out.includes('#00202: 1\r\n'), out);
+    assertEq(ed.view.state.barDrag, null);
+    key('KeyZ', { ctrl: true });
+    assertEq(geo().len(1), 1, '元に戻す');
+    assertEq(chips(0x12).join(), '1:96,1:288');
+    // 押して離すだけなら今までどおりその小節へ送る(文書は変わらない)
+    const idx = session.history.index;
+    await sleep(30);
+    ptr('pointerdown', atU(2));
+    ptr('pointerup', atU(2));
+    await sleep(5);
+    assertEq(ed.view.uHead, 2, '小節 002 の頭へ');
+    assertEq(session.history.index, idx);
+    // Esc でやめる
+    ed.view.uHead = 1.2;
+    ed.onResize();
+    ptr('pointerdown', atU(2));
+    for (let i = 1; i <= 3; i++) { ptr('pointermove', atU(2 - i * 0.05)); await sleep(2); }
+    assert(ed.view.state.barDrag, 'ドラッグしている');
+    key('Escape');
+    ptr('pointerup', atU(1.8));
+    await sleep(5);
+    assertEq(geo().len(1), 1, 'Esc で何も変えない');
+    assertEq(session.history.index, idx);
+    // Shift: ここから(次の指定まで)。小節 001 から後ろがすべて 5/4
+    await drag(2, 2.25, { shift: true });
+    assertEq(geo().len(1), 1.25);
+    assertEq(geo().len(2), 1.25, 'ここから');
+    const out2 = new TextDecoder().decode(session.outputBytes().bytes);
+    assert(out2.includes('#00102: 1.25\r\n') && !out2.includes('#00202'), out2);
+    key('KeyZ', { ctrl: true });
+    // Alt: 小節に合わせて伸縮(tick はそのまま。消えるチップは無い)
+    await drag(2, 1.5, { alt: true });
+    assertEq(geo().len(1), 0.5);
+    assertEq(chips(0x12).join(), '1:96,1:288', 'tick はそのまま');
+    key('KeyZ', { ctrl: true });
+    // Ctrl: ガイドに合わせず 0.001 刻み
+    await drag(2, 1.9137, { ctrl: true });
+    const L = geo().len(1);
+    assert(Math.abs(L - 0.9137) < 0.006 && Math.abs(L * 1000 - Math.round(L * 1000)) < 1e-6, 'free: ' + L);
+    const out3 = new TextDecoder().decode(session.outputBytes().bytes);
+    assert(out3.includes('#00102: ' + formatLen(L) + '\r\n'), out3);
+  } finally {
+    await h.done();
+  }
+});
+
+/** 小節長の書き方(js/edit/dtxdoc.js の formatBarLength と同じ。小数 6 桁、末尾の 0 を落とす)。 */
+function formatLen(v) {
+  return String(Math.round(v * 1e6) / 1e6);
+}
+
+test('editor: touch long-press lifts a bar line (drag = bar length, release in place = bar menu); #IF bar lengths refuse the drag', async () => {
+  const h = await openEditor(CHART);
+  const { ed, ptr, geo, session } = h;
+  try {
+    const gx = (ed.view.view.gutter[0] + ed.view.view.gutter[1]) / 2;
+    const atU = (u) => ed.view.toClient(gx, ed.view.y(u));
+    const t = { type: 'touch', id: 5 };
+    // 長押しで持ち上げてドラッグ(タッチの身振りで配置が変わってもよいよう、行き先は持ち上げてから測る)
+    const a = atU(2);
+    ptr('pointerdown', a, t);
+    await sleep(520);
+    assert(ed._drag && ed._drag.type === 'bar', 'lifted: ' + JSON.stringify(ed._drag && ed._drag.type));
+    const from = geo().start(ed._drag.line) + ed._drag.grab;
+    for (let i = 1; i <= 6; i++) { ptr('pointermove', atU(from + (0.5 * i) / 6), t); await sleep(4); }
+    ptr('pointerup', atU(from + 0.5), t);
+    await sleep(5);
+    assertEq(geo().len(1), 1.5, '小節 001 が 6/4');
+    assertEq(session.history.index, 1);
+    // 長押しして動かさずに離すと小節のメニュー
+    const c = atU(geo().start(2));
+    ptr('pointerdown', c, t);
+    await sleep(520);
+    ptr('pointerup', c, t);
+    await sleep(5);
+    assert(!h.sec.querySelector('#edit-pop').hidden, 'メニューが出る');
+    assert(h.sec.querySelector('#edit-pop').textContent.includes('小節長'), h.sec.querySelector('#edit-pop').textContent);
+    assertEq(session.history.index, 1);
+  } finally {
+    await h.done();
+  }
+  // #IF の中に小節長の行があれば、ドラッグしても変えない(札とお知らせで知らせる)
+  const iff = await openEditor('#TITLE: e\r\n#BPM: 120\r\n#WAV01: bd.wav\r\n#00113: 01000100\r\n#RANDOM 2\r\n#IF 1\r\n#00302: 0.5\r\n#ENDIF\r\n');
+  try {
+    const { ed, ptr, geo, session } = iff;
+    const gx = (ed.view.view.gutter[0] + ed.view.view.gutter[1]) / 2;
+    const atU = (u) => ed.view.toClient(gx, ed.view.y(u));
+    ptr('pointerdown', atU(2));
+    for (let i = 1; i <= 6; i++) { ptr('pointermove', atU(2 - (0.25 * i) / 6)); await sleep(2); }
+    const tag = ed.view.state.barDrag;
+    assertEq(tag.lines[tag.lines.length - 1].text, '#IF があるので変えられません');
+    assert(iff.sec.querySelector('#edit-toast').textContent.includes('#IF'), iff.sec.querySelector('#edit-toast').textContent);
+    ptr('pointerup', atU(1.75));
+    await sleep(5);
+    assertEq(geo().len(1), 1);
+    assertEq(session.history.index, 0);
+  } finally {
+    await iff.done();
+  }
+});
+
 test('editor: touch select mode — tap toggles, a drag that starts on a selected chip moves it, other drags scroll', async () => {
   const h = await openEditor(CHART);
   const { ed, at, ptr, key, chips, session } = h;
