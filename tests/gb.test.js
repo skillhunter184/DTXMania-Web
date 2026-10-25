@@ -709,7 +709,7 @@ test('gb player: no full-combo bonus after a seek-and-resume recount that skippe
       player.fret(0, false, perf());
     }
     assertEq(player.stats.counts[0], 2);
-    audio.advance(2600);
+    audio.advance(8100); // 最後のチップ + 余韻の 4 小節
     player.update(perf(), null);
     assertEq(player.state, PLAYER_STATE.STANDBY, 'song ended');
     assert(player.stats.score < 15000, 'no full-combo bonus: ' + player.stats.score);
@@ -728,7 +728,7 @@ test('gb player: no full-combo bonus after a seek-and-resume recount that skippe
       r.player.fret(0, false, perf());
     }
     const before = r.player.stats.score;
-    r.audio.advance(2600);
+    r.audio.advance(8100);
     r.player.update(perf(), null);
     assertEq(r.player.stats.score - before, 30000, 'all Perfect → +30000');
   });

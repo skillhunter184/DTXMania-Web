@@ -205,7 +205,7 @@ export class GuitarRenderer extends Renderer {
     g.font = `20px ${FONT}`;
     g.textBaseline = 'middle';
     g.textAlign = 'left';
-    const bars = p.chart.barLines;
+    const bars = p.barLines;
     for (let bi = lowerBound(bars, tLo); bi < bars.length && bars[bi].timeMs <= tHi; bi++) {
       const b = bars[bi];
       if (b.isBeat || !b.visible) continue;

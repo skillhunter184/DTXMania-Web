@@ -206,7 +206,7 @@ export class Renderer {
     g.font = `20px ${FONT}`;
     g.textBaseline = 'middle';
     g.textAlign = 'left';
-    const bars = p.chart.barLines;
+    const bars = p.barLines;
     const tLo = drawMs - ((LANE_Y1 - JUDGE_Y) / ppm) * ratio;
     const tHi = drawMs + ((JUDGE_Y - (LANE_Y0 - 40)) / ppm) * ratio;
     let bi = lowerBound(bars, tLo);

@@ -40,6 +40,11 @@ export class EditorPlayer extends Player {
     this.stopAtMs = Math.max(0, stopAtMs || 0);
   }
 
+  /** 余韻の小節は流さない(止まる位置は setRange の範囲。プレビューの小節線も編集のグリッドに揃う)。 */
+  get afterglowMeasures() {
+    return 0;
+  }
+
   get playableMaxMs() {
     return Math.max(super.playableMaxMs, this.startMaxMs);
   }

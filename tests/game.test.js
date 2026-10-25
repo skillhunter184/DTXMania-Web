@@ -3,7 +3,8 @@ import { scoreDelta, PlayStats, achievementRate, rankOf, GAUGE_INITIAL, autoLane
 import { HitRanges, searchLanes, tieHitsAll, applyChartDowngrade, JUDGE } from '../js/game/hitranges.js';
 import { TrainingSettings, stepLoopTime, stepLoopBegin, stepLoopEnd, formatLoopTime, loopLeadInStart, LOOP_UNIT } from '../js/game/training.js';
 import { parseDTX } from '../js/core/dtx.js';
-import { Player, PLAYER_STATE, SCROLL_BASE_PX_PER_MS, buildMetronome } from '../js/game/player.js';
+import { Player, PLAYER_STATE, SCROLL_BASE_PX_PER_MS, buildMetronome, afterglowEndMs, extendBarLines } from '../js/game/player.js';
+import { EditorPlayer } from '../js/edit/editplayer.js';
 import { AudioEngine } from '../js/core/audio.js';
 import { buildClick } from '../js/core/synth.js';
 
@@ -268,8 +269,15 @@ test('player: standby → start → judge hits by timing; miss detection; song e
     // 空打ち: 成績は変わらない
     player.hit(5, perf());
     assertEq(player.stats.total, 4);
-    // 曲末: durationMs(3500) + 2000 を過ぎると待機へ(成績は残る)
+    // 曲末: 最後のチップ(3500)から余韻の 4 小節(BPM 120 で 8000 ms)を過ぎると待機へ(成績は残る)
+    assertEq(player.songEndMs, 11500);
     audio.advance(2000);
+    player.update(perf(), null);
+    assertEq(player.state, PLAYER_STATE.PLAYING, '元実装の 2 秒では止まらない');
+    audio.advance(11400 - 5600);
+    player.update(perf(), null);
+    assertEq(player.state, PLAYER_STATE.PLAYING, '余韻の終わりの手前');
+    audio.advance(200);
     player.update(perf(), null);
     assertEq(player.state, PLAYER_STATE.STANDBY);
     assertEq(player.stats.total, 4, 'stats kept');
@@ -544,7 +552,7 @@ test('player: starting from past the last note is pulled into the playable range
   const { audio, player, chart } = makePlayer('#BPM: 120\n#00012: 01010101\n#01012: 00000000\n');
   await player.load({ resolve() { return null; }, readBytes() {} }, chart);
   assertEq(Math.round(chart.durationMs), 3500, '最終ノート');
-  assert(player.seekMaxMs > chart.durationMs + 2000, '小節線は曲末判定の外まで伸びている');
+  assert(player.seekMaxMs > player.songEndMs, '小節線は曲末判定の外まで伸びている');
   const perf = () => audio.ctx.currentTime * 1000;
   const origPerfNow = performance.now;
   performance.now = perf;
@@ -786,12 +794,42 @@ test('metronome: one click per bar / beat line time, accent on bar lines, follow
     { timeMs: 0, isBeat: false }, { timeMs: 0, isBeat: true }, { timeMs: 500, isBeat: true }, { timeMs: 500, isBeat: true },
     { timeMs: 1000, isBeat: true }, { timeMs: 1000, isBeat: false },
   ];
-  assertDeepEq(buildMetronome({ barLines: lines }), [{ timeMs: 0, accent: true }, { timeMs: 500, accent: false }, { timeMs: 1000, accent: true }],
+  assertDeepEq(buildMetronome(lines), [{ timeMs: 0, accent: true }, { timeMs: 500, accent: false }, { timeMs: 1000, accent: true }],
     'same-time lines are merged; a bar line among them makes it an accent');
   // BPM 120: リードイン(0〜2000)と小節 0 は 4 拍、小節 1 は 3/4(4000〜5500)
-  const metro = buildMetronome(parseDTX('#BPM: 120\n#00102: 0.75\n#00212: 01\n'));
+  const metro = buildMetronome(parseDTX('#BPM: 120\n#00102: 0.75\n#00212: 01\n').barLines);
   assertDeepEq(metro.filter((c) => c.timeMs <= 5500).map((c) => (c.accent ? 'A' : '') + c.timeMs),
     ['A0', '500', '1000', '1500', 'A2000', '2500', '3000', '3500', 'A4000', '4500', '5000', 'A5500']);
+});
+
+test('afterglow: the song ends 4 bars after the last chip, with bar / beat lines and clicks up to there', async () => {
+  // BPM 120: SD 2000(小節 0 の頭)。譜面の小節線は小節 0 の終わり(4000)まで。余韻の終わりは 2000 + 4 小節 = 10000
+  const chart = parseDTX('#BPM: 120\n#00012: 01\n');
+  assertEq(afterglowEndMs(chart, 4), 10000);
+  const before = chart.barLines.length;
+  const added = extendBarLines(chart, 10000).slice(before);
+  assertEq(chart.barLines.length, before, '譜面の小節線は変えない');
+  assertDeepEq(added.filter((b) => !b.isBeat).map((b) => [b.timeMs, b.measure]), [[6000, 2], [8000, 3], [10000, 4]]);
+  assertDeepEq(added.filter((b) => b.isBeat).map((b) => b.timeMs), [4500, 5000, 5500, 6500, 7000, 7500, 8500, 9000, 9500],
+    '小節 1 の拍線から刻み、余韻の終わりで止める');
+  assert(added.every((b) => b.visible), 'shown like the last line of the chart');
+  assertEq(extendBarLines(chart, 3000), chart.barLines, 'nothing to add → the chart\'s own lines');
+  // 3/4・BPM 240(1 小節 750 ms)。小節の長さは譜面の最後のまま、拍線は 1 小節に 2 本
+  const c34 = parseDTX('#BPM: 240\n#00002: 0.75\n#00012: 01\n');
+  assertEq(afterglowEndMs(c34, 4), 1000 + 4 * 750);
+  assertDeepEq(extendBarLines(c34, 4000).slice(c34.barLines.length).map((b) => (b.isBeat ? '' : '|') + b.timeMs),
+    ['2000', '2250', '|2500', '2750', '3000', '|3250', '3500', '3750', '|4000']);
+
+  // 演奏: 曲末は余韻の終わり。メトロノームも余韻の小節を刻む
+  const { player, chart: played } = makePlayer('#BPM: 120\n#00012: 01\n');
+  await player.load({ resolve() { return null; }, readBytes() {} }, played);
+  assertEq(player.songEndMs, 10000);
+  assertEq(player.barLines.length, before + added.length);
+  assertEq(player.metro[player.metro.length - 1].timeMs, 10000);
+  // 譜面の編集の再生は余韻を流さない(止まる位置は自分の範囲。プレビューの小節線も譜面のまま)
+  const ep = new EditorPlayer({ audio: fakeAudio() });
+  ep.setChart({}, chart);
+  assertEq(ep.barLines, chart.barLines);
 });
 
 test('player: the metronome clicks on the beats while playing, at its own volume and pitch, none at 0 %', async () => {

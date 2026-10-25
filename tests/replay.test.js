@@ -85,7 +85,7 @@ function playDrumRun(audio, player) {
   player.hit(4, 3300); // HT にチップは無い(空打ち)
   stepTo(audio, player, 3600);
   player.hit(3, 3600);
-  stepTo(audio, player, 3600 + 2100); // 曲末 + 2000 を過ぎて待機へ
+  stepTo(audio, player, 11500 + 100); // 曲末(最後のチップ + 余韻の 4 小節)を過ぎて待機へ
   assertEq(player.state, PLAYER_STATE.STANDBY);
 }
 
@@ -129,7 +129,7 @@ test('replay: drums — a run is recorded with ghosts at the hit times and repla
     const take = player.lastTake;
     assert(take, 'the run is kept');
     assertEq(take.startMs, 0);
-    assert(take.endMs >= 5500, 'the take ends where the song ended');
+    assert(take.endMs >= 11500, 'the take ends where the song ended');
     // ゴースト: 叩いた時刻(判定タイミング調整 0 なので叩いた譜面時刻)・当たったチップのレーン・判定
     assertDeepEq(take.ghosts.map((g) => [Math.round(g.timeMs), g.lane, g.judge]),
       [[1990, 5, JUDGE.PERFECT], [2010, 3, JUDGE.PERFECT], [2440, 3, JUDGE.GREAT], [3300, 4, -1], [3600, 3, JUDGE.OK]]);
@@ -162,7 +162,9 @@ test('replay: drums — a run is recorded with ghosts at the hit times and repla
     assertNear(player.judgeStr[3].lagMs, 10, 0.5);
     stepTo(audio, player, t0 + 3200);
     assertEq(player.stats.counts[4], 1, 'the miss comes back');
-    stepTo(audio, player, t0 + 6000);
+    stepTo(audio, player, t0 + 11000);
+    assert(player.replay, 'the afterglow is replayed too');
+    stepTo(audio, player, t0 + 11700);
     assertEq(player.replay, null, 'the replay ends at the end of the take');
     assertEq(player.state, PLAYER_STATE.STANDBY);
     assertDeepEq(statsOf(player.stats), final, 'same stats as the run');
@@ -367,7 +369,7 @@ test('replay: guitar — picks, chords, an empty pick, wailing and a long note r
     player.fret(0, false, perf()); // 途中で離す
     stepTo(audio, player, 4100);
     assertEq(player.holdIndex, -1, 'released');
-    stepTo(audio, player, 4500 + 2100);
+    stepTo(audio, player, 12500 + 100); // ロングノートの終わり + 余韻の 4 小節
     assertEq(player.state, PLAYER_STATE.STANDBY);
     const final = statsOf(player.stats);
     assert(final.score > 0 && final.counts[0] >= 3, 'the run scored');
@@ -400,7 +402,7 @@ test('replay: guitar — picks, chords, an empty pick, wailing and a long note r
     stepTo(audio, player, t0 + 4100);
     assertEq(player.holdIndex, -1, 'released at the recorded time');
     assert(audio.stopped.some((s) => s.v.id === '04'), 'the long-note sound is stopped');
-    stepTo(audio, player, t0 + 6700);
+    stepTo(audio, player, t0 + 12700);
     assertEq(player.replay, null);
     assertDeepEq(statsOf(player.stats), final, 'same stats as the run');
     assertEq(player.fretHeld[4], true, 'the button pressed during the replay is held after it');

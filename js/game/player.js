@@ -10,7 +10,7 @@
 // 演奏の通しを記録し、リプレイで同じ順に当て直す(元実装に無い追加。js/game/replay.js)。
 // ループ演奏は開始位置の 1 小節前から流し、その助走のチップは自動で叩いて成績に数えない(元実装に無い追加)。
 
-import { LANE_COUNT, INSTRUMENT } from '../core/dtx.js';
+import { LANE_COUNT, INSTRUMENT, TICKS_PER_MEASURE, posToMs, msToPos, tempoAt } from '../core/dtx.js';
 import { AudioEngine } from '../core/audio.js';
 import { HitRanges, JUDGE, searchLanes, tieHitsAll, applyChartDowngrade, LEFT_BASS_DRUM_CHANNEL } from './hitranges.js';
 import { PlayStats } from './judge.js';
@@ -35,7 +35,12 @@ const SCROLL_RAMP_STEP = 0.006;
 
 export const PLAYER_STATE = { STANDBY: 'standby', START_IN: 'startin', PLAYING: 'playing', PAUSED: 'paused' };
 
-const FINISH_TAIL_MS = 2000;
+/**
+ * 曲末の余韻(小節数)。最後のチップからこれだけ流してから待機へ戻る(BGM の終わりやシンバルの響きを聞けるように)。
+ * 元実装は最後のチップ + 2000 ms(docs/spec/judge-score.md の Clear)で、小節で数えるのは本アプリの変更。
+ * 譜面時刻の長さなので、演奏速度を落とせば実時間でも伸びる。
+ */
+const AFTERGLOW_MEASURES = 4;
 const SCHEDULE_AHEAD_MS = 200; // 自動発音の先読み量(実時間)
 const METRO_BEAT_VOLUME = 0.4; // メトロノームの拍線の音量(小節線に対して。DTXManiaAI PS:2000-2011、NX は 40/127)
 const PEDAL_CHANNELS = new Set([0x13, 0x1b, 0x1c]);
@@ -69,7 +74,9 @@ export class Player {
     this.judged = [];
     this.hiddenJudged = [];
     this.measureTimes = [0];
-    this.groups = { hhGroup: 0, ftGroup: 0, cyGroup: 0, bdGroup: 0 };
+    this.songEndMs = 0; // 曲末(最後のチップ + 余韻)。ここを過ぎたら待機へ
+    this.barLines = []; // 描く小節線・拍線(譜面のものに余韻の小節を足したもの)
+    this.groups ={ hhGroup: 0, ftGroup: 0, cyGroup: 0, bdGroup: 0 };
 
     // 時計
     this.ratio = 1;
@@ -167,8 +174,15 @@ export class Player {
     this.pkg = pkg;
     this.chart = chart;
     this._prepareChart(chart);
-    this.metro = buildMetronome(chart);
+    this.songEndMs = afterglowEndMs(chart, this.afterglowMeasures);
+    this.barLines = extendBarLines(chart, this.songEndMs);
+    this.metro = buildMetronome(this.barLines);
     this.measureTimes = buildMeasureTimes(chart);
+  }
+
+  /** 最後のチップのあとに流す小節数(AFTERGLOW_MEASURES)。譜面の編集の再生は自分の範囲で止まるので 0 にする。 */
+  get afterglowMeasures() {
+    return AFTERGLOW_MEASURES;
   }
 
   /** 弾く楽器のチップ・成績・伴奏を譜面から作る(ドラム。ギター / ベースは js/game/gbplayer.js が差し替える)。 */
@@ -415,8 +429,8 @@ export class Player {
   }
 
   /**
-   * 演奏を始められる上限。seekMaxMs は最終ノートより後ろの小節まで含むが、そこから始めると
-   * 最初のフレームで曲末判定(durationMs + FINISH_TAIL_MS)が走って待機に戻ってしまう。
+   * 演奏を始められる上限。seekMaxMs は最終ノートより後ろの小節まで含むが、余韻より後ろから始めると
+   * 最初のフレームで曲末判定(songEndMs)が走って待機に戻ってしまう。
    */
   get playableMaxMs() {
     return this.chart ? Math.max(0, this.chart.durationMs) : 0;
@@ -750,9 +764,9 @@ export class Player {
     }
   }
 
-  /** 曲末か(ループしていないときに、最後のチップから FINISH_TAIL_MS 過ぎた)。譜面の編集の再生が差し替える。 */
+  /** 曲末か(ループしていないときに、最後のチップから余韻の小節を流しきった)。譜面の編集の再生が差し替える。 */
   _isSongEnd(songMs) {
-    return this.notes.length > 0 && this.loopEndMs === -1 && songMs > this.chart.durationMs + FINISH_TAIL_MS * this.ratio;
+    return this.notes.length > 0 && this.loopEndMs === -1 && songMs > this.songEndMs;
   }
 
   /** 曲を最後まで演奏した(ループしていない)。ギター / ベースのフルコンボの加点に使う。 */
@@ -1405,17 +1419,56 @@ export class Player {
  * メトロノームの拍(DTXManiaAI ProcessBarLines と同じく小節線・拍線の時刻)。同じ時刻の線は 1 つにまとめ(元実装は線ごとに
  * 鳴らす。重なると大きく聞こえるだけなので 1 つにした)、小節線を含めば accent(小節の頭)。拍線は譜面の小節の長さ(#xxx02)
  * と拍線のずらし(0xC1)に沿って作られている(js/core/dtx.js)。0xC2 で隠した線も鳴らす(元実装と同じ)。曲頭のリードインの
- * 1 小節も刻むので、曲頭から始めればカウントになる。
+ * 1 小節も刻むので、曲頭から始めればカウントになる。barLines は Player.barLines(余韻の小節も刻む)。
  */
-export function buildMetronome(chart) {
+export function buildMetronome(barLines) {
   const out = [];
-  for (const b of chart.barLines) {
+  for (const b of barLines) {
     const last = out[out.length - 1];
     if (last && last.timeMs === b.timeMs) {
       if (!b.isBeat) last.accent = true;
       continue;
     }
     out.push({ timeMs: b.timeMs, accent: !b.isBeat });
+  }
+  return out;
+}
+
+/** 最後のチップ(chart.durationMs)から measures 小節あとの時刻(ms)。譜面の外は最後のテンポ(BPM・小節の長さ)のまま数える。 */
+export function afterglowEndMs(chart, measures) {
+  return Math.round(posToMs(chart, msToPos(chart, chart.durationMs) + measures * TICKS_PER_MEASURE));
+}
+
+/**
+ * 譜面の小節線・拍線に、endMs までの余韻の小節の線を足したもの(本アプリの追加)。譜面の線は最後のデータの小節の
+ * 終わりまでしか無く、そのままでは余韻の間のハイウェイが空になり、メトロノームも止まる。拍線は js/core/dtx.js と
+ * 同じく小節の長さ(テンポ表の barLen)から作り、表示 / 非表示(0xC2)は譜面の最後の線に合わせる。
+ * 足すものが無ければ譜面の配列をそのまま返す。
+ */
+export function extendBarLines(chart, endMs) {
+  const bars = chart.barLines;
+  let last = null;
+  for (let i = bars.length - 1; i >= 0 && !last; i--) if (!bars[i].isBeat) last = bars[i];
+  if (!last || last.timeMs >= endMs) return bars;
+  const out = bars.slice();
+  const visible = bars[bars.length - 1].visible;
+  // 最後の小節線の小節はまだ拍線が無い(dtx.js は曲の終わりの小節線で打ち切る)ので、そこから刻む
+  for (let pos = last.pos; ; pos += TICKS_PER_MEASURE) {
+    const measure = last.measure + (pos - last.pos) / TICKS_PER_MEASURE;
+    if (pos > last.pos) {
+      const timeMs = Math.round(posToMs(chart, pos));
+      if (timeMs > endMs) break;
+      out.push({ timeMs, isBeat: false, visible, measure, pos });
+    }
+    const seg = tempoAt(chart, pos);
+    const barLen = seg ? seg.barLen : 1.0;
+    for (let i = 1; i < 100; i++) {
+      const tick = Math.floor((TICKS_PER_MEASURE * i) / (4.0 * barLen));
+      if (tick >= TICKS_PER_MEASURE) break;
+      const timeMs = Math.round(posToMs(chart, pos + tick));
+      if (timeMs > endMs) return out;
+      out.push({ timeMs, isBeat: true, visible, measure, pos: pos + tick });
+    }
   }
   return out;
 }
