@@ -4,7 +4,7 @@ DTX 譜面をブラウザで練習する Web アプリ。素の ES Modules + Can
 2026-10 に公開に合わせて DTXMania Dojo から改名した。画面と文書の名前だけを変え、フォルダ名・GitHub の開発用リポジトリ名と、
 内部の識別子(`window.dojo`、localStorage の `dojo.*`、IndexedDB の `dtxmania-dojo`、`dist/dojo.bundle.js`)は
 保存済みの設定を引き継ぐため旧名のまま。
-移植元は DTXManiaAI(トレーニングモード)と vid2dtx(譜面プレビューのレイアウト)。
+移植元は DTXManiaAI(トレーニングモード)と vid2dtx(譜面プレビューのレイアウト・動画 / 音声からの譜面の生成 `js/gen/`)。
 
 ## 一次資料は docs/spec
 
@@ -84,5 +84,8 @@ build.bat
   `tools/skinart/` を揃える。
 - **手元の DrumGame スキン(`assets/skin/`)はゲーム画面由来なので、既定のスキンに写さない**(画素を測ってなぞらない)。
   なぞっていた旧版の描画はメインのチェックアウトの `assets/skinart-original/` に退避してある(git 管理外)。
+- 音から譜面を作る所(`js/gen/adt.js`・`audio2dtx.js`)に vid2dtx の学習した重み(`adtof8_head_weights.pth`・`idiom_weights.pth`・
+  `kitgen_*.pth`)やそれを写した値を持ち込まない(GITADORA の譜面と音で学習したもので公開できない)。しきい値を詰めるときは
+  `tests/fixtures/local/` の曲で手元で測り、結果だけを `docs/spec/vid2dtx-gen.md` に書く。
 - 公開しているので、第三者の素材(実曲パックの音・譜面・画像)をコミットしない。テスト用の音や ZIP は
   `tools/make_fixtures.py` で合成する。移植したコードのライセンス表示は `THIRD_PARTY_NOTICES.md`。

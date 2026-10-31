@@ -939,6 +939,78 @@ export const STRINGS = {
   'edit.videoAlignFail': ['音で合わせられませんでした。◀ ▶ か数で合わせてください', 'Could not sync by the audio. Adjust the offset with ◀ ▶ or type a value'],
   'edit.videoAlignBig': ['動画が大きすぎて音を読めません。◀ ▶ か数で合わせてください', 'The video is too large to read its sound. Adjust the offset with ◀ ▶ or type a value'],
   'edit.helpStep': ['叩いた列(キー・電子ドラム)を再生位置に置いて進む。再生中は録音', 'Hits (keys or e-drums) are placed at the playhead, which then advances; while playing they are recorded'],
+
+  // ---- 動画・音声から譜面を作る(index.html・js/gen/dialog.js) ----
+  'gen.button': ['動画・音声から譜面を作る', 'Make a Chart from Video / Audio'],
+  'gen.buttonTitle': ['プレー動画のチップ、または曲の音から譜面を作ります(vid2dtx の移植)', 'Makes a chart from the chips of a play video, or from the sound of a song (ported from vid2dtx)'],
+  'gen.title': ['動画・音声から譜面を作る', 'Make a Chart from Video / Audio'],
+  'gen.lead': [
+    'プレー動画に流れるチップを読んで譜面にするか、曲の音からドラムの下書きを作ります(vid2dtx の移植)。'
+      + 'ファイルはブラウザの中で読むだけで、どこにも送りません。できた曲フォルダは曲パックとして開き、編集画面で直せます。',
+    'Reads the chips scrolling in a play video into a chart, or makes a draft drum chart from the sound of a song (ported from vid2dtx). '
+      + 'The file is only read inside your browser and is not sent anywhere. The song folder made is opened as a song pack, and you can fix it in the editor.',
+  ],
+  'gen.pickFile': ['ファイルを選ぶ', 'Choose File'],
+  'gen.noFile': ['動画か音のファイルを選ぶか、ここへドロップ', 'Choose a video or audio file, or drop it here'],
+  'gen.badFile': ['動画か音のファイルではありません: {name}', 'Not a video or audio file: {name}'],
+  'gen.kindVideo': ['プレー動画のチップから', 'From the chips of a play video'],
+  'gen.kindAudio': ['曲の音から(実験的)', 'From the sound of the song (experimental)'],
+  'gen.titleLabel': ['曲名', 'Title'],
+  'gen.noRvfc': [
+    'このブラウザは動画のコマを順に読めません(Chrome / Edge / Safari を使ってください)。',
+    'This browser cannot read the frames of a video one by one (use Chrome, Edge or Safari).',
+  ],
+  'gen.layout': ['画面の配置', 'Screen layout'],
+  'gen.layoutAuto': ['自動(解像度で選ぶ)', 'Auto (by resolution)'],
+  'gen.layoutDtx': ['DTXMania(GITADORA 風スキン)', 'DTXMania (GITADORA-style skin)'],
+  'gen.layoutGita': ['GITADORA(アーケード)', 'GITADORA (arcade)'],
+  'gen.rate': ['読む速さ', 'Reading speed'],
+  'gen.rate1': ['等速(全部のコマ)', 'Normal (every frame)'],
+  'gen.rate2': ['2 倍速', '2× speed'],
+  'gen.offset': ['タイミング補正(ms。+ でチップを遅く)', 'Timing offset (ms; + makes the chips later)'],
+  'gen.measure': ['最初の小節の番号', 'Number of the first measure'],
+  'gen.auto': ['自動', 'Auto'],
+  'gen.previewNote': [
+    '{layout} の配置を {w}×{h} に合わせて重ねています。色の帯がレーン、黄色い線が判定ラインに重なっていれば読めます。',
+    'The {layout} layout is fitted to {w}×{h} and drawn on top. It can be read when the colored bands sit on the lanes and the yellow line on the judge line.',
+  ],
+  'gen.previewFailed': ['動画のコマを読めませんでした(形式に対応していないかもしれません)', 'Could not read a frame of the video (the format may not be supported)'],
+  'gen.videoNote': [
+    '対応する画面: DTXMania の GITADORA 風スキン(1280×720 を基準に拡大・縮小)と GITADORA のアーケードの録画(1920×1080)。'
+      + '動画を流して読むので、動画の長さ(2 倍速なら半分ほど)かかります。読んでいる間にタブを隠すと止まります。',
+    'Supported screens: the GITADORA-style skin of DTXMania (scaled from 1280×720) and GITADORA arcade recordings (1920×1080). '
+      + 'The video is played to read it, so it takes as long as the video (about half at 2× speed). Hiding the tab while reading pauses it.',
+  ],
+  'gen.audioNote': [
+    '実験的: 学習したモデルを使わない信号処理で、キック・スネア・ハイハット / シンバルの下書きを作ります(タムは拾いません)。'
+      + 'BPM は一定・小節は 4/4 として付けます。確信度の低いチップに枠が付くので、編集画面の「次の要確認」で直してください。',
+    'Experimental: signal processing without any trained model makes a draft of the kick, snare and hi-hat / cymbals (toms are not picked up). '
+      + 'The BPM is taken as constant and the measures as 4/4. Chips of low confidence get a frame, so fix them with “Next to review” in the editor.',
+  ],
+  'gen.log': ['記録', 'Log'],
+  'gen.start': ['作る', 'Make'],
+  'gen.open': ['編集画面で開く', 'Open in the Editor'],
+  'gen.save': ['ZIP を保存', 'Save ZIP'],
+  'gen.close': ['閉じる', 'Close'],
+  'gen.stop': ['やめる', 'Stop'],
+  'gen.stageOpen': ['動画を開いています…', 'Opening the video…'],
+  'gen.stageFrames': ['コマを読んでいます… {pct}%', 'Reading frames… {pct}%'],
+  'gen.stageAudio': ['音を読んでいます…', 'Reading the sound…'],
+  'gen.stageStft': ['音を調べています(周波数)…', 'Analyzing the sound (spectrum)…'],
+  'gen.stageHpss': ['音を調べています(打楽器の音)… {pct}%', 'Analyzing the sound (percussion)… {pct}%'],
+  'gen.stageNmf': ['音を調べています(ドラムの分け)… {pct}%', 'Analyzing the sound (drum parts)… {pct}%'],
+  'gen.stageChart': ['譜面を書いています…', 'Writing the chart…'],
+  'gen.stageZip': ['ZIP にしています…', 'Making the ZIP…'],
+  'gen.doneVideo': [
+    'できました: チップ {n} 個・BPM {bpm}・音と絵のずれの補正 {off} ms({secs} 秒)。',
+    'Done: {n} chips, BPM {bpm}, audio/video offset {off} ms ({secs} s).',
+  ],
+  'gen.doneAudio': [
+    'できました(下書き): チップ {n} 個(うち要確認 {low} 個)・BPM {bpm}({secs} 秒)。編集画面の「次の要確認」で確かめてください。',
+    'Done (draft): {n} chips ({low} to check), BPM {bpm} ({secs} s). Check them with “Next to review” in the editor.',
+  ],
+  'gen.cancelled': ['やめました', 'Stopped'],
+  'gen.failed': ['作れませんでした: {msg}', 'Could not make the chart: {msg}'],
 };
 
 let current = DEFAULT_LANG;

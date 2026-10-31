@@ -49,6 +49,7 @@
         <label class="btn secondary"><span data-i18n="home.pickFolder">フォルダを選ぶ</span><input type="file" id="file-dir" webkitdirectory multiple></label>
         <button id="btn-last" class="btn secondary" hidden>前回の ZIP を開く</button>
         <button type="button" id="btn-folder-rw" class="btn secondary" title="選んだフォルダの譜面へ、編集画面の「保存」でそのまま上書きできます(Chrome / Edge)" data-i18n="edit.openFolderRw" data-i18n-title="edit.openFolderRwTitle" hidden>フォルダを開く(上書き保存できる)</button>
+        <button type="button" id="btn-gen" class="btn secondary" title="プレー動画のチップ、または曲の音から譜面を作ります(vid2dtx の移植)" data-i18n="gen.button" data-i18n-title="gen.buttonTitle">動画・音声から譜面を作る</button>
       </div>
       <p class="note" data-i18n="home.dropNote">set.def があれば難易度ごとに、無ければ .dtx ごとに一覧します。ドラム・ギター・ベースの譜面は楽器ごとの行に並び、楽器別のファイルに分かれた同じ曲は 1 つにまとめます。音源は wav / ogg / mp3 / xa に対応。動画は再生しません。</p>
     </div>
@@ -62,6 +63,51 @@
       <span class="note" data-i18n="edit.listNote">押している間は、ドラムの譜面のボタンで編集画面を開きます。</span>
     </div>
     <ul id="song-list"></ul>
+
+    <dialog id="gen-dialog" aria-labelledby="gen-title">
+      <form method="dialog" id="gen-form">
+        <h3 id="gen-title" data-i18n="gen.title">動画・音声から譜面を作る</h3>
+        <p class="note" data-i18n="gen.lead">プレー動画に流れるチップを読んで譜面にするか、曲の音からドラムの下書きを作ります(vid2dtx の移植)。ファイルはブラウザの中で読むだけで、どこにも送りません。できた曲フォルダは曲パックとして開き、編集画面で直せます。</p>
+        <div class="gen-file">
+          <label class="btn secondary small" id="gen-pick"><span data-i18n="gen.pickFile">ファイルを選ぶ</span><input type="file" id="gen-file" accept="video/*,audio/*,.mp4,.m4v,.webm,.mov,.mkv,.ogg,.mp3,.wav,.m4a,.flac,.opus"></label>
+          <span id="gen-file-name" class="note" data-i18n="gen.noFile">動画か音のファイルを選ぶか、ここへドロップ</span>
+        </div>
+        <fieldset class="gen-kind">
+          <label><input type="radio" name="gen-kind" value="video" checked> <span data-i18n="gen.kindVideo">プレー動画のチップから</span></label>
+          <label><input type="radio" name="gen-kind" value="audio"> <span data-i18n="gen.kindAudio">曲の音から(実験的)</span></label>
+        </fieldset>
+        <label class="field"><span data-i18n="gen.titleLabel">曲名</span><input type="text" id="gen-name" autocomplete="off"></label>
+        <div id="gen-video-opts">
+          <p class="note warn" id="gen-video-note" data-i18n="gen.noRvfc" hidden>このブラウザは動画のコマを順に読めません(Chrome / Edge / Safari を使ってください)。</p>
+          <div class="gen-grid">
+            <label class="field"><span data-i18n="gen.layout">画面の配置</span><select id="gen-layout">
+              <option value="auto" data-i18n="gen.layoutAuto">自動(解像度で選ぶ)</option>
+              <option value="dtxmania-720" data-i18n="gen.layoutDtx">DTXMania(GITADORA 風スキン)</option>
+              <option value="gitadora-1080" data-i18n="gen.layoutGita">GITADORA(アーケード)</option>
+            </select></label>
+            <label class="field"><span data-i18n="gen.rate">読む速さ</span><select id="gen-rate">
+              <option value="1" data-i18n="gen.rate1">等速(全部のコマ)</option>
+              <option value="2" data-i18n="gen.rate2">2 倍速</option>
+            </select></label>
+            <label class="field"><span data-i18n="gen.offset">タイミング補正(ms。+ でチップを遅く)</span><input type="number" id="gen-offset" step="1"></label>
+            <label class="field"><span data-i18n="gen.measure">最初の小節の番号</span><input type="number" id="gen-measure" min="0" step="1"></label>
+          </div>
+          <canvas id="gen-preview" hidden></canvas>
+          <p class="note" id="gen-preview-note"></p>
+          <p class="note" data-i18n="gen.videoNote">対応する画面: DTXMania の GITADORA 風スキン(1280×720 を基準に拡大・縮小)と GITADORA のアーケードの録画(1920×1080)。動画を流して読むので、動画の長さ(2 倍速なら半分ほど)かかります。読んでいる間にタブを隠すと止まります。</p>
+        </div>
+        <p class="note" id="gen-audio-note" data-i18n="gen.audioNote" hidden>実験的: 学習したモデルを使わない信号処理で、キック・スネア・ハイハット / シンバルの下書きを作ります(タムは拾いません)。BPM は一定・小節は 4/4 として付けます。確信度の低いチップに枠が付くので、編集画面の「次の要確認」で直してください。</p>
+        <div id="gen-progress" hidden><progress id="gen-bar" max="100" value="0"></progress><div id="gen-stage" class="note"></div></div>
+        <p id="gen-result" class="status" hidden></p>
+        <details id="gen-log-box" hidden><summary data-i18n="gen.log">記録</summary><pre id="gen-log"></pre></details>
+        <div class="btn-row">
+          <button type="submit" class="btn" id="gen-start" data-i18n="gen.start">作る</button>
+          <button type="button" class="btn" id="gen-open" data-i18n="gen.open" hidden>編集画面で開く</button>
+          <button type="button" class="btn secondary" id="gen-save" data-i18n="gen.save" hidden>ZIP を保存</button>
+          <button type="button" class="btn secondary" id="gen-close" data-i18n="gen.close">閉じる</button>
+        </div>
+      </form>
+    </dialog>
 
     <details id="settings-panel">
       <summary data-i18n="settings.summary">設定(キー割り当て・電子ドラム・ギター / ベース・ギターコントローラ・音量・遅延補正・打ち分け)</summary>

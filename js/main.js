@@ -33,6 +33,7 @@ import { MidiInput } from './ui/midi.js';
 import { defaultMidiNotes, defaultVelocityMin, normalizeMidiNotes, normalizeVelocityMin } from './ui/midibind.js';
 import { MidiPanel } from './ui/midipanel.js';
 import { t, getLang, setLang, initialLang, applyDom } from './i18n.js';
+import { GenDialog } from './gen/dialog.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -323,6 +324,9 @@ class App {
       e.preventDefault();
       e.returnValue = '';
     });
+    // 動画・音声から譜面を作る(本アプリの追加。vid2dtx の移植。js/gen/)
+    this.genDialog = new GenDialog({ onOpen: (zip, name, chartPath) => this.openGenerated(zip, name, chartPath) });
+    $('btn-gen').addEventListener('click', () => this.genDialog.open());
     const edit = $('btn-edit-mode');
     if (edit) {
       edit.addEventListener('click', () => {
@@ -1589,6 +1593,25 @@ class App {
     const newSong = pkg.songs.find((s) => s.charts.some((c) => normKey(c.path) === key));
     if (!newSong) return;
     await this.openEditor(newSong, newSong.charts.find((c) => normKey(c.path) === key));
+  }
+
+  /**
+   * 動画・音声から作った曲フォルダの ZIP を曲パックとして開き、その譜面を編集画面で開く(本アプリの追加。js/gen/dialog.js)。
+   * ファイルにしていない編集があれば、ほかの ZIP を開くときと同じく確かめる。
+   * @returns {Promise<boolean>} 開けたら true
+   */
+  async openGenerated(zip, name, chartPath) {
+    if (this._editBusy || this.editor) return false;
+    const before = this.pkg;
+    await this.loadPackage(zip, name, {});
+    const pkg = this.pkg;
+    if (!pkg || pkg === before) return false;
+    const key = normKey(chartPath);
+    const song = pkg.songs.find((s) => s.charts.some((c) => normKey(c.path) === key));
+    if (!song) return false;
+    this.genDialog.close();
+    await this.openEditor(song, song.charts.find((c) => normKey(c.path) === key));
+    return true;
   }
 
   /** 編集画面を閉じて曲の一覧へ(確かめない。編集は曲パックに重ね、下書きにも残る)。 */

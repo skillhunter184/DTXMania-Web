@@ -120,6 +120,29 @@ export function buildSynthLanes() {
 }
 
 /**
+ * 動画・音声から作った譜面に付けるドラムの音(本アプリの追加。js/gen/kit.js が WAV にして譜面と一緒に書き出す)。
+ * vid2dtx は手元の曲パックの音を鳴らす(第三者の音なので同梱しない)ので、同じ合成音で鳴らす。ハイハットは閉(短い)・開(長い)・
+ * ペダル(さらに短い)を分け、左のバスドラムはバスドラムの音。
+ * @returns {Object<string, Float32Array>} 種類(LC / HHC / HHO / LP / SD / HT / BD / LT / FT / CY / RD / LBD)→ 波形
+ */
+export function buildKitSounds() {
+  return {
+    LC: cymbal(0.4),
+    HHC: hihat(0.05),
+    HHO: hihat(0.3),
+    LP: hihat(0.035),
+    SD: snare(),
+    HT: tom(220),
+    BD: kick(0.18),
+    LT: tom(160),
+    FT: tom(110),
+    CY: cymbal(0.45),
+    RD: ride(0.3),
+    LBD: kick(0.16),
+  };
+}
+
+/**
  * メトロノームの音(モノラル 44.1kHz Float32Array)。元実装はスキンの Metronome.ogg 1 つを小節線 1.0 / 拍線 0.4 の音量で鳴らすが、
  * 本アプリは第三者の音を同梱しないので合成する。短いサイン波の減衰音で、小節の頭(accent)は高い音にもする(音量が小さくても
  * 小節の頭が分かるように)。音量の比は鳴らす側(js/game/player.js)で元実装と同じ 0.4 を掛ける。
