@@ -1,18 +1,25 @@
 // 曲の音から譜面を作る(vid2dtx/audio2dtx.py の移植。実験的。docs/spec/vid2dtx-gen.md §6)。
-// 打点を拾う所(ドラムの分離・採譜・拍の追跡)は学習を使わない信号処理(js/gen/adt.js)に置き換えた。そのあとの
-// テンポのコムフィット・小節の位相(スネアのバックビート)・量子化・ドラマーの規則(両手は 2 つまで・ハイハットの開閉・
-// LC / CY の左右・速いキックの連打を左右の足へ・32 分のスネアの 2 打目・グルーヴの型のハイハット)・確信度は移す。
+// 打点を拾う所(ドラムの分離・採譜・拍の追跡)は、許諾を確かめたデータだけで学習した小さなモデル(js/gen/adtmodel.js)と
+// 信号処理(js/gen/adt.js)に置き換えた。そのあとのテンポのコムフィット・小節の位相(スネアのバックビート)・量子化・
+// ドラマーの規則(両手は 2 つまで・ハイハットの開閉・LC / CY の左右・速いキックの連打を左右の足へ・32 分のスネアの 2 打目・
+// グルーヴの型のハイハット)・タムの音高でのレーン分け・確信度は移す。
 // 学習した重みに頼る所(8 クラスのヘッドのハイハット / LP / ライド・奏法のイディオムのモデル)は移さない(元の重みは GITADORA の
 // 譜面で学習したもので公開できない)。元が重み無しで動くときの規則(v4)を使う。
-// (変更) タムは拾わない(信号処理では誤検出がほとんどで、手で足す方が早い)。
 
-import { rint, lineFit, argmax, bincount, yieldToUi, GenCancelled } from './num.js';
+import { rint, lineFit, argmax, argmin, bincount, median, yieldToUi, GenCancelled } from './num.js';
 import { analyzeAudio, activationScale, refinePeak, halfRiseTime, BandEnv, FRAME_T0 } from './adt.js';
+import { MODEL_CLASSES, MODEL_THR, modelPeaks } from './adtmodel.js';
 import { quantize } from './emit.js';
 
 // ---- 打点の候補(adt.js の活性・帯域から) ----
 
 export const PICK = {
+  // 学習したモデルの打点のしきい値(クラスごと。js/gen/adtweights.js に書き出したときの値)
+  model: { ...MODEL_THR },
+  // キックと重なるタムを捨てる(pickOnsets): 重なりの幅(秒)と、捨てるのはタムのこの割合より多く重なる曲
+  ttKickGap: 0.03,
+  ttKickShare: 0.5,
+  // 以下は (旧) 信号処理(detector: 'dsp')の値。
   // 相対の立ち上がり (a − 直前の底) / (直前の底 + c·尺度) の峰。手元の 3 曲(DTXMania / GITADORA のプレー動画の音)で決めた
   KD: { c: 0.2, pre: 5, thr: 1.0 },
   SD: { c: 0.4, pre: 12, thr: 1.0 },
@@ -72,10 +79,46 @@ function fluxPeaks(env, thr) {
 }
 
 /**
- * 打点の候補(audio2dtx の det: [(時刻, 種類)])と確信度の元。
- * @returns {{det: {t: number, cls: string, s: number}[], hh2: BandEnv}}
+ * 打点の候補(audio2dtx の det: [(時刻, 種類)])と確信度の元。学習したモデルの 5 クラスの打点らしさの峰(しきい値は PICK.model)。
+ * 確信度の元 s は峰の高さ ÷ (2 × しきい値)(0〜1。しきい値ちょうどで 0.5)。実曲では金物の確率がいつも低く出るので、生の確率の
+ * ままだと「両手は 2 つまで」の規則が金物から落とした(そろえると、絵空事で合うシンバルが 19 → 26、TRIΔXIS で合うハイハットが
+ * 60 → 89 に増えた)。
+ * @returns {{det: {t: number, cls: string, s: number}[], hh2: BandEnv, tomsOnKick?: number}} tomsOnKick: キックと重なって捨てたタム
  */
 export function pickOnsets(a) {
+  if (!a.prob) return pickOnsetsDsp(a);
+  const det = [];
+  MODEL_CLASSES.forEach((cls, k) => {
+    const thr = PICK.model[cls];
+    for (const p of modelPeaks(a.prob, a.T, k, thr, a.fps)) det.push({ t: p.t, cls, s: Math.min(1, p.p / (2 * thr)) });
+  });
+  det.sort((x, y) => x.t - y.t);
+  // キックの胴の音をタムと取り違える曲: タムの打点の PICK.ttKickShare より多くがキックと PICK.ttKickGap 秒の内に重なれば、
+  // 重なるタムを捨てる(TRIΔXIS でタムの余分 546 個のうち 408 個がキックと重なった。ほかの 2 曲は重なりが 3 割ほど)
+  const kicks = det.filter((d) => d.cls === 'KD').map((d) => d.t);
+  const onKick = (t) => {
+    let lo = 0;
+    let hi = kicks.length;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (kicks[m] < t - PICK.ttKickGap) lo = m + 1;
+      else hi = m;
+    }
+    return lo < kicks.length && kicks[lo] <= t + PICK.ttKickGap;
+  };
+  const toms = det.filter((d) => d.cls === 'TT');
+  const shared = toms.filter((d) => onKick(d.t));
+  const dropTT = toms.length && shared.length > PICK.ttKickShare * toms.length;
+  const drop = new Set(dropTT ? shared : []);
+  // ハイハットの開閉は 7〜16 kHz の余韻で決める(drummerModel)
+  return { det: det.filter((d) => !drop.has(d)), hh2: new BandEnv(a.P, a.T, a.F, PICK.MT.band), tomsOnKick: drop.size };
+}
+
+/**
+ * (旧) 信号処理の打点の候補(analyzeAudio の detector: 'dsp')。キック・スネアは NMF の活性の峰、金物は高い帯域の立ち上がり。
+ * タムは拾わない(3 曲で適合率が 5 % ほどしか無かった)。
+ */
+export function pickOnsetsDsp(a) {
   const det = [];
   for (const p of relativePeaks(a.act.KD, a.fps, PICK.KD)) det.push({ t: p.t, cls: 'KD', s: p.rr / (2 * PICK.KD.thr) });
   for (const p of relativePeaks(a.act.SD, a.fps, PICK.SD)) {
@@ -345,6 +388,79 @@ export function drummerModel(chips, conf, a, hh, tOf, log = () => {}) {
   return out;
 }
 
+// タムのレーン(audio2dtx.TOM_REGISTER・TOM_UNUSED_LANE): レーンの音域(Hz)と、使わないレーンの重み(半音² / 打点)
+export const TOM_REGISTER = [['FT', 86], ['LT', 117], ['HT', 144]];
+export const TOM_UNUSED_LANE = 6;
+
+/**
+ * タムを音高でレーンに分ける(audio2dtx.split_tom_lanes)。譜面はタムを音高の順位で名付ける(キットごとの音域は重なる)ので、
+ * 曲の中の音高の山(0.5 半音の幅の密度の峰)にまとめ、弱い山(打点の 6 % 未満)と 1.5 半音より近い山は隣にまとめ、
+ * 山を音高の順にレーンの音域の近くへ名付ける。
+ * @param {{t: number}[]} toms
+ * @param {(t: number) => number|null} pitchOf 基音(Hz)
+ * @returns {Map<object, string>} toms の要素 → 'HT' | 'LT' | 'FT'(音高の測れないものは入らない)
+ */
+export function splitTomLanes(toms, pitchOf) {
+  const keys = [];
+  const st = [];
+  for (const c of toms) {
+    const f = pitchOf(c.t);
+    if (f && f >= 50 && f <= 400) {
+      keys.push(c);
+      st.push(12 * Math.log2(f / 55));
+    }
+  }
+  const out = new Map();
+  if (!st.length) return out;
+  const lo = Math.min(...st) - 2;
+  const hi = Math.max(...st) + 2;
+  const grid = [];
+  for (let i = 0; lo + 0.05 * i < hi; i++) grid.push(lo + 0.05 * i);
+  const dens = grid.map((g) => st.reduce((s, v) => s + Math.exp(-0.5 * ((g - v) / 0.5) ** 2), 0));
+  let cents = [];
+  for (let i = 1; i < grid.length - 1; i++) if (dens[i] >= dens[i - 1] && dens[i] > dens[i + 1]) cents.push(grid[i]);
+  if (!cents.length) cents = [median(st)];
+  const nearest = () => {
+    const assign = st.map((v) => argmin(cents.map((c) => Math.abs(v - c))));
+    return { assign, mass: bincount(assign, cents.length) };
+  };
+  for (;;) {
+    const { assign, mass } = nearest();
+    cents = cents.map((c, i) => (mass[i] ? median(st.filter((_, j) => assign[j] === i)) : c));
+    if (cents.length === 1) break;
+    const weak = argmin(mass);
+    if (mass[weak] < Math.max(2, 0.06 * st.length)) {
+      cents.splice(weak, 1);
+      continue;
+    }
+    const gaps = cents.slice(1).map((c, i) => c - cents[i]);
+    const j = argmin(gaps);
+    if (gaps[j] >= 1.5) break;
+    cents.splice(mass[j] < mass[j + 1] ? j : j + 1, 1);
+  }
+  const { assign, mass } = nearest();
+  const regs = TOM_REGISTER.map(([, f]) => 12 * Math.log2(f / 55));
+  // 山を音高の順にレーンへ名付ける(重複を許す組み合わせを全部試す)
+  let best = null;
+  const combo = [];
+  const walk = (i, from) => {
+    if (i === cents.length) {
+      let cost = 0;
+      for (let k = 0; k < cents.length; k++) cost += mass[k] * (cents[k] - regs[combo[k]]) ** 2;
+      cost += TOM_UNUSED_LANE * st.length * (Math.min(3, cents.length) - new Set(combo).size);
+      if (!best || cost < best.cost) best = { cost, combo: [...combo] };
+      return;
+    }
+    for (let g = from; g < 3; g++) {
+      combo[i] = g;
+      walk(i + 1, g);
+    }
+  };
+  walk(0, 0);
+  keys.forEach((c, k) => out.set(c, TOM_REGISTER[best.combo[assign[k]]][0]));
+  return out;
+}
+
 /** 速いキックの連打を 1 つおきに左のバスドラム(LBD)へ(audio2dtx.assign_kick_feet)。動かした数。 */
 export function assignKickFeet(chips, tOf) {
   const kicks = chips.filter((c) => c.kind === 'BD').map((c) => ({ t: tOf(c.m, c.tick), c })).sort((x, y) => x.t - y.t);
@@ -382,18 +498,20 @@ export function assignKickFeet(chips, tOf) {
  * @param {Float32Array} left js/gen/adt.js の ADT.sr の左
  * @param {Float32Array} right 右
  * @param {{log?: (s: string) => void, onProgress?: (stage: string, frac: number) => void, signal?: {cancelled: boolean},
- *   keepStart?: boolean}} [opts] keepStart: 曲の音の頭を譜面の小節 0 の中に置く(元のファイルを BGM にそのまま使う)
+ *   keepStart?: boolean, detector?: 'model'|'dsp'}} [opts] keepStart: 曲の音の頭を譜面の小節 0 の中に置く(元のファイルを BGM に
+ *   そのまま使う)。detector: 打点を拾う元(既定は学習したモデル。'dsp' は旧の信号処理)
  * @returns {Promise<{chips: object[], bpm: number, tMeas: number, gridOrigin: number, measureOffset: number, conf: object[], stats: object}>}
  */
 export async function audioToChart(left, right, opts = {}) {
   const log = opts.log || (() => {});
-  const a = await analyzeAudio(left, right, { onProgress: opts.onProgress, signal: opts.signal });
+  const a = await analyzeAudio(left, right, { onProgress: opts.onProgress, signal: opts.signal, detector: opts.detector });
   await yieldToUi();
   if (opts.signal && opts.signal.cancelled) throw new GenCancelled();
-  const { det, hh2 } = pickOnsets(a);
+  const { det, hh2, tomsOnKick } = pickOnsets(a);
+  if (tomsOnKick) log(`toms on kicks dropped: ${tomsOnKick} (the kick sounds like a tom)`);
   if (det.length < 16) throw new Error('too few drum onsets were found in the audio');
-  const counts = bincount(det.map((d) => ['KD', 'SD', 'HH', 'CY'].indexOf(d.cls)), 4);
-  log(`onsets: KD ${counts[0]}, SD ${counts[1]}, HH ${counts[2]}, CY ${counts[3]}`);
+  const counts = bincount(det.map((d) => ['KD', 'SD', 'TT', 'HH', 'CY'].indexOf(d.cls)), 5);
+  log(`onsets: KD ${counts[0]}, SD ${counts[1]}, TT ${counts[2]}, HH ${counts[3]}, CY ${counts[4]}`);
   // テンポ・格子(キック・スネアの打点で。金物は揺れが大きい)
   // (追加) 拍の候補ごとにコムを当て、格子に乗る割合 × BPM の重みの平方根が一番大きいもの(自己相関だけだと 3:2 を取り違える。
   // 割合は候補の長さによらない(許す幅が長さに比例する)ので、2:1 は重みで決まる)
@@ -424,7 +542,8 @@ export async function audioToChart(left, right, opts = {}) {
   det.length = 0;
   det.push(...kept);
   // 32 分のスネアの 2 打目(1 つだけの打点の 32 分あとに、スネアの帯域のはっきりした立ち上がり)
-  const sd = det.filter((d) => d.cls === 'SD').map((d) => d.t);
+  // (変更) 学習したモデルの打点では足さない(モデルは 2 打目も拾い、足すと絵空事で 239 個のほとんどが余分だった)
+  const sd = a.prob ? [] : det.filter((d) => d.cls === 'SD').map((d) => d.t);
   let added = 0;
   for (let i = 0; i < sd.length; i++) {
     if (i + 1 < sd.length && sd[i + 1] - sd[i] < 0.06) continue;
@@ -473,6 +592,13 @@ export async function audioToChart(left, right, opts = {}) {
   }
   chips.sort((x, y) => x.m - y.m || x.tick - y.tick);
   const final = drummerModel(chips, conf, a, hh2, tOf, log);
+  const toms = final.filter((c) => c.cls === 'TT').map((c) => ({ t: tOf(c.m, c.tick), c }));
+  if (toms.length) {
+    for (const [k, lane] of splitTomLanes(toms, a.tomPitch)) k.c.kind = lane;
+    const n = { HT: 0, LT: 0, FT: 0 };
+    for (const k of toms) n[k.c.kind]++;
+    log(`toms by pitch: HT ${n.HT}, LT ${n.LT}, FT ${n.FT}`);
+  }
   const nLbd = assignKickFeet(final, tOf);
   if (nLbd) log(`drummer: ${nLbd} kicks of fast runs moved to the left foot (LBD)`);
   final.sort((x, y) => x.m - y.m || x.tick - y.tick);

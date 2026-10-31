@@ -1,15 +1,17 @@
 // 曲の音からドラムの打点を拾う(本アプリの追加。音から譜面を作る js/gen/audio2dtx.js の下回り。docs/spec/vid2dtx-gen.md §6)。
 // vid2dtx の audio2dtx はドラムの分離(htdemucs)・採譜(ADTOF)・拍の追跡(Beat This)・キットの分離(MDX23C)と、GITADORA の
-// 譜面で学習した重みを使う。学習した重みは著作物から作ったもので公開のリポジトリに入れられず、モデルもブラウザで動かせないので、
-// ここは学習を使わない信号処理で置き換える(精度はそのぶん落ちる。下書きとして手直しする前提):
+// 譜面で学習した重みを使う。それらは著作物から作ったものや非商用の許諾のもので公開のリポジトリに入れられず、ブラウザでも
+// 動かせないので、ここは次で置き換える:
 // 1. 短時間フーリエ変換(44100 Hz・2048 点・刻み 441 = 10 ms。ADTOF と同じ毎秒 100 コマ)
-// 2. 調波・打楽器の分離(HPSS。時間方向と周波数方向の中央値のフィルタで、打楽器の側の柔らかいマスク)
-// 3. 打楽器の側を対数の帯域(低い所は 1 bin ずつ、上は 1/6 オクターブ)にまとめ、決まった型(キック・スネア・タム・金物)から
-//    始める半適応の NMF(KL)で分ける
-// 4. 打点の候補は js/gen/audio2dtx.js の pickOnsets(キック・スネアは成分の活性の峰、金物は高い帯域の立ち上がり)
-// 帯域ごとの立ち上がりの強さ(stemflux.FluxEnv の代わり)・ハイハットの余韻の比・シンバルの左右・タムの音高も、ここで測る。
+// 2. 打点: 許諾を確かめたデータ(E-GMD。CC BY 4.0)と合成の伴奏だけで学習した小さなモデル(js/gen/adtmodel.js)の、
+//    コマごとの 5 クラスの打点らしさ。拾うのは js/gen/audio2dtx.js の pickOnsets
+// 3. 調波・打楽器の分離(HPSS。時間方向と周波数方向の中央値のフィルタで、打楽器の側の柔らかいマスク)。帯域ごとの立ち上がりの
+//    強さ(stemflux.FluxEnv の代わり)・ハイハットの余韻の比・シンバルの左右・タムの音高は、この打楽器の側で測る
+// (旧) モデルの前の、決まった型(キック・スネア・タム・金物)から始める半適応の NMF(KL)の活性も、比べるために残す
+// (detector: 'dsp'。拾うのは audio2dtx.pickOnsetsDsp)。
 
 import { percentile, yieldToUi, GenCancelled } from './num.js';
+import { modelInput, runModel, inputGain } from './adtmodel.js';
 
 export const ADT = {
   sr: 44100,
@@ -541,7 +543,8 @@ export function tomPitch(P, T, F, t, sr = ADT.sr, nfft = ADT.nfft, hop = ADT.hop
  * 曲の音を調べる(1〜3 の段)。
  * @param {Float32Array} left ADT.sr の左
  * @param {Float32Array} right ADT.sr の右(1 本の音なら left と同じ)
- * @param {{onProgress?: (stage: string, frac: number) => void, signal?: {cancelled: boolean}}} [opts]
+ * @param {{onProgress?: (stage: string, frac: number) => void, signal?: {cancelled: boolean}, detector?: 'model'|'dsp'}} [opts]
+ *   detector: 打点を拾う元(既定は学習したモデル。'dsp' は旧の NMF)
  * @returns {Promise<object>}
  */
 export async function analyzeAudio(left, right, opts = {}) {
@@ -559,21 +562,33 @@ export async function analyzeAudio(left, right, opts = {}) {
   await tick('hpss', 0);
   let done = 0;
   const P = await percussive(mag, T, F, { tick: () => tick('hpss', Math.min(1, ++done / ((F + T / 2000) / 64 + T / 2000))) });
-  const edges = bandEdges(F);
-  const centers = bandCenters(edges);
-  const B = edges.length - 1;
-  const V = toBands(P, T, F, edges);
-  await tick('nmf', 0);
-  const init = templates(centers);
-  const { W, H } = await nmf(V, B, T, init, { ...(opts.nmf || {}), tick: (f) => tick('nmf', f) });
-  const act = {};
-  COMPONENTS.forEach((name, k) => {
-    act[name] = H.subarray(k * T, (k + 1) * T);
-  });
+  let act = null;
+  let W = null;
+  let centers = null;
+  let prob = null;
+  if (opts.detector === 'dsp') {
+    // (旧) 決まった型から始める NMF の活性(audio2dtx.pickOnsetsDsp で拾う)
+    const edges = bandEdges(F);
+    centers = bandCenters(edges);
+    const B = edges.length - 1;
+    const V = toBands(P, T, F, edges);
+    await tick('nmf', 0);
+    const init = templates(centers);
+    const r = await nmf(V, B, T, init, { ...(opts.nmf || {}), tick: (f) => tick('nmf', f) });
+    W = r.W;
+    act = {};
+    COMPONENTS.forEach((name, k) => {
+      act[name] = r.H.subarray(k * T, (k + 1) * T);
+    });
+  } else {
+    // 学習したモデル(js/gen/adtmodel.js)の、コマごとの 5 クラスの打点らしさ
+    await tick('model', 0);
+    prob = await runModel(modelInput(mag, T, F, inputGain(mono)), T, { tick: (f) => tick('model', f) });
+  }
   const env = {};
   for (const [name, band] of Object.entries(BANDS)) env[name] = new BandEnv(P, T, F, band);
   return {
-    fps: ADT.sr / ADT.hop, T, F, P, act, W, centers, env,
+    fps: ADT.sr / ADT.hop, T, F, P, act, W, centers, env, prob,
     balance: stereoBalance(left, right),
     tomPitch: (t) => tomPitch(P, T, F, t),
     duration: n / ADT.sr,

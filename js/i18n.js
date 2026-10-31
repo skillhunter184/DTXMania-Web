@@ -982,9 +982,9 @@ export const STRINGS = {
       + 'The video is played to read it, so it takes as long as the video (about half at 2× speed). Hiding the tab while reading pauses it.',
   ],
   'gen.audioNote': [
-    '実験的: 学習したモデルを使わない信号処理で、キック・スネア・ハイハット / シンバルの下書きを作ります(タムは拾いません)。'
+    '実験的: 電子ドラムの演奏の録音(E-GMD)で学習した小さなモデルで、キック・スネア・タム・ハイハット / シンバルの下書きを作ります。'
       + 'BPM は一定・小節は 4/4 として付けます。確信度の低いチップに枠が付くので、編集画面の「次の要確認」で直してください。',
-    'Experimental: signal processing without any trained model makes a draft of the kick, snare and hi-hat / cymbals (toms are not picked up). '
+    'Experimental: a small model trained on recordings of electronic drum performances (E-GMD) makes a draft of the kick, snare, toms and hi-hat / cymbals. '
       + 'The BPM is taken as constant and the measures as 4/4. Chips of low confidence get a frame, so fix them with “Next to review” in the editor.',
   ],
   'gen.log': ['記録', 'Log'],
@@ -999,6 +999,7 @@ export const STRINGS = {
   'gen.stageStft': ['音を調べています(周波数)…', 'Analyzing the sound (spectrum)…'],
   'gen.stageHpss': ['音を調べています(打楽器の音)… {pct}%', 'Analyzing the sound (percussion)… {pct}%'],
   'gen.stageNmf': ['音を調べています(ドラムの分け)… {pct}%', 'Analyzing the sound (drum parts)… {pct}%'],
+  'gen.stageModel': ['音を調べています(ドラムの打点)… {pct}%', 'Analyzing the sound (drum hits)… {pct}%'],
   'gen.stageChart': ['譜面を書いています…', 'Writing the chart…'],
   'gen.stageZip': ['ZIP にしています…', 'Making the ZIP…'],
   'gen.doneVideo': [

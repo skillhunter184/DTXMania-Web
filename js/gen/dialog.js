@@ -13,13 +13,13 @@ const $ = (id) => document.getElementById(id);
 /** 段 → 文言のキー。 */
 const STAGE_KEY = {
   open: 'gen.stageOpen', frames: 'gen.stageFrames', audio: 'gen.stageAudio', stft: 'gen.stageStft', hpss: 'gen.stageHpss',
-  nmf: 'gen.stageNmf', chart: 'gen.stageChart', zip: 'gen.stageZip',
+  nmf: 'gen.stageNmf', model: 'gen.stageModel', chart: 'gen.stageChart', zip: 'gen.stageZip',
 };
 
 /** 段ごとの進み具合の範囲(全体の 0〜1)。 */
 const STAGES = {
   video: { open: [0, 0.01], frames: [0.01, 0.9], audio: [0.9, 0.95], chart: [0.95, 1] },
-  audio: { audio: [0, 0.1], stft: [0.1, 0.2], hpss: [0.2, 0.5], nmf: [0.5, 0.92], chart: [0.92, 1] },
+  audio: { audio: [0, 0.1], stft: [0.1, 0.2], hpss: [0.2, 0.5], nmf: [0.5, 0.92], model: [0.5, 0.92], chart: [0.92, 1] },
 };
 
 /** 進み具合の全体の割合(0〜1)。 */

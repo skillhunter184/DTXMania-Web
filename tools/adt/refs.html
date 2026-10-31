@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ref.json</title>
+<!-- 手元の確かめの曲(tests/fixtures/local/audio/<名前>.dtx と .ogg。git 管理外)の正解の打点の時刻を、train.py / eval_ckpt.py が
+     読む ref.json にして保存する({曲: {KD: [秒…], SD, TT, HH, CY}}。時刻は譜面の小節 0 の頭から)。
+     ?songs=eso,smooooch,triaxis で曲を選ぶ。保存した ref.json は tests/fixtures/local/audio/ に置く。 -->
+<p><a id="dl" download="ref.json">ref.json を保存</a></p>
+<script type="module">
+import { parseDTX, posToMs, LEAD_IN_TICKS } from '../../js/core/dtx.js';
+import { decodeText } from '../../js/core/encoding.js';
+
+// チャンネル → 5 つの種類(LBD はキック、LP はハイハット、RD・LC はシンバル)
+const CLS = { 0x13: 'KD', 0x1c: 'KD', 0x12: 'SD', 0x14: 'TT', 0x15: 'TT', 0x17: 'TT', 0x11: 'HH', 0x18: 'HH', 0x1b: 'HH', 0x16: 'CY', 0x19: 'CY', 0x1a: 'CY' };
+const songs = (new URLSearchParams(location.search).get('songs') || 'eso,smooooch,triaxis').split(',');
+const out = {};
+for (const s of songs) {
+  const chart = parseDTX(decodeText(new Uint8Array(await (await fetch(`../../tests/fixtures/local/audio/${s}.dtx`)).arrayBuffer())));
+  const m0 = posToMs(chart, LEAD_IN_TICKS);
+  const ref = { KD: [], SD: [], TT: [], HH: [], CY: [] };
+  for (const n of chart.notes) if (CLS[n.channel]) ref[CLS[n.channel]].push((n.timeMs - m0) / 1000);
+  out[s] = ref;
+}
+window.__ref = out;
+document.getElementById('dl').href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: 'application/json' }));
+</script>

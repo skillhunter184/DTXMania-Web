@@ -29,7 +29,7 @@ GITADORA は同社の商標。ライセンスは末尾の「ライセンス」�
   マウス・キーボードのほか iPad のタッチと Apple Pencil でも使える。仕様は [docs/spec/chart-editor.md](docs/spec/chart-editor.md)
 - 動画・音声から譜面を作る(本アプリの追加。vid2dtx の移植): DTXMania(GITADORA 風スキン)や GITADORA のプレー動画に流れる
   チップを読んで譜面にする(BGM は動画の音から切り出す)。曲の音からドラムの下書きを作ることもできる(実験的)。
-  ブラウザの中だけで動き、学習したモデルは使わない。仕様は [docs/spec/vid2dtx-gen.md](docs/spec/vid2dtx-gen.md)
+  ブラウザの中だけで動く(音からの打点は、許諾を確かめたデータだけで学習した小さなモデル)。仕様は [docs/spec/vid2dtx-gen.md](docs/spec/vid2dtx-gen.md)
 - ビルド不要。静的ファイルだけで動く(Node 不要)
 - 画面は日本語と英語を切り替えられる(既定は日本語。ホームの右上の「日本語 / English」で切り替え、選んだ言語は保存する。
   `index.html?lang=en` で英語版を直接開ける)
@@ -261,9 +261,11 @@ BGM・合成のドラムの音 `kit_*.wav`)は「編集画面で開く」で曲�
   タブを隠すと止まる)。BPM・小節長の変化(3/4・7/8)・3 連・32 分・格子の外のチップ・録画のコマ落ちまで読み、BGM は動画の音を
   小節 0 から切り出し、音と絵のずれを測って合わせる。絵空事のプレー動画で元の譜面と 688 / 688 チップ一致
 - **曲の音から(実験的)**: vid2dtx の audio2dtx は学習したモデル(GITADORA の譜面で学習した重みを含む)で採譜するが、
-  それは公開できないので、学習を使わない信号処理に置き換えた。BPM・小節の格子・BGM との合わせ・キックはおおむね合うが、
-  スネア・ハイハット / シンバルは半分ほど、タムは拾わない下書き(手元の 3 曲で全体の F 0.55 前後)。確信度の低いチップに
-  枠が付くので、編集画面の「次の要確認」で回って直す。元のファイルが ogg / mp3 / wav なら、それをそのまま BGM にする
+  それは公開できないので、打点は E-GMD(電子ドラムの演奏の録音。CC BY 4.0)と合成の伴奏だけで学習し直した小さなモデル
+  (6 万個の重み。`tools/adt/` で学習)で拾い、テンポ・小節・ドラマーの規則は移植した。BPM・小節の格子・BGM との合わせ・キックは
+  おおむね合い、スネア・タム・ハイハット / シンバルは半分ほどの下書き(手元の 3 曲で全体の F 0.59〜0.71。学習を使わない
+  前の信号処理は 0.55 前後)。確信度の低いチップに枠が付くので、編集画面の「次の要確認」で回って直す。元のファイルが
+  ogg / mp3 / wav なら、それをそのまま BGM にする
 - 譜面の HH は閉のハイハット。ドラムの音は本アプリの合成音(第三者の音は使わない)
 
 ## ファイル構成
@@ -329,7 +331,8 @@ js/gen/               動画・音声から譜面を作る(本アプリの追加
   detect.js / track.js / emit.js  コマごとの検出 / 判定ラインを通る出来事 / 小節の格子と量子化(vid2dtx の同名のファイル)
   avsync.js           録画の音と絵のずれ(vid2dtx avsync.py)
   video2dtx.js        動画からの流れ(detect → track → emit)
-  adt.js / audio2dtx.js 音から: 打点を拾う信号処理(HPSS・NMF)/ テンポ・小節・ドラマーの規則・確信度(vid2dtx audio2dtx.py)
+  adtmodel.js / adtweights.js 音から: 打点のモデル(小さな CRNN の推論)/ その重み(tools/adt/export.py が書き出す)
+  adt.js / audio2dtx.js 音から: スペクトログラム・HPSS・帯域の強さ / 打点の拾い方・テンポ・小節・ドラマーの規則・確信度(vid2dtx audio2dtx.py)
   kit.js              チャンネル・#WAV の決まり、譜面の本文、合成のドラムの音と BGM の WAV
   generate.js / dialog.js 曲フォルダの ZIP を作る / ホームのダイアログ
   num.js              numpy と同じ丸め・中央値・百分位・最小二乗
@@ -338,6 +341,8 @@ dist/dojo.bundle.js   file:// 用に js/ を 1 本に束ねたもの。生成物
 tests/                ブラウザで開くテスト(tests/index.html)。fixtures/local/ は git 管理外の実曲パック
 tools/make_fixtures.py tests/fixtures の音・ZIP・期待値を合成して作る
 tools/make_skin.py    既定のスキン skins/default/ の画像を tools/skinart/ の描画から作る(Chrome / Edge が必要)
+tools/adt/            音から譜面の打点のモデルの学習(E-GMD を落とす・伴奏を合成する・学習する・js/gen/adtweights.js に書き出す。
+                      PyTorch が要る。データは git に入れない。手順は docs/spec/vid2dtx-gen.md §6.1)
 skins/default/        既定のスキン(chips.png / pads.png / score_panel.png / song_panel.png / gb_chips.png / gb_neck.png)。書式は skins/README.md
 docs/spec/            元実装から抽出した挙動仕様(移植の根拠)
 assets/               手元の素材(自作スキンなど)。git には含めない
@@ -419,8 +424,8 @@ MIDI(ノートオンの判定・しきい値・重なりのまとめ・叩いて
   2 ms 遅い側(+)に出るようになった。それ以外のブラウザは以前の推定のまま
 
 - 動画・音声から譜面を作る: 動画から読めるのは対応する 2 つの配置だけ(ほかのスキン・ハイスピードの変化は読めない)。
-  BPM・スクロールの速さが一定の譜面だけ(vid2dtx と同じ)。音からは実験的な下書き(テンポ一定・4/4、タムは拾わない。
-  小節の頭が半小節ずれることがある)。`requestVideoFrameCallback` の無いブラウザでは動画からは作れない
+  BPM・スクロールの速さが一定の譜面だけ(vid2dtx と同じ)。音からは実験的な下書き(テンポ一定・4/4。小節の頭が半小節
+  ずれることがある)。`requestVideoFrameCallback` の無いブラウザでは動画からは作れない
 - 譜面の編集: 999 小節まで(NX は Z99 まで読める)。`#IF` の中のチップとギター / ベースのチップは編集できない(そのまま残る)。
   書き直した行の行末のコメントは消える。ブラウザはファイルを直接上書きできないので、保存はダウンロード(Chrome / Edge の
   「名前を付けて保存」で選んだファイルと「フォルダを開く(上書き保存できる)」で開いたフォルダだけ上書き)。UTF-8 で保存した譜面は

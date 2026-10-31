@@ -74,6 +74,23 @@ Lesser General Public License for more details.
 `dist/dojo.bundle.js`(`build.bat` で作る束ね版)には `js/core/xa.js` がそのまま入る。差し替えるときは `js/core/xa.js` を
 書き換えて束ね直せばよい。
 
+## 音から譜面の打点のモデルの学習に使ったデータ(`js/gen/adtweights.js`)
+
+「曲の音から譜面を作る」の打点のモデルの重み `js/gen/adtweights.js` は、下の 2 つのデータ(どちらも CC BY 4.0)と、
+このリポジトリで合成した音(`tools/adt/accomp.py` の伴奏、`js/core/synth.js` のドラムの音)だけから `tools/adt/` で学習した。
+データそのもの(音・MIDI)はリポジトリに含めない。学習の手順と、確かめて使わなかったデータは `docs/spec/vid2dtx-gen.md` §6.1。
+
+- **E-GMD**(The Expanded Groove MIDI Dataset v1.0.0)— Google LLC、
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。<https://magenta.tensorflow.org/datasets/e-gmd>。
+  Lee Callender, Curtis Hawthorne, Jesse Engel. "Improving Perceptual Quality of Drum Transcription with the Expanded Groove
+  MIDI Dataset." 2020. arXiv:2004.00188。
+  ドラムの音と打点の正解として使った(学習の側の 4095 曲(演奏ごとにキット 5 つ)と検証の側の 117 曲。WAV と MIDI)。
+  打点を 5 種類(キック・スネア・タム・ハイハット・シンバル)にまとめ、伴奏を混ぜ、音色・大きさ・周波数の傾きを変えて使った。
+- **NSynth**(valid と test)— Google Inc.、[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。
+  <https://magenta.tensorflow.org/datasets/nsynth>。Jesse Engel, Cinjon Resnick, Adam Roberts, Sander Dieleman, Douglas Eck,
+  Karen Simonyan, Mohammad Norouzi. "Neural Audio Synthesis of Musical Notes with WaveNet Autoencoders." 2017。
+  楽器の 1 音ずつの録音を、学習用の伴奏の和音・旋律に並べて使った(16 kHz を 44.1 kHz にし、音の高さと長さを変えた)。
+
 ## 実行時に読み込むもの(同梱しない)
 
 - [@wasm-audio-decoders/ogg-vorbis](https://github.com/eshaz/wasm-audio-decoders) 0.1.20(Ethan Halsall、MIT)。

@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>appkit.json</title>
+<!-- 本アプリの合成のドラムの音(js/core/synth.js の buildKitSounds)を render_appkit.py に渡す appkit.json にして保存する。
+     python -m http.server で配信して http://localhost:8765/tools/adt/kitdump.html を開く。 -->
+<p><a id="dl" download="appkit.json">appkit.json を保存</a></p>
+<script type="module">
+import { buildKitSounds } from '../../js/core/synth.js';
+
+const out = {};
+for (const [k, d] of Object.entries(buildKitSounds())) out[k] = Array.from(d, (v) => Math.round(v * 1e6) / 1e6);
+window.__kit = out;
+document.getElementById('dl').href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: 'application/json' }));
+</script>

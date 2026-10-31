@@ -12,3 +12,6 @@ dist/dojo.bundle.js
 
 # local-only test data (real song packs)
 tests/fixtures/local/
+
+# Python のキャッシュ(tools/)
+__pycache__/

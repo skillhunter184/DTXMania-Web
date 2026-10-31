@@ -47,6 +47,13 @@ export function argmax(a) {
   return best;
 }
 
+/** 一番小さい要素の添字(np.argmin。同じなら前)。 */
+export function argmin(a) {
+  let best = 0;
+  for (let i = 1; i < a.length; i++) if (a[i] < a[best]) best = i;
+  return best;
+}
+
 /** 0 以上の整数の数え上げ(np.bincount)。 */
 export function bincount(a, minlength = 0) {
   let n = minlength;

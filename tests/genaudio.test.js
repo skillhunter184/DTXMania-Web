@@ -9,7 +9,9 @@ import { decodeText } from '../js/core/encoding.js';
 import { buildKitSounds } from '../js/core/synth.js';
 import { SongPackage } from '../js/core/song.js';
 import { loadSidecar } from '../js/edit/sidecar.js';
-import { beatCandidates, combFit, measurePhase, audioToChart, audioBpmText } from '../js/gen/audio2dtx.js';
+import { beatCandidates, combFit, measurePhase, audioToChart, audioBpmText, splitTomLanes } from '../js/gen/audio2dtx.js';
+import { stftMag } from '../js/gen/adt.js';
+import { modelInput, runModel, inputGain, modelPeaks, MODEL_CLASSES } from '../js/gen/adtmodel.js';
 import { generateFromAudio, generateFromVideo, buildZip, kindOfFile, folderName } from '../js/gen/generate.js';
 import { overallProgress } from '../js/gen/dialog.js';
 import { synthScan, demoChips, chipTime } from './gensynth.js';
@@ -94,6 +96,72 @@ test('gen audio: tempo candidates, comb fit and measure phase (snare backbeat) o
   assertEq(audioBpmText(177.33), 177.33);
 });
 
+/**
+ * tools/adt/export.py の check_signal と同じ決まった音(0.25 秒ごとにキック風・スネア風・ハイハット風。雑音は 32 bit の
+ * 線形合同法)。tests/fixtures/adt_check.json はこの音での tools/adt/common.py のモデルの値。
+ */
+function checkSignal(seconds = 3) {
+  const sr = 44100;
+  const n = Math.floor(seconds * sr);
+  const noise = new Float64Array(n);
+  let s = 12345;
+  for (let i = 0; i < n; i++) {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    noise[i] = (s / 4294967296) * 2 - 1;
+  }
+  const x = new Float64Array(n);
+  for (let k = 0; k < Math.floor((seconds - 0.2) / 0.25); k++) {
+    const i0 = Math.round((0.1 + 0.25 * k) * sr);
+    for (let i = i0; i < n; i++) {
+      const u = (i - i0) / sr;
+      if (k % 3 === 0) x[i] += 0.8 * Math.sin(2 * Math.PI * 60 * u) * Math.exp(-u / 0.08);
+      else if (k % 3 === 1) x[i] += (0.5 * noise[i] + 0.4 * Math.sin(2 * Math.PI * 200 * u)) * Math.exp(-u / 0.06);
+      else x[i] += 0.3 * (noise[i] - noise[i - 1]) * Math.exp(-u / 0.02);
+    }
+  }
+  return Float32Array.from(x);
+}
+
+test('gen audio: the onset model gives the same values as tools/adt (PyTorch) on a fixed sound', async () => {
+  const ref = await (await fetch('fixtures/adt_check.json')).json();
+  const x = checkSignal();
+  const { mag, T, F } = stftMag(x);
+  assertEq(T, ref.T);
+  const prob = await runModel(modelInput(mag, T, F, inputGain(x)), T, { chunk: 100 });
+  let md = 0;
+  for (let i = 0; i < prob.length; i++) {
+    assert(prob[i] >= 0 && prob[i] <= 1, 'probability ' + prob[i]);
+    md = Math.max(md, Math.abs(prob[i] - ref.prob[i]));
+  }
+  assert(md < 2e-3, 'max difference ' + md);
+  assertEq(MODEL_CLASSES.join(','), 'KD,SD,TT,HH,CY');
+  // 峰は放物線で補った時刻(窓の真ん中で数える)
+  const k = MODEL_CLASSES.indexOf('KD');
+  for (const p of modelPeaks(prob, T, k, 0.5)) assert(p.t > 0 && p.t < 3 && p.p >= 0.5);
+});
+
+test('gen audio: toms are split into HT / LT / FT by the pitch modes of the song', () => {
+  // 3 つの山(90・118・150 Hz)は低い順に FT・LT・HT。音高の測れないものは入らない
+  const toms = [];
+  const pitch = new Map();
+  [90, 118, 150].forEach((f, j) => {
+    for (let i = 0; i < 10; i++) {
+      const c = { t: toms.length };
+      toms.push(c);
+      pitch.set(c.t, f * 2 ** (((i % 3) - 1) * 0.02));
+    }
+  });
+  toms.push({ t: 99 });
+  const lanes = splitTomLanes(toms, (t) => (pitch.has(t) ? pitch.get(t) : null));
+  assertEq(lanes.size, 30);
+  assertEq([0, 10, 20].map((i) => lanes.get(toms[i])).join(','), 'FT,LT,HT');
+  // 2 つのタムのキット(100・140 Hz)は 3 つめのレーンを作らず、音域の近い FT と HT
+  const two = [];
+  for (let i = 0; i < 12; i++) two.push({ t: i, f: i % 2 ? 140 : 100 });
+  const l2 = splitTomLanes(two, (t) => two[t].f);
+  assertEq([l2.get(two[0]), l2.get(two[1])].join(','), 'FT,HT');
+});
+
 test('gen audio: a synthetic 8-beat song gives the BPM, the measure grid and most kicks / snares / hats', async () => {
   const song = synthSong();
   const r = await audioToChart(song.L, song.R, { keepStart: true });
@@ -114,6 +182,16 @@ test('gen audio: a synthetic 8-beat song gives the BPM, the measure grid and mos
   assert(heads >= 20, 'kicks on the measure head ' + heads);
   const extra = r.chips.filter((c) => !song.hits.some((h) => Math.abs(h.t - tOf(c)) < 0.03)).length;
   assert(extra <= r.chips.length * 0.1, 'extras ' + extra + ' / ' + r.chips.length);
+});
+
+test('gen audio: the old signal processing (detector dsp) still makes the chart of the synthetic song', async () => {
+  const song = synthSong({ bars: 12 });
+  const r = await audioToChart(song.L, song.R, { detector: 'dsp' });
+  assertNear(r.bpm, 150, 0.05);
+  const tOf = (c) => r.gridOrigin + (c.m + c.tick / 384) * r.tMeas;
+  const kicks = song.hits.filter((h) => h.kind === 'BD');
+  const found = kicks.filter((h) => r.chips.some((c) => (c.kind === 'BD' || c.kind === 'LBD') && Math.abs(tOf(c) - h.t) < 0.03));
+  assert(found.length >= 0.9 * kicks.length, 'kick ' + found.length + ' / ' + kicks.length);
 });
 
 test('gen audio: the song folder — wav kept as the BGM at the song start, confidence file read by the editor', async () => {

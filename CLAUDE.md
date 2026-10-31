@@ -87,5 +87,9 @@ build.bat
 - 音から譜面を作る所(`js/gen/adt.js`・`audio2dtx.js`)に vid2dtx の学習した重み(`adtof8_head_weights.pth`・`idiom_weights.pth`・
   `kitgen_*.pth`)やそれを写した値を持ち込まない(GITADORA の譜面と音で学習したもので公開できない)。しきい値を詰めるときは
   `tests/fixtures/local/` の曲で手元で測り、結果だけを `docs/spec/vid2dtx-gen.md` に書く。
+- 打点のモデルの重み(`js/gen/adtweights.js`)は `tools/adt/` で学習して `tools/adt/export.py` で書き出す(手で直さない)。学習に足す
+  データは許諾を一次情報で確かめ(非商用・改変禁止・著作物から作ったものは使わない)、`THIRD_PARTY_NOTICES.md` と仕様書 §6.1 に書く。
+  モデルの形や入力の作り方を変えたら `tools/adt/common.py` と `js/gen/adtmodel.js` を揃え、`export.py --check` で
+  `tests/fixtures/adt_check.json` を書き直す(JS と PyTorch の値の突き合わせ)。
 - 公開しているので、第三者の素材(実曲パックの音・譜面・画像)をコミットしない。テスト用の音や ZIP は
   `tools/make_fixtures.py` で合成する。移植したコードのライセンス表示は `THIRD_PARTY_NOTICES.md`。
